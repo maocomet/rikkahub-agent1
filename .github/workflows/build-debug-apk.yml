@@ -19,6 +19,20 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # :web:installWebUiDeps runs `bun install --frozen-lockfile` but web-ui/
+      # only tracks pnpm-lock.yaml (no bun.lock), so the frozen install cannot
+      # run on a clean checkout. Installing up-front also makes the Gradle task
+      # up-to-date on the first build (its outputs.dir is node_modules/).
+      - name: Set up bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Pre-install web-ui dependencies
+        working-directory: web-ui
+        run: bun install
+
       - name: Gradle cache
         uses: actions/cache@v4
         with:
