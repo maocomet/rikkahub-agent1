@@ -99,6 +99,12 @@ android {
             buildConfigField("String", "UPDATE_API_URL", "\"\"")
         }
         debug {
+            // Standalone debug builds: separate application id so they can be
+            // installed side-by-side with the official RikkaHub without
+            // overwriting it. namespace stays me.rerere.rikkahub; only the
+            // installed applicationId (and visible versionName) are suffixed.
+            applicationIdSuffix = ".agenttest"
+            versionNameSuffix = "-test"
             signingConfig = signingConfigs.findByName("legacyDebug")
                 ?: signingConfigs.getByName("debug")
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
