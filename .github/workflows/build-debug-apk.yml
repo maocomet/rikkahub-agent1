@@ -46,6 +46,17 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug
 
+      # :web:buildWebUi (pnpm run build) fails with a bare exit code 1 while
+      # Gradle's concurrent task output buries the real react-router/vite error.
+      # Retry it standalone so the actual error lands at the end of the log.
+      - name: Diagnose web-ui build (on failure)
+        if: failure()
+        working-directory: web-ui
+        run: |
+          echo "=== pnpm $(pnpm -v 2>/dev/null) / node $(node -v 2>/dev/null) ==="
+          echo "=== retry: pnpm run build (tail 100) ==="
+          pnpm run build 2>&1 | tail -100 || true
+
       - name: Upload debug APKs
         if: success()
         uses: actions/upload-artifact@v4
