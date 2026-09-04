@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.pages.setting
 
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,6 +16,8 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -22,6 +25,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -75,6 +79,16 @@ fun SecondUserSecretVaultPage(
     var editingSlotId by remember { mutableStateOf<String?>(null) }
     var migrationResult by remember { mutableStateOf<SecondUserLegacySecretMigrationResult?>(null) }
     var confirmRemoteMode by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    var transientMessage by remember { mutableStateOf<String?>(null) }
+
+    // Surface authorization failures/requirements visibly; never fail silently.
+    LaunchedEffect(transientMessage) {
+        transientMessage?.let { message ->
+            snackbarHostState.showSnackbar(message)
+            transientMessage = null
+        }
+    }
 
     val activity = context.getActivity()
     DisposableEffect(activity) {
@@ -112,13 +126,28 @@ fun SecondUserSecretVaultPage(
             if (busy) return@launch
             busy = true
             try {
-                biometric.authorizeSecretVault(
+                // Preflight so an unavailable/no-enrollment device shows a clear reason instead
+                // of a silently-dead button (the biometric host would otherwise error invisibly).
+                val unavailable = biometric.strongBiometricUnavailableReason()
+                if (unavailable != null) {
+                    transientMessage = unavailable
+                    return@launch
+                }
+                val authorization = biometric.authorizeSecretVault(
                     title = context.getString(R.string.second_user_vault_title),
                     subtitle = context.getString(R.string.second_user_vault_desc),
-                )?.let { authorization ->
-                    action(authorization)
-                    slots = vault.listMetadataForUser(authorization)
+                )
+                if (authorization == null) {
+                    transientMessage =
+                        "Biometric authentication did not complete (cancelled or not available)."
+                    return@launch
                 }
+                action(authorization)
+                slots = vault.listMetadataForUser(authorization)
+            } catch (t: Throwable) {
+                Log.w("SecondUserSecretVaultPage", "secret vault authorization failed", t)
+                transientMessage =
+                    "Secret vault error: ${t.message ?: t.javaClass.simpleName}"
             } finally {
                 busy = false
             }
@@ -127,6 +156,7 @@ fun SecondUserSecretVaultPage(
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             LargeFlexibleTopAppBar(
                 title = { Text(stringResource(R.string.second_user_vault_title)) },
@@ -208,10 +238,29 @@ fun SecondUserSecretVaultPage(
                                             if (busy) return@launch
                                             busy = true
                                             try {
-                                                biometric.authorizeSecretPlaintextSession(
+                                                val unavailable = biometric.strongBiometricUnavailableReason()
+                                                if (unavailable != null) {
+                                                    transientMessage = unavailable
+                                                    return@launch
+                                                }
+                                                val authorization = biometric.authorizeSecretPlaintextSession(
                                                     title = context.getString(R.string.second_user_plaintext_mode_title),
                                                     subtitle = context.getString(R.string.second_user_plaintext_mode_risk),
-                                                )?.let { plaintextSessions.openForCurrent(it) }
+                                                )
+                                                if (authorization == null) {
+                                                    transientMessage =
+                                                        "Biometric authentication did not complete (cancelled or not available)."
+                                                    return@launch
+                                                }
+                                                plaintextSessions.openForCurrent(authorization)
+                                            } catch (t: Throwable) {
+                                                Log.w(
+                                                    "SecondUserSecretVaultPage",
+                                                    "plaintext session authorization failed",
+                                                    t,
+                                                )
+                                                transientMessage =
+                                                    "Plaintext session error: ${t.message ?: t.javaClass.simpleName}"
                                             } finally {
                                                 busy = false
                                             }

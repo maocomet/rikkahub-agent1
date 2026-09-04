@@ -208,6 +208,24 @@ class ToolHostActivity : AppCompatActivity() {
             BiometricManager.Authenticators.BIOMETRIC_STRONG
         }
 
+        // Fail fast with a deterministic code instead of relying on BiometricPrompt delivering an
+        // error through a callback that many callers treat as a silent no-op.
+        val availability = BiometricManager.from(this).canAuthenticate(authenticators)
+        if (availability != BiometricManager.BIOMETRIC_SUCCESS) {
+            val code = when (availability) {
+                BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "no_biometrics_enrolled"
+                BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> "hardware_unavailable"
+                BiometricManager.BIOMETRIC_ERROR_HW_NOT_PRESENT,
+                BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "no_biometric_hardware"
+                BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED -> "security_update_required"
+                BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED -> "biometric_unsupported"
+                else -> "biometric_unavailable_$availability"
+            }
+            biometricBuffer.complete(requestId, BiometricResult.Error(code))
+            finish()
+            return
+        }
+
         val executor = ContextCompat.getMainExecutor(this)
         val prompt = BiometricPrompt(this, executor,
             object : BiometricPrompt.AuthenticationCallback() {
