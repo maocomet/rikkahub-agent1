@@ -27,6 +27,9 @@ app/google-services.json
 # regenerated each release; no need to track them in git.
 /release-artifacts/
 
+# Local debug APK staging area (CI artifacts downloaded for sideloading)
+/apk/
+
 # Release signing keystore — never commit
 /rikkahub-release.jks
 
