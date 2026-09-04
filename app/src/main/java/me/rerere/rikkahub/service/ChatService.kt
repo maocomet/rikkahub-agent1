@@ -1289,6 +1289,9 @@ class ChatService(
                 return rejectedTrackedCommand(reason)
         }
         val resolvedCommandId = commandId ?: Uuid.random()
+        // B1 approval/scheduled-lifecycle trace: every admission attempt, its outcome, and any
+        // resolved parent lineage are logged keyed by ids (never by prompt/token/secret).
+        Log.d(TAG, "cmd.submit conversation=$conversationId command=${command::class.simpleName} origin=$origin commandId=$resolvedCommandId")
         val persistedAdmissionConversation = conversationRepo.getConversationById(conversationId)
             ?: materializeFirstSendConversationForAdmissionOrNull(conversationId, command, origin)
             ?: return rejectedTrackedCommand("Conversation not found")
@@ -1356,6 +1359,14 @@ class ChatService(
             me.rerere.rikkahub.service.chat.CommandLineageContext.fromAuthorityRowOrNull(row)
                 ?: return rejectedTrackedCommand("Parent command lineage is unavailable")
         }
+        if (command is ToolApprovalCommand || command is ResumeAfterApprovalCommand) {
+            Log.d(
+                TAG,
+                "cmd.approval conversation=$conversationId command=${command::class.simpleName} " +
+                    "commandId=$resolvedCommandId parentCommandId=$resolvedParentId " +
+                    "lineageProven=${parentLineage != null}",
+            )
+        }
         if ((command is ToolApprovalCommand || command is ResumeAfterApprovalCommand) && parentLineage == null) {
             return rejectedTrackedCommand("Approval command lineage could not be proven")
         }
@@ -1416,6 +1427,11 @@ class ChatService(
             agentTimingSubmission = agentTimingSubmission,
         )
         val submission = getOrCreateRuntime(conversationId).enqueueEnvelope(envelope)
+        Log.d(
+            TAG,
+            "cmd.submit.result conversation=$conversationId commandId=$resolvedCommandId " +
+                "result=${submission::class.simpleName} accepted=${submission is SubmitResult.Accepted}",
+        )
         if (submission !is SubmitResult.Accepted || submission.commandId != envelope.id) {
             agentTimingSubmission?.handle?.finish(AgentTimingTraceStatus.FAILED)
         }

@@ -259,6 +259,9 @@ class CronJobWorker(
     }
 
     private suspend fun runLlm(job: ScheduledJobEntity): Triple<String, String?, Uuid?> {
+        // B1 scheduled-task lifecycle trace: job identity + run entry; id-keyed only.
+        Log.i("CronJobWorker", "run.llm start job=${job.id} name=${job.name} " +
+            "targetConversationId=${job.targetConversationId ?: "-"}")
         val prompt = job.prompt ?: return Triple("failed", "missing_prompt_for_llm_mode", null)
 
         var createdNewConversation = false
