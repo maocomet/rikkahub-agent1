@@ -657,6 +657,14 @@
         android:value="androidx.startup"
         tools:node="remove" />
     </provider>
+    <service
+      android:name=".data.ai.mcp.oauth.OAuthCallbackForegroundService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="temporary local OAuth loopback callback server awaiting browser authorization" />
+    </service>
   </application>
 
 </manifest>
