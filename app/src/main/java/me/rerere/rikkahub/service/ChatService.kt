@@ -1219,6 +1219,48 @@ class ChatService(
         parentCommandId = parentCommandId,
     ).submission
 
+    /**
+     * Root-cause repair for the first-message "Conversation not found" regression.
+     *
+     * The Compose/web "new conversation" flow keeps a brand-new ordinary chat only in the
+     * in-memory ConversationSession and defers its first Room write to message execution.
+     * Durable command admission (commit 0fd4df363) requires the row to already exist at
+     * submit time, so the very first SendMessageCommand on such a chat was rejected before
+     * execution could persist anything (upstream RikkaHub inserts the row inside the send
+     * call, so it never had this chicken-and-egg). When the live session still describes an
+     * unsaved new conversation, persist that draft now; execution then appends the first
+     * message node to the same row. This restores lazy-create-on-first-send without relaxing
+     * the persisted-conversation guarantee for commands targeting pre-existing conversations.
+     */
+    private suspend fun materializeFirstSendConversationForAdmissionOrNull(
+        conversationId: Uuid,
+        command: ChatCommand,
+        origin: CommandOrigin,
+    ): Conversation? {
+        val session = getOrCreateSession(conversationId)
+        if (!session.isHydrated) {
+            try {
+                initializeConversation(conversationId)
+            } catch (_: Exception) {
+                // An un-hydratable session stays gated below (no new conversation is created).
+            }
+        }
+        val draft = session.state.value
+        val assistantExists =
+            settingsStore.settingsFlow.first().getAssistantById(draft.assistantId) != null
+        if (!shouldMaterializeConversationAtFirstSend(
+                origin = origin,
+                command = command,
+                isNewConversationDraft = draft.newConversation,
+                assistantExists = assistantExists,
+            )
+        ) {
+            return null
+        }
+        conversationRepo.insertConversation(draft)
+        return conversationRepo.getConversationById(conversationId)
+    }
+
     private suspend fun submitCommandTracked(
         conversationId: Uuid,
         command: ChatCommand,
@@ -1248,6 +1290,7 @@ class ChatService(
         }
         val resolvedCommandId = commandId ?: Uuid.random()
         val persistedAdmissionConversation = conversationRepo.getConversationById(conversationId)
+            ?: materializeFirstSendConversationForAdmissionOrNull(conversationId, command, origin)
             ?: return rejectedTrackedCommand("Conversation not found")
         if (origin == CommandOrigin.SYSTEM_ASSISTANT && command !is StopCommand) {
             val validation = me.rerere.rikkahub.service.chat.SystemAssistantCommandSecurityPolicy
@@ -5098,3 +5141,20 @@ private fun SubmitResult.toOwnerRunSubmission(): me.rerere.rikkahub.owner.OwnerR
     is SubmitResult.RuntimeUnavailable -> me.rerere.rikkahub.owner.OwnerRunSubmission(false, "RUN_RUNTIME_UNAVAILABLE")
     is SubmitResult.Rejected -> me.rerere.rikkahub.owner.OwnerRunSubmission(false, "RUN_CONTROL_REJECTED")
 }
+
+/**
+ * Pure gate used by [ChatService] admission: should the very first user message on a
+ * brand-new (still in-memory, never-persisted) ordinary conversation create the Room row
+ * right now? Kept as a pure function so the regression can be unit-tested without the
+ * full ChatService dependency graph.
+ */
+internal fun shouldMaterializeConversationAtFirstSend(
+    origin: CommandOrigin,
+    command: ChatCommand,
+    isNewConversationDraft: Boolean,
+    assistantExists: Boolean,
+): Boolean =
+    command is SendMessageCommand &&
+        (origin == CommandOrigin.APP_UI || origin == CommandOrigin.WEB_API) &&
+        isNewConversationDraft &&
+        assistantExists

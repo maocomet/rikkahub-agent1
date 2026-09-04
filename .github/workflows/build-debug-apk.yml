@@ -48,6 +48,13 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug
 
+      # Regression: a brand-new ordinary chat must be able to send its first message.
+      - name: Run first-message conversation regression test
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest \
+            --tests "me.rerere.rikkahub.service.ShouldMaterializeConversationAtFirstSendTest"
+
       # :web:buildWebUi (pnpm run build) fails with a bare exit code 1 while
       # Gradle's concurrent task output buries the real react-router/vite error.
       # Retry it standalone so the actual error lands at the end of the log.
