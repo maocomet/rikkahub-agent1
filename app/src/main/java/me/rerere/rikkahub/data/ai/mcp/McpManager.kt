@@ -228,7 +228,7 @@ class McpManager(
             val oauth = config.commonOptions.oauth
             if (mcpCanSingleRetryOnOAuth(oauth)) {
                 val refreshed = runCatching { oauthCoordinator.ensureFreshToken(config) }.getOrNull()
-                if (refreshed != null && refreshed.commonOptions.oauth?.accessToken != oauth.accessToken) {
+                if (refreshed != null && refreshed.commonOptions.oauth?.accessToken != oauth?.accessToken) {
                     addClient(refreshed)
                     val retried = clients.entries.firstOrNull { it.key.id == config.id }?.value
                     if (retried != null) {
