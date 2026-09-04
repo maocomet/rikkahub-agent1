@@ -235,8 +235,10 @@ fun SettingSystemAssistantPage(
                     }
                     TextButton(
                         onClick = {
-                            if (!roleController.requestCurrentSystemAssistant()) {
-                                Toast.makeText(context, launchFailed, Toast.LENGTH_SHORT).show()
+                            scope.launch {
+                                if (!roleController.requestCurrentSystemAssistant()) {
+                                    Toast.makeText(context, launchFailed, Toast.LENGTH_SHORT).show()
+                                }
                             }
                         },
                         enabled = roleState.voiceServiceActive,

@@ -362,7 +362,15 @@ class DesktopPetService : Service() {
             animationFps = selection.animationFps.coerceIn(MIN_ANIMATION_FPS, MAX_ANIMATION_FPS),
         )
         if (!force && config == loadedRenderConfig && (spriteView != null || placeholderView != null)) return true
-        if (!Settings.canDrawOverlays(this)) return true
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w(
+                TAG,
+                "Desktop pet overlay permission (SYSTEM_ALERT_WINDOW) is not granted; " +
+                    "stopping instead of pretending the pet is running",
+            )
+            stopSelf()
+            return false
+        }
         val loaded = config.packageId?.let { packageId ->
             runCatching { profileRepository.load(packageId, config.profileId) }.getOrNull()
         }

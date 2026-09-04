@@ -332,20 +332,56 @@ fun PetDialogueCard(
                                 Row {
                                     TextButton(onClick = {
                                         scope.launch {
-                                            handoffCoordinator.editDraft(
+                                            localError = null
+                                            localNotice = null
+                                            val saved = handoffCoordinator.editDraft(
                                                 request.requestId,
                                                 request.stateVersion,
                                                 handoffTitle,
                                                 handoffText,
                                             )
+                                            if (saved) {
+                                                localNotice = "草稿已保存"
+                                            } else {
+                                                localError = "草稿保存失败：状态已变化或任务不存在"
+                                            }
                                         }
                                     }) { Text("保存草稿") }
-                                    TextButton(onClick = { scope.launch { handoffCoordinator.submit(request.requestId, false) } }) {
-                                        Text("转交")
-                                    }
-                                    TextButton(onClick = { scope.launch { handoffCoordinator.dismiss(request.requestId, request.stateVersion) } }) {
-                                        Text("拒绝")
-                                    }
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            localError = null
+                                            localNotice = null
+                                            when (val result = handoffCoordinator.submit(request.requestId, false)) {
+                                                is PetHandoffSubmitResult.Submitted ->
+                                                    localNotice = "已转交，等待第二用户处理"
+                                                is PetHandoffSubmitResult.Rejected ->
+                                                    localError = "转交被拒绝：${result.code}"
+                                                PetHandoffSubmitResult.Missing ->
+                                                    localError = "转交失败：任务不存在或已被处理"
+                                                PetHandoffSubmitResult.Conflict ->
+                                                    localError = "转交失败：状态已变化，请刷新后重试"
+                                                PetHandoffSubmitResult.Expired ->
+                                                    localError = "转交失败：任务已过期"
+                                                PetHandoffSubmitResult.RateLimited ->
+                                                    localError = "转交失败：操作过于频繁，请稍后再试"
+                                            }
+                                        }
+                                    }) { Text("转交") }
+                                    TextButton(onClick = {
+                                        scope.launch {
+                                            localError = null
+                                            localNotice = null
+                                            val dismissed = handoffCoordinator.dismiss(
+                                                request.requestId,
+                                                request.stateVersion,
+                                            )
+                                            if (dismissed) {
+                                                localNotice = "已拒绝该转交"
+                                            } else {
+                                                localError = "拒绝失败：状态已变化或任务不存在"
+                                            }
+                                        }
+                                    }) { Text("拒绝") }
                                 }
                             }
                         }

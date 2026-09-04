@@ -1,14 +1,27 @@
 package me.rerere.rikkahub.assistant
 
+import android.app.Activity
 import android.app.role.RoleManager
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.service.voice.VoiceInteractionService
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+
+/** How long to wait for the lightweight voice process to acknowledge a shown session. */
+private const val TEST_ACK_TIMEOUT_MS = 3_000L
 
 data class SystemAssistantRoleState(
     val roleAvailable: Boolean,
@@ -194,16 +207,73 @@ class SystemAssistantRoleController(context: Context) {
         component = fallbackAssistActivityComponent
     }
 
-    fun requestCurrentSystemAssistant(): Boolean {
+    /**
+     * Sends the test invocation and waits for the lightweight voice process to acknowledge that a
+     * session was actually shown (ordered broadcast with a short timeout). Returns true only on a
+     * confirmed "shown"; it no longer treats "intent sent without an exception" as success.
+     */
+    suspend fun requestCurrentSystemAssistant(): Boolean {
         if (!snapshot().voiceServiceActive) return false
-        return runCatching {
-            appContext.sendBroadcast(
-                Intent(SYSTEM_ASSISTANT_TEST_INVOCATION_ACTION).apply {
-                    component = testInvocationReceiverComponent
-                },
-            )
-            true
-        }.getOrDefault(false)
+        val mainHandler = Handler(Looper.getMainLooper())
+        return withContext(Dispatchers.Main.immediate) {
+            suspendCancellableCoroutine { cont ->
+                val ackReceiver = object : BroadcastReceiver() {
+                    override fun onReceive(context: Context, intent: Intent) {
+                        mainHandler.removeCallbacksAndMessages(null)
+                        if (cont.isActive) {
+                            val ok = resultCode == Activity.RESULT_OK
+                            runCatching { context.unregisterReceiver(this) }
+                            cont.resume(ok)
+                        }
+                    }
+                }
+                val registered = runCatching {
+                    ContextCompat.registerReceiver(
+                        appContext,
+                        ackReceiver,
+                        IntentFilter(SYSTEM_ASSISTANT_TEST_INVOCATION_ACTION),
+                        ContextCompat.RECEIVER_NOT_EXPORTED,
+                    )
+                    true
+                }.getOrDefault(false)
+                if (!registered) {
+                    cont.resume(false)
+                    return@suspendCancellableCoroutine
+                }
+                val timeout = Runnable {
+                    if (cont.isActive) {
+                        runCatching { appContext.unregisterReceiver(ackReceiver) }
+                        cont.resume(false)
+                    }
+                }
+                mainHandler.postDelayed(timeout, TEST_ACK_TIMEOUT_MS)
+                cont.invokeOnCancellation {
+                    mainHandler.removeCallbacks(timeout)
+                    runCatching { appContext.unregisterReceiver(ackReceiver) }
+                }
+                val sent = runCatching {
+                    appContext.sendOrderedBroadcast(
+                        Intent(SYSTEM_ASSISTANT_TEST_INVOCATION_ACTION).apply {
+                            component = testInvocationReceiverComponent
+                        },
+                        null,
+                        ackReceiver,
+                        mainHandler,
+                        Activity.RESULT_CANCELED,
+                        null,
+                        null,
+                    )
+                    true
+                }.getOrDefault(false)
+                if (!sent) {
+                    mainHandler.removeCallbacks(timeout)
+                    if (cont.isActive) {
+                        runCatching { appContext.unregisterReceiver(ackReceiver) }
+                        cont.resume(false)
+                    }
+                }
+            }
+        }
     }
 
     private fun assistantRoleManager(): RoleManager? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

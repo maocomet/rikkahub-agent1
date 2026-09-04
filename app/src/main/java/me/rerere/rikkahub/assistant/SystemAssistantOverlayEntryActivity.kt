@@ -57,12 +57,25 @@ class SystemAssistantOverlayEntryActivity : Activity() {
         }
 
         Log.i(TAG, "Opening the activity-hosted AI-key surface")
-        startActivity(
-            Intent(this, SystemAssistantHardwareOverlayActivity::class.java).apply {
-                action = SYSTEM_ASSISTANT_HARDWARE_INVOCATION_ACTION
-                addFlags(systemAssistantHardwareOverlayLaunchFlags())
-            },
-        )
+        val launched = runCatching {
+            startActivity(
+                Intent(this, SystemAssistantHardwareOverlayActivity::class.java).apply {
+                    action = SYSTEM_ASSISTANT_HARDWARE_INVOCATION_ACTION
+                    addFlags(systemAssistantHardwareOverlayLaunchFlags())
+                },
+            )
+        }.isSuccess
+        if (!launched) {
+            Log.e(TAG, "Hardware overlay activity could not be opened; falling back to second-user surface")
+            runCatching {
+                startActivity(
+                    Intent(this, SystemAssistantFallbackActivity::class.java).apply {
+                        action = SYSTEM_ASSISTANT_SHORTCUT_ACTION
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                )
+            }.onFailure { Log.e(TAG, "Fallback launch also failed", it) }
+        }
         finish()
     }
 

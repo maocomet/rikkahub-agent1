@@ -268,18 +268,23 @@ fun PetSettingsDialog(
                     petAnimationFps = draft.petAnimationFps.coerceIn(4, 12),
                 )
                 val appContext = context.applicationContext
-                onUpdate(saved) {
-                    if (saved.petEnabled) {
-                        if (forceRendererReload) {
-                            DesktopPetService.reload(appContext)
+                if (saved.petEnabled && !Settings.canDrawOverlays(context)) {
+                    status =
+                        "开启桌宠需要“悬浮窗”权限：请先点击上方的“授予悬浮窗权限”，返回后再保存。"
+                } else {
+                    onUpdate(saved) {
+                        if (saved.petEnabled) {
+                            if (forceRendererReload) {
+                                DesktopPetService.reload(appContext)
+                            } else {
+                                DesktopPetService.start(appContext)
+                            }
                         } else {
-                            DesktopPetService.start(appContext)
+                            DesktopPetService.stop(appContext)
                         }
-                    } else {
-                        DesktopPetService.stop(appContext)
                     }
+                    onDismiss()
                 }
-                onDismiss()
             }) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },

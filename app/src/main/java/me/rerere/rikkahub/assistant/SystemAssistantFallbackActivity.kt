@@ -2,6 +2,7 @@ package me.rerere.rikkahub.assistant
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -60,14 +61,29 @@ class SystemAssistantFallbackActivity : ComponentActivity() {
     }
 
     private fun openMainApp(extra: String, value: Any) {
-        startActivity(
-            Intent(this, RouteActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                when (value) {
-                    is Boolean -> putExtra(extra, value)
-                    is String -> putExtra(extra, value)
+        runCatching {
+            startActivity(
+                Intent(this, RouteActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    when (value) {
+                        is Boolean -> putExtra(extra, value)
+                        is String -> putExtra(extra, value)
+                    }
                 }
+            )
+        }.onFailure { error ->
+            Log.e(TAG, "Failed to open the main RikkaHub surface", error)
+            runCatching {
+                android.widget.Toast.makeText(
+                    this,
+                    "无法打开 RikkaHub：${error.message ?: error.javaClass.simpleName}",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
             }
-        )
+        }
+    }
+
+    private companion object {
+        const val TAG = "SystemAssistantFallback"
     }
 }
