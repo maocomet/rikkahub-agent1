@@ -63,7 +63,6 @@ class StrongBiometricAuthenticator(
                     "Open Settings > Security to enroll one, then retry."
             BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE ->
                 "Biometric hardware is temporarily unavailable. Please try again later."
-            BiometricManager.BIOMETRIC_ERROR_HW_NOT_PRESENT,
             BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE ->
                 "This device has no strong biometric hardware (fingerprint or face)."
             BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED ->

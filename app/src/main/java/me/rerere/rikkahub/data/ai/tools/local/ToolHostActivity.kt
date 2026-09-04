@@ -215,7 +215,6 @@ class ToolHostActivity : AppCompatActivity() {
             val code = when (availability) {
                 BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "no_biometrics_enrolled"
                 BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> "hardware_unavailable"
-                BiometricManager.BIOMETRIC_ERROR_HW_NOT_PRESENT,
                 BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "no_biometric_hardware"
                 BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED -> "security_update_required"
                 BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED -> "biometric_unsupported"
