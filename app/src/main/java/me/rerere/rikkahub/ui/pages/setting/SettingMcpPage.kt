@@ -77,6 +77,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -244,6 +245,7 @@ private fun McpServerItem(
     val status by mcpManager.getStatus(item).collectAsStateWithLifecycle(McpStatus.Idle)
     val dismissBoxState = rememberSwipeToDismissBoxState()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     SwipeToDismissBox(
         state = dismissBoxState,
         backgroundContent = {
@@ -346,6 +348,27 @@ private fun McpServerItem(
                             maxLines = 3,
                             overflow = TextOverflow.Ellipsis,
                         )
+                    }
+                    when (status) {
+                        McpStatus.NeedsAuthorization ->
+                            TextButton(onClick = { mcpManager.startOAuthAuthorization(item, context) }) {
+                                Text("OAuth 授权")
+                            }
+                        McpStatus.Authorizing ->
+                            TextButton(onClick = { mcpManager.cancelOAuthAuthorization(item.id) }) {
+                                Text("取消授权")
+                            }
+                        else -> Unit
+                    }
+                    if (item.commonOptions.oauth?.enabled == true && status == McpStatus.Connected) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(onClick = { mcpManager.startOAuthAuthorization(item, context) }) {
+                                Text("重新授权")
+                            }
+                            TextButton(onClick = { scope.launch { mcpManager.clearOAuthAuthorization(item) } }) {
+                                Text("清除授权")
+                            }
+                        }
                     }
                 }
 
