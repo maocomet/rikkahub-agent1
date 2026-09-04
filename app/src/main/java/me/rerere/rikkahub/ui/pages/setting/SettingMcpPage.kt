@@ -297,6 +297,10 @@ private fun McpServerItem(
                         modifier = Modifier.size(24.dp)
                     )
                     is McpStatus.Error -> Icon(HugeIcons.AlertCircle, null)
+                    McpStatus.Authorizing -> CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp)
+                    )
+                    McpStatus.NeedsAuthorization -> Icon(HugeIcons.AlertCircle, null)
                 }
 
                 Column(

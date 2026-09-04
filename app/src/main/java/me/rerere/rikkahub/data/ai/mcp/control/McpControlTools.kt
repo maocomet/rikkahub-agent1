@@ -109,6 +109,8 @@ private fun renderStatus(enabled: Boolean, status: McpStatus?): Pair<String, Str
         McpStatus.Connected -> "CONNECTED" to null
         is McpStatus.Reconnecting -> "CONNECTING" to "reconnecting (attempt ${status.attempt}/${status.maxAttempts})"
         is McpStatus.Error -> "ERROR" to status.message
+        McpStatus.NeedsAuthorization -> "NEEDS_AUTHORIZATION" to "OAuth authorization required"
+        McpStatus.Authorizing -> "AUTHORIZING" to null
     }
 }
 
