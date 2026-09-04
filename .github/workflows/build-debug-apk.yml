@@ -26,8 +26,10 @@ jobs:
       - name: Set up bun
         uses: oven-sh/setup-bun@v2
 
+      # web-ui/pnpm-workspace.yaml declares allowBuilds (pnpm>=10 syntax) and no
+      # packages field; pnpm 9 rejects that with "packages field missing or empty".
       - name: Install pnpm
-        run: npm install -g pnpm@9
+        run: npm install -g pnpm@10
 
       - name: Pre-install web-ui dependencies
         working-directory: web-ui
