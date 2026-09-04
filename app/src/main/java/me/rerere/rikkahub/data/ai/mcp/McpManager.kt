@@ -210,23 +210,47 @@ class McpManager(
         Log.i(TAG, "callTool: $toolName / $args (server: ${config.commonOptions.name})")
 
         if (client.transport == null) client.connect(getTransport(config))
-        val result = client.callTool(
-            request = CallToolRequest(
-                params = CallToolRequestParams(
-                    name = toolName,
-                    arguments = args,
-                ),
+        val request = CallToolRequest(
+            params = CallToolRequestParams(
+                name = toolName,
+                arguments = args,
             ),
-            options = RequestOptions(timeout = 120.seconds),
         )
-        return result.content.map {
-            when(it) {
+        val options = RequestOptions(timeout = 120.seconds)
+        return try {
+            client.callTool(request = request, options = options).toMessageParts()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // OAuth-only path: refresh once and retry exactly one time. The persisted token change
+            // rebuilds the client (via the config collector / connectionFieldsDiffer) with the new
+            // Authorization header. Any remaining failure is classified and rethrown unchanged.
+            val oauth = config.commonOptions.oauth
+            if (mcpCanSingleRetryOnOAuth(oauth)) {
+                val refreshed = runCatching { oauthCoordinator.ensureFreshToken(config) }.getOrNull()
+                if (refreshed != null && refreshed.commonOptions.oauth?.accessToken != oauth.accessToken) {
+                    addClient(refreshed)
+                    val retried = clients.entries.firstOrNull { it.key.id == config.id }?.value
+                    if (retried != null) {
+                        if (retried.transport == null) retried.connect(getTransport(refreshed))
+                        return retried.callTool(request = request, options = options).toMessageParts()
+                    }
+                }
+            }
+            val needsAuth = runCatching { oauthCoordinator.needsAuthorization(config, e) }.getOrDefault(false)
+            if (needsAuth) setStatusById(config.id, McpStatus.NeedsAuthorization)
+            throw e
+        }
+    }
+
+    private suspend fun io.modelcontextprotocol.kotlin.sdk.types.CallToolResult.toMessageParts(): List<UIMessagePart> =
+        content.map {
+            when (it) {
                 is TextContent -> UIMessagePart.Text(it.text)
                 is ImageContent -> convertImageContentToFilePart(it)
                 else -> UIMessagePart.Text(JsonInstant.encodeToString(it))
             }
         }
-    }
 
     private suspend fun convertImageContentToFilePart(image: ImageContent): UIMessagePart.Image {
         val bytes = Base64.decode(image.data)
@@ -284,11 +308,13 @@ class McpManager(
         val base = resolveStaticOrVaultHeaders(config)
         val oauth = config.commonOptions.oauth
         if (oauth?.enabled != true) return base
-        // Explicit Authorization header (static or vault) wins over OAuth.
-        if (base.any { it.first.equals("Authorization", ignoreCase = true) }) return base
+        // Explicit Authorization header (static or vault) always wins; merge otherwise.
         val fresh = oauthCoordinator.ensureFreshToken(config)
-        val token = fresh.commonOptions.oauth?.accessToken
-        return if (token.isNullOrBlank()) base else base + ("Authorization" to "Bearer $token")
+        return mcpMergeOAuthHeader(
+            base = base,
+            oauthEnabled = true,
+            accessToken = fresh.commonOptions.oauth?.accessToken,
+        )
     }
 
     private suspend fun resolveStaticOrVaultHeaders(config: McpServerConfig): List<Pair<String, String>> {

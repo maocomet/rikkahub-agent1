@@ -264,15 +264,5 @@ internal class McpOAuthCoordinator(
             0L
         }
 
-    private fun looksUnauthorized(error: Throwable): Boolean {
-        val message = generateSequence(error) { it.cause }
-            .mapNotNull { it.message }
-            .joinToString(" ")
-            .lowercase()
-        return message.contains("401") ||
-            message.contains("unauthorized") ||
-            message.contains("invalid_token") ||
-            message.contains("invalid access token") ||
-            message.contains("missing or invalid")
-    }
+    private fun looksUnauthorized(error: Throwable): Boolean = mcpLooksUnauthorized(error)
 }

@@ -51,11 +51,12 @@ jobs:
       # Regression: a brand-new ordinary chat must be able to send its first message.
       # Scoped to :app so the --tests filter does not fail sibling modules that have
       # no matching test class (Gradle errors on an empty --tests match per module).
-      - name: Run first-message conversation regression test
+      - name: Run regression unit tests
         run: |
           chmod +x gradlew
           ./gradlew :app:testDebugUnitTest \
-            --tests "me.rerere.rikkahub.service.ShouldMaterializeConversationAtFirstSendTest"
+            --tests "me.rerere.rikkahub.service.ShouldMaterializeConversationAtFirstSendTest" \
+            --tests "me.rerere.rikkahub.data.ai.mcp.McpOAuthAuthRulesTest"
 
       # :web:buildWebUi (pnpm run build) fails with a bare exit code 1 while
       # Gradle's concurrent task output buries the real react-router/vite error.
