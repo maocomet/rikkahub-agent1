@@ -48,6 +48,9 @@ import me.rerere.rikkahub.security.SecondUserSecretVault
 import me.rerere.rikkahub.security.SecretBindingResolution
 import me.rerere.rikkahub.security.resolveMcpHeaderBindings
 import okhttp3.OkHttpClient
+import me.rerere.rikkahub.data.ai.mcp.oauth.CustomTabsOAuthAuthorizationLauncher
+import me.rerere.rikkahub.data.ai.mcp.oauth.OAuthHttpClient
+import me.rerere.rikkahub.data.ai.mcp.oauth.OAuthLoopbackCallbackServer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.io.encoding.Base64
@@ -99,6 +102,20 @@ class McpManager(
     private val reconnectAttempts: ConcurrentHashMap<Uuid, Int> = ConcurrentHashMap()
     private val lifecycleLocks = ConcurrentHashMap<Uuid, Mutex>()
     val syncingStatus = MutableStateFlow<Map<Uuid, McpStatus>>(mapOf())
+
+    private val oauthCallbackServer = OAuthLoopbackCallbackServer(
+        port = MCP_OAUTH_CALLBACK_PORT,
+        callbackPath = MCP_OAUTH_CALLBACK_PATH,
+    )
+    private val oauthCoordinator = McpOAuthCoordinator(
+        settingsStore = settingsStore,
+        appScope = appScope,
+        oauthClient = OAuthHttpClient(okHttpClient),
+        discoveryClient = McpOAuthDiscoveryClient(okHttpClient),
+        callbackServer = oauthCallbackServer,
+        authorizationLauncher = CustomTabsOAuthAuthorizationLauncher,
+        updateStatus = ::setStatusById,
+    )
 
     private fun lockFor(id: Uuid): Mutex = lifecycleLocks.getOrPut(id) { Mutex() }
 
@@ -168,6 +185,21 @@ class McpManager(
                     .filter { tool -> tool.enable }
                     .map { tool -> Triple(server.id, server.commonOptions.name, tool) }
             }
+    }
+
+    /** 启动 OAuth 授权（UI 在 NeedsAuthorization 状态时调用）。 */
+    fun startOAuthAuthorization(config: McpServerConfig, context: Context) {
+        oauthCoordinator.startAuthorization(config, context)
+    }
+
+    fun cancelOAuthAuthorization(configId: Uuid) {
+        oauthCoordinator.cancelAuthorization(configId)
+    }
+
+    /** 清除已持久化的 OAuth 凭据并重建连接（重建会重新探测 401→NeedsAuthorization）。 */
+    suspend fun clearOAuthAuthorization(config: McpServerConfig) {
+        val fresh = oauthCoordinator.clearAuthorization(config)
+        addClient(fresh)
     }
 
     suspend fun callTool(serverId: Uuid, toolName: String, args: JsonObject): List<UIMessagePart> {
@@ -249,6 +281,17 @@ class McpManager(
      * plaintext value from Settings.
      */
     private suspend fun resolveTransportHeaders(config: McpServerConfig): List<Pair<String, String>> {
+        val base = resolveStaticOrVaultHeaders(config)
+        val oauth = config.commonOptions.oauth
+        if (oauth?.enabled != true) return base
+        // Explicit Authorization header (static or vault) wins over OAuth.
+        if (base.any { it.first.equals("Authorization", ignoreCase = true) }) return base
+        val fresh = oauthCoordinator.ensureFreshToken(config)
+        val token = fresh.commonOptions.oauth?.accessToken
+        return if (token.isNullOrBlank()) base else base + ("Authorization" to "Bearer $token")
+    }
+
+    private suspend fun resolveStaticOrVaultHeaders(config: McpServerConfig): List<Pair<String, String>> {
         val configured = config.commonOptions.headers
         if (configured.none { (_, value) -> McpVaultSecretReference.isReference(value) }) {
             return configured
@@ -314,16 +357,26 @@ class McpManager(
         // would otherwise leak a live Client when we overwrite. Close+drop it explicitly.
         closeExistingFor(config.id)
         clients[config] = client
-        runCatching {
+        try {
             setStatus(config = config, status = McpStatus.Connecting)
             client.connect(transport)
             sync(config)
             setStatus(config = config, status = McpStatus.Connected)
             reconnectAttempts[config.id] = 0 // 重置重连计数
             Log.i(TAG, "addClient: connected ${config.commonOptions.name}")
-        }.onFailure {
-            Log.w(TAG, "addClient: connect failed for ${config.commonOptions.name}", it)
-            setStatus(config = config, status = McpStatus.Error(it.message ?: it.javaClass.name))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Log.w(TAG, "addClient: connect failed for ${config.commonOptions.name}", e)
+            val needsOAuth = runCatching { oauthCoordinator.needsAuthorization(config, e) }.getOrDefault(false)
+            setStatus(
+                config = config,
+                status = if (needsOAuth) {
+                    McpStatus.NeedsAuthorization
+                } else {
+                    McpStatus.Error(e.message ?: e.javaClass.name)
+                },
+            )
         }
     }
 
@@ -583,6 +636,10 @@ class McpManager(
         })
     }
 
+    private fun setStatusById(id: Uuid, status: McpStatus) {
+        syncingStatus.value = syncingStatus.value + (id to status)
+    }
+
     fun getStatus(config: McpServerConfig): Flow<McpStatus> {
         return syncingStatus.map { it[config.id] ?: McpStatus.Idle }
     }
@@ -612,7 +669,10 @@ internal fun connectionFieldsDiffer(old: McpServerConfig, new: McpServerConfig):
         is McpServerConfig.StreamableHTTPServer -> new.url
     }
     if (oldUrl != newUrl) return true
-    return old.commonOptions.headers != new.commonOptions.headers
+    if (old.commonOptions.headers != new.commonOptions.headers) return true
+    // OAuth token / endpoint state changes must tear down and rebuild the live client so the
+    // new Authorization header (or cleared credentials) actually take effect.
+    return old.commonOptions.oauth != new.commonOptions.oauth
 }
 
 private fun redactConfigForLog(config: McpServerConfig): String {
