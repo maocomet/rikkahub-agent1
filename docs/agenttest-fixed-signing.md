@@ -139,3 +139,19 @@ Suggested wording for the announcement of the first fixed-signed build:
 
 The `.agenttest` build remains side-by-side with the official RikkaHub app and never touches
 its signing or data.
+
+## Recorded fingerprint (verified 2026-09-05)
+
+Confirmed identical across two independent CI builds — push of `5f56ee8b`
+(run `33943723632`) and a `workflow_dispatch` run (`33944372412`) — for all
+three `.agenttest` APK variants:
+
+```
+sha256 2f1965cf7447301f857ec222fb1996ac179b07c771d9b3a636bd0116fefffcc3
+```
+
+Use this value in the migration announcement above and to sanity-check what
+testers install: `keytool -list -v` on the same keystore (and
+`apksigner verify --print-certs` on any built APK) must print the same
+SHA-256. A newer build signed by this key will overwrite-install over an
+older one and keep app data; a build with a different fingerprint will not.
