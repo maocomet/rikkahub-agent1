@@ -49,7 +49,41 @@ jobs:
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
 
+      # .agenttest builds shipped from CI must keep ONE signing identity so testers can install a
+      # new build over the old one (and keep app data) instead of uninstalling first. The fixed
+      # keystore is never committed: it lives base64-encoded in a repo Secret and is decoded here.
+      # Missing secrets FAIL the job loudly — never fall back to AGP's throwaway per-run debug key.
+      - name: Materialize fixed .agenttest signing keystore
+        env:
+          AGENTTEST_KEYSTORE_B64: ${{ secrets.RIKKAHUB_AGENTTEST_KEYSTORE_BASE64 }}
+          AGENTTEST_STORE_PASSWORD: ${{ secrets.RIKKAHUB_AGENTTEST_STORE_PASSWORD }}
+          AGENTTEST_KEY_ALIAS: ${{ secrets.RIKKAHUB_AGENTTEST_KEY_ALIAS }}
+          AGENTTEST_KEY_PASSWORD: ${{ secrets.RIKKAHUB_AGENTTEST_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${AGENTTEST_KEYSTORE_B64:?Missing RIKKAHUB_AGENTTEST_KEYSTORE_BASE64 secret — see docs/agenttest-fixed-signing.md}"
+          : "${AGENTTEST_STORE_PASSWORD:?Missing RIKKAHUB_AGENTTEST_STORE_PASSWORD secret}"
+          : "${AGENTTEST_KEY_ALIAS:?Missing RIKKAHUB_AGENTTEST_KEY_ALIAS secret}"
+          : "${AGENTTEST_KEY_PASSWORD:?Missing RIKKAHUB_AGENTTEST_KEY_PASSWORD secret}"
+          KEYSTORE="$RUNNER_TEMP/rikkahub-agenttest.keystore"
+          echo "$AGENTTEST_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
+          if [ ! -s "$KEYSTORE" ]; then
+            echo "::error::Decoded keystore is empty — check RIKKAHUB_AGENTTEST_KEYSTORE_BASE64"
+            exit 1
+          fi
+          # Confirm the keystore opens and the alias exists before spending a build on it.
+          keytool -list -keystore "$KEYSTORE" \
+            -storepass "$AGENTTEST_STORE_PASSWORD" -alias "$AGENTTEST_KEY_ALIAS" >/dev/null
+          # Export for the Gradle and verification steps below.
+          echo "RIKKAHUB_AGENTTEST_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "RIKKAHUB_AGENTTEST_STORE_PASSWORD=$AGENTTEST_STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "RIKKAHUB_AGENTTEST_KEY_ALIAS=$AGENTTEST_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "RIKKAHUB_AGENTTEST_KEY_PASSWORD=$AGENTTEST_KEY_PASSWORD" >> "$GITHUB_ENV"
+
       - name: Build debug APK
+        env:
+          # Fail closed: Gradle must refuse to fall back to a throwaway debug signature.
+          RIKKAHUB_AGENTTEST_REQUIRED: "true"
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug
@@ -68,6 +102,39 @@ jobs:
       - name: Collect debug APKs
         run: |
           ls -la app/build/outputs/apk/debug/*.apk
+
+      # Refuse to publish anything not signed by the fixed keystore. Also prints the certificate
+      # SHA-256; the same keystore on every run is what lets testers overwrite-install newer builds.
+      - name: Verify .agenttest APKs use the fixed signing key
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(ls -1 "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1 || true)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "::warning::apksigner not found under \$ANDROID_HOME/build-tools; skipping cert comparison"
+            exit 0
+          fi
+          expected="$(
+            keytool -list -v -keystore "$RIKKAHUB_AGENTTEST_KEYSTORE" \
+              -storepass "$RIKKAHUB_AGENTTEST_STORE_PASSWORD" \
+              -alias "$RIKKAHUB_AGENTTEST_KEY_ALIAS" \
+              | sed -nE 's/^[[:space:]]*SHA256:[[:space:]]*//p' \
+              | head -n1 | tr -d ':' | tr 'A-F' 'a-f'
+          )"
+          [ -n "$expected" ] || { echo "::error::Could not read certificate from the agent-test keystore"; exit 1; }
+          for apk in "$GITHUB_WORKSPACE"/app/build/outputs/apk/debug/*.apk; do
+            [ -f "$apk" ] || continue
+            actual="$(
+              "$APKSIGNER" verify --print-certs "$apk" \
+              | sed -nE 's/^.*SHA-256 digest: ([0-9A-Fa-f:]+)$/\1/p' \
+              | head -n1 | tr -d ':' | tr 'A-F' 'a-f'
+            )"
+            [ -n "$actual" ] || { echo "::error::Could not read signing certificate from $apk"; exit 1; }
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::$apk is NOT signed by the fixed agent-test keystore (expected $expected, got $actual)"
+              exit 1
+            fi
+            echo "$(basename "$apk") -> fixed agent-test key sha256: $actual"
+          done
 
       # Publish the debug APKs as a GitHub Release. Uses gh with the default
       # GITHUB_TOKEN (no PAT needed). If a Release already exists for this tag,

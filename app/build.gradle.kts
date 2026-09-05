@@ -1,4 +1,5 @@
 import com.android.build.api.dsl.Packaging
+import org.gradle.api.GradleException
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.gradle.api.tasks.testing.Test
@@ -53,6 +54,51 @@ android {
     }
 
     signingConfigs {
+        // Fixed signing identity for the me.rerere.rikkahub.agenttest debug/test package that CI
+        // builds and testers sideload. CI runs on fresh runners, so relying on AGP's throwaway
+        // ~/.android/debug.keystore changes the signing certificate every build and forces testers
+        // to uninstall before they can upgrade. Instead we keep ONE keystore that is never
+        // committed: it is supplied via local.properties agentTest* keys or the matching
+        // RIKKAHUB_AGENTTEST_* environment variables (the GitHub Actions workflows export these
+        // from repo Secrets). All four parts must be present together; a partial config fails the
+        // build instead of silently falling back to a random debug key.
+        val agentTestStorePath = localProperties.getProperty("agentTestStoreFile")
+            ?: System.getenv("RIKKAHUB_AGENTTEST_KEYSTORE")
+        val agentTestStorePassword = localProperties.getProperty("agentTestStorePassword")
+            ?: System.getenv("RIKKAHUB_AGENTTEST_STORE_PASSWORD")
+        val agentTestKeyAlias = localProperties.getProperty("agentTestKeyAlias")
+            ?: System.getenv("RIKKAHUB_AGENTTEST_KEY_ALIAS")
+        val agentTestKeyPassword = localProperties.getProperty("agentTestKeyPassword")
+            ?: System.getenv("RIKKAHUB_AGENTTEST_KEY_PASSWORD")
+        val agentTestProvidedParts = listOf(
+            agentTestStorePath,
+            agentTestStorePassword,
+            agentTestKeyAlias,
+            agentTestKeyPassword,
+        ).count { it != null }
+        if (agentTestProvidedParts > 0) {
+            require(agentTestProvidedParts == 4) {
+                "Incomplete agent-test signing config: provide agentTestStoreFile/agentTestStorePassword/" +
+                    "agentTestKeyAlias/agentTestKeyPassword together (local.properties) or " +
+                    "RIKKAHUB_AGENTTEST_KEYSTORE/_STORE_PASSWORD/_KEY_ALIAS/_KEY_PASSWORD together (env). " +
+                    "Refusing to sign the .agenttest package with a throwaway key."
+            }
+            val agentTestStoreFile = requireNotNull(agentTestStorePath).let(::file)
+            require(agentTestStoreFile.isFile) {
+                "agent-test keystore not found at ${agentTestStoreFile.absolutePath}. On CI it must be " +
+                    "materialised from secrets.RIKKAHUB_AGENTTEST_KEYSTORE_BASE64 before assembleDebug runs."
+            }
+            create("agentTest") {
+                storeFile = agentTestStoreFile
+                storePassword = requireNotNull(agentTestStorePassword)
+                keyAlias = requireNotNull(agentTestKeyAlias)
+                keyPassword = requireNotNull(agentTestKeyPassword)
+            }
+        }
+
+        // Personal/local debug identity (e.g. ~/.android/debug.keystore) so a maintainer's own
+        // debug installs keep updating over each other on their workstation. This is NOT the fixed
+        // CI identity — see the agentTest config above — so CI must not rely on it.
         val configuredDebugStore = localProperties.getProperty("debugStoreFile")
             ?: System.getenv("RIKKAHUB_DEBUG_KEYSTORE")
         val debugStoreFile = configuredDebugStore?.let(::file)
@@ -105,8 +151,25 @@ android {
             // installed applicationId (and visible versionName) are suffixed.
             applicationIdSuffix = ".agenttest"
             versionNameSuffix = "-test"
-            signingConfig = signingConfigs.findByName("legacyDebug")
-                ?: signingConfigs.getByName("debug")
+            // Fixed agent-test keystore when configured (always on the distributing CI jobs,
+            // optionally on a local machine that wants CI-identical builds). Without it, fall back
+            // to the maintainer's own legacy debug key, then AGP's throwaway debug key as a last
+            // resort for a clean workstation. RIKKAHUB_AGENTTEST_REQUIRED=true (exported by the CI
+            // workflows that distribute .agenttest builds) forbids that last-resort fallback so a
+            // missing secret fails the build loudly instead of silently re-randomising the signature.
+            val agentTestSigning = signingConfigs.findByName("agentTest")
+            if (agentTestSigning != null) {
+                signingConfig = agentTestSigning
+            } else if (System.getenv("RIKKAHUB_AGENTTEST_REQUIRED") == "true") {
+                throw GradleException(
+                    "RIKKAHUB_AGENTTEST_REQUIRED=true but the fixed agentTest signing config is not " +
+                        "configured. Refusing to build the .agenttest package with a throwaway debug key. " +
+                        "Make the RIKKAHUB_AGENTTEST_* secrets/keystore available (see docs/agenttest-fixed-signing.md).",
+                )
+            } else {
+                signingConfig = signingConfigs.findByName("legacyDebug")
+                    ?: signingConfigs.getByName("debug")
+            }
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
             buildConfigField("String", "UPDATE_API_URL", "\"\"")
