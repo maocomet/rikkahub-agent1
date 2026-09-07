@@ -30,6 +30,13 @@ object SecondUserToolsCatalog {
         val recommended: Boolean,
     )
 
+    /** "建议保持开启" but never hard-locked. */
+    val RECOMMENDED_FAMILIES: Set<OwnerToolFamily> = setOf(
+        OwnerToolFamily.SAFETY,
+        OwnerToolFamily.RUN,
+        OwnerToolFamily.DOCTOR,
+    )
+
     /** Every implemented privileged LocalToolOption, in canonical (surface) order. */
     val localEntries: List<LocalEntry> =
         SecondUserToolAllowlist.canonicalLocalOptions.map { option ->
@@ -41,13 +48,6 @@ object SecondUserToolsCatalog {
         SecondUserToolAllowlist.canonicalOwnerFamilies.map { family ->
             OwnerEntry(family = family, name = family.name, recommended = family in RECOMMENDED_FAMILIES)
         }
-
-    /** "建议保持开启" but never hard-locked. */
-    val RECOMMENDED_FAMILIES: Set<OwnerToolFamily> = setOf(
-        OwnerToolFamily.SAFETY,
-        OwnerToolFamily.RUN,
-        OwnerToolFamily.DOCTOR,
-    )
 
     fun localTitle(context: Context, entry: LocalEntry): String =
         resolveString(context, "second_user_tools_local_${entry.token}_title", R.string.second_user_tools_fallback_title)
