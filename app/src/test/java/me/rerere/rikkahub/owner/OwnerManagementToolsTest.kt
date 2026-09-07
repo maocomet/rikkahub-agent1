@@ -27,15 +27,18 @@ class OwnerManagementToolsTest {
     @Test
     fun `direct owner surface exposes every compact family without a discovery gate`() {
         SecondUserAuthorityRegistry.install(snapshot)
-        val tools = createOwnerManagementTools(context()) { request, _ ->
-            OwnerOperationResult(
-                ok = true,
-                requestId = request.requestId,
-                state = OwnerOperationState.COMMITTED,
-                code = "OK",
-                message = "ok",
-            )
-        }
+        val tools = createOwnerManagementTools(
+            invocationContext = context(),
+            gateway = { request, _ ->
+                OwnerOperationResult(
+                    ok = true,
+                    requestId = request.requestId,
+                    state = OwnerOperationState.COMMITTED,
+                    code = "OK",
+                    message = "ok",
+                )
+            },
+        )
 
         assertEquals(OwnerToolFamily.entries.size, tools.size)
         assertEquals(OwnerToolFamily.entries.map { it.toolName }.toSet(), tools.map { it.name }.toSet())
