@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.datastore
 
+import me.rerere.rikkahub.data.ai.tools.SecondUserToolAllowlist
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -53,5 +54,34 @@ class SecondUserToolSettingsSerializationTest {
         )
         assertEquals(setOf("termux", "future_unknown"), settings.secondUserEnabledLocalToolTokens)
         assertEquals(setOf("FUTURE_FAMILY"), settings.secondUserEnabledOwnerFamilyNames)
+    }
+
+    /**
+     * Regression: SettingsStore.update() must persist the allowlists as a plain SORTED
+     * List<String> JSON array — NOT `.toSortedSet()` (a TreeSet), which kotlinx.serialization
+     * polymorphic encoding rejects ("Serializer for subclass 'TreeSet' is not found ...").
+     * Pinning the exact written JSON shape here guards against reintroducing a SortedSet.
+     */
+    @Test
+    fun `allowlist write shape is a plain sorted json array and round-trips`() {
+        // Non-empty -> sorted JSON array of strings.
+        val nonEmpty = setOf("termux", "files")
+        val written = JsonInstant.encodeToString(nonEmpty.sorted())
+        assertEquals("[\"files\",\"termux\"]", written)
+        assertEquals(
+            nonEmpty,
+            SecondUserToolAllowlist.decodeOptionalStringSet(written),
+        )
+
+        // Explicit all-off -> empty JSON array (NOT absent/null).
+        val emptyWritten = JsonInstant.encodeToString(emptyList<String>())
+        assertEquals("[]", emptyWritten)
+        assertEquals(
+            emptySet<String>(),
+            SecondUserToolAllowlist.decodeOptionalStringSet(emptyWritten),
+        )
+
+        // null (follow default) corresponds to a missing key: the DataStore writer removes it.
+        assertNull(SecondUserToolAllowlist.decodeOptionalStringSet(null))
     }
 }

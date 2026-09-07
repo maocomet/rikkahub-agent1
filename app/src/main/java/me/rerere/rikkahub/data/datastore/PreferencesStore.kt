@@ -594,14 +594,17 @@ class SettingsStore(
             // Second-user tool allowlists are three-state: null must REMOVE the key so the user
             // keeps "follow the current full surface" (future tools auto-enable) rather than
             // being pinned to an explicit full snapshot. [] = explicit all-off, non-empty =
-            // explicit allowlist. Values are written sorted so deltas stay deterministic.
+            // explicit allowlist.
+            // Values are written as a SORTED plain List<String> JSON array (NOT .toSortedSet(),
+            // which produces a TreeSet that kotlinx.serialization polymorphic encoding cannot
+            // serialize) so deltas stay deterministic and decoding stays a plain JSON array.
             settings.secondUserEnabledLocalToolTokens?.let { tokens ->
                 preferences[SECOND_USER_ENABLED_LOCAL_TOOL_TOKENS] =
-                    JsonInstant.encodeToString(tokens.toSortedSet())
+                    JsonInstant.encodeToString(tokens.sorted())
             } ?: preferences.remove(SECOND_USER_ENABLED_LOCAL_TOOL_TOKENS)
             settings.secondUserEnabledOwnerFamilyNames?.let { names ->
                 preferences[SECOND_USER_ENABLED_OWNER_FAMILY_NAMES] =
-                    JsonInstant.encodeToString(names.toSortedSet())
+                    JsonInstant.encodeToString(names.sorted())
             } ?: preferences.remove(SECOND_USER_ENABLED_OWNER_FAMILY_NAMES)
             preferences[QUICK_CAPTURE_SETTINGS] = JsonInstant.encodeToString(
                 settings.quickCaptureSettings.normalized()
