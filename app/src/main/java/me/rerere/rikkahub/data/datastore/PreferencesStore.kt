@@ -170,6 +170,8 @@ class SettingsStore(
         val SYSTEM_ASSISTANT_TARGET_ASSISTANT = stringPreferencesKey("system_assistant_target_assistant")
         val SECOND_USER_AUTHORITY = stringPreferencesKey("second_user_authority")
         val SECOND_USER_SECRET_ACCESS_MODE = stringPreferencesKey("second_user_secret_access_mode")
+        val SECOND_USER_ENABLED_LOCAL_TOOL_TOKENS = stringPreferencesKey("second_user_enabled_local_tool_tokens")
+        val SECOND_USER_ENABLED_OWNER_FAMILY_NAMES = stringPreferencesKey("second_user_enabled_owner_family_names")
         val QUICK_CAPTURE_SETTINGS = stringPreferencesKey("quick_capture_settings")
         val PET_OVERLAY_SELECTION = stringPreferencesKey("pet_overlay_selection")
         val REVERSE_GEOCODING_SETTINGS = stringPreferencesKey("reverse_geocoding_settings")
@@ -279,6 +281,14 @@ class SettingsStore(
                     me.rerere.rikkahub.security.SecondUserSecretAccessMode.entries
                         .firstOrNull { it.name == raw }
                 } ?: me.rerere.rikkahub.security.SecondUserSecretAccessMode.USE_ONLY,
+                secondUserEnabledLocalToolTokens =
+                    me.rerere.rikkahub.data.ai.tools.SecondUserToolAllowlist.decodeOptionalStringSet(
+                        preferences[SECOND_USER_ENABLED_LOCAL_TOOL_TOKENS],
+                    ),
+                secondUserEnabledOwnerFamilyNames =
+                    me.rerere.rikkahub.data.ai.tools.SecondUserToolAllowlist.decodeOptionalStringSet(
+                        preferences[SECOND_USER_ENABLED_OWNER_FAMILY_NAMES],
+                    ),
                 quickCaptureSettings = preferences[QUICK_CAPTURE_SETTINGS]
                     ?.let { value ->
                         runCatching {
@@ -581,6 +591,18 @@ class SettingsStore(
                 settings.secondUserAuthority.normalized(),
             )
             preferences[SECOND_USER_SECRET_ACCESS_MODE] = settings.secondUserSecretAccessMode.name
+            // Second-user tool allowlists are three-state: null must REMOVE the key so the user
+            // keeps "follow the current full surface" (future tools auto-enable) rather than
+            // being pinned to an explicit full snapshot. [] = explicit all-off, non-empty =
+            // explicit allowlist. Values are written sorted so deltas stay deterministic.
+            settings.secondUserEnabledLocalToolTokens?.let { tokens ->
+                preferences[SECOND_USER_ENABLED_LOCAL_TOOL_TOKENS] =
+                    JsonInstant.encodeToString(tokens.toSortedSet())
+            } ?: preferences.remove(SECOND_USER_ENABLED_LOCAL_TOOL_TOKENS)
+            settings.secondUserEnabledOwnerFamilyNames?.let { names ->
+                preferences[SECOND_USER_ENABLED_OWNER_FAMILY_NAMES] =
+                    JsonInstant.encodeToString(names.toSortedSet())
+            } ?: preferences.remove(SECOND_USER_ENABLED_OWNER_FAMILY_NAMES)
             preferences[QUICK_CAPTURE_SETTINGS] = JsonInstant.encodeToString(
                 settings.quickCaptureSettings.normalized()
             )
@@ -828,6 +850,21 @@ data class Settings(
     val secondUserAuthority: SecondUserAuthorityConfig = SecondUserAuthorityConfig(),
     val secondUserSecretAccessMode: me.rerere.rikkahub.security.SecondUserSecretAccessMode =
         me.rerere.rikkahub.security.SecondUserSecretAccessMode.USE_ONLY,
+    /**
+     * Wire-type tokens of the LocalToolOption families the active local second user may use.
+     * THREE-state (see [me.rerere.rikkahub.data.ai.tools.SecondUserToolAllowlist]):
+     * null = follow the current full `PRIVILEGED_IMPLEMENTED` surface (future tools auto-enabled),
+     * []   = user explicitly disabled all local families,
+     * non-empty = explicit allowlist (fail-closed for future additions).
+     * Default null keeps old settings (missing key) following the full surface; a missing field in
+     * a backup/legacy JSON decodes to null too.
+     */
+    val secondUserEnabledLocalToolTokens: Set<String>? = null,
+    /**
+     * `OwnerToolFamily.name` set the second-user Owner management surface may expose. Same
+     * three-state semantics as [secondUserEnabledLocalToolTokens]; default null = all families.
+     */
+    val secondUserEnabledOwnerFamilyNames: Set<String>? = null,
     val quickCaptureSettings: QuickCaptureSettings = QuickCaptureSettings(),
     val petOverlaySelection: PetOverlaySelection? = null,
     val reverseGeocodingSettings: ReverseGeocodingSettings = ReverseGeocodingSettings(),

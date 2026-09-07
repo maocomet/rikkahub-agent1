@@ -22,11 +22,20 @@ import me.rerere.rikkahub.owner.OwnerActionRegistry
 import me.rerere.rikkahub.owner.OwnerFamilySpec
 import me.rerere.rikkahub.owner.OwnerToolFamily
 
-/** Stable, compact host-management schemas. Every call performs 1-20 ordered actions. */
+/**
+ * Stable, compact host-management schemas. Every call performs 1-20 ordered actions.
+ *
+ * [enabledFamilies] only narrows the MODEL-FACING schema generation (which owner families the
+ * model can see/invoke this turn). `null` keeps every family (legacy behaviour). The runtime
+ * OwnerActionRegistry / gateway / handlers / authority are intentionally untouched.
+ */
 fun createOwnerManagementTools(
     invocationContext: ToolInvocationContext,
     gateway: OwnerOperationGateway,
-): List<Tool> = OwnerActionRegistry.families.map { spec ->
+    enabledFamilies: Set<OwnerToolFamily>? = null,
+): List<Tool> = OwnerActionRegistry.families
+    .filter { spec -> enabledFamilies == null || spec.family in enabledFamilies }
+    .map { spec ->
     Tool(
         name = spec.family.toolName,
         description = spec.description + " Supply one stable request_id and 1-20 ordered actions; " +

@@ -2829,4 +2829,205 @@
   <string name="agent_learning_curator_split">Split candidate</string>
   <string name="agent_learning_curator_supersede">Supersede candidate</string>
   <string name="learning_positive_actions_disabled">Positive Learning actions are off in Agent Runtime settings. Revoke, suspend, archive, rollback, retention, and erase remain available.</string>
-</resources>
+  <string name="second_user_tools_title" formatted="false">Second-user tools</string>
+  <string name="second_user_tools_desc" formatted="false">Choose which tool families the local second user can use. Turned-off families are not built and never sent to the model. Ordinary assistants keep their own settings.</string>
+  <string name="second_user_tools_intro_follow" formatted="false">Following the full built-in surface — newly added tools appear automatically.</string>
+  <string name="second_user_tools_intro_custom" formatted="false">Custom allowlist — newly added tools stay off until you enable them.</string>
+  <string name="second_user_tools_section_local" formatted="false">Device &amp; execution tools</string>
+  <string name="second_user_tools_section_owner" formatted="false">RikkaHub management tools</string>
+  <string name="second_user_tools_enabled_of" formatted="false">%1$d / %2$d enabled</string>
+  <string name="second_user_tools_mode_follow" formatted="false">Following default</string>
+  <string name="second_user_tools_mode_custom" formatted="false">Custom</string>
+  <string name="second_user_tools_all_on" formatted="false">Enable all</string>
+  <string name="second_user_tools_all_off" formatted="false">Disable all</string>
+  <string name="second_user_tools_restore_default" formatted="false">Reset to default</string>
+  <string name="second_user_tools_recommended_badge" formatted="false">Keep on recommended</string>
+  <string name="second_user_tools_browser_sub" formatted="false">Master switch for the browser group; per-tool write toggles live on the Browser settings page.</string>
+  <string name="second_user_tools_fallback_title" formatted="false">Tool family</string>
+  <string name="second_user_tools_fallback_desc" formatted="false">Controls whether this tool family is available to the second user. Turning it off removes its tools from the model.</string>
+  <string name="second_user_tools_local_javascript_engine_title" formatted="false">JavaScript</string>
+  <string name="second_user_tools_local_javascript_engine_desc" formatted="false">Runs JavaScript snippets (QuickJS). Turning this off removes eval_javascript from the model surface.</string>
+  <string name="second_user_tools_local_time_info_title" formatted="false">Time &amp; date</string>
+  <string name="second_user_tools_local_time_info_desc" formatted="false">Reads current device time, date and timezone. Turning this off removes get_time_info.</string>
+  <string name="second_user_tools_local_clipboard_title" formatted="false">Clipboard</string>
+  <string name="second_user_tools_local_clipboard_desc" formatted="false">Reads and writes plain text to the clipboard. Turning this off removes the clipboard tool.</string>
+  <string name="second_user_tools_local_tts_title" formatted="false">Text to speech</string>
+  <string name="second_user_tools_local_tts_desc" formatted="false">Speaks text aloud and manages the saved TTS library. Turning this off removes TTS tools.</string>
+  <string name="second_user_tools_local_ask_user_title" formatted="false">Ask the user</string>
+  <string name="second_user_tools_local_ask_user_desc" formatted="false">Asks you clarifying questions with optional options. Turning this off removes the ask_user tool.</string>
+  <string name="second_user_tools_local_screen_time_title" formatted="false">Screen time</string>
+  <string name="second_user_tools_local_screen_time_desc" formatted="false">Reads app screen-usage statistics. Turning this off removes get_screen_time.</string>
+  <string name="second_user_tools_local_calendar_title" formatted="false">Calendar</string>
+  <string name="second_user_tools_local_calendar_desc" formatted="false">Queries, creates, updates and deletes calendar events. Turning this off removes calendar tools.</string>
+  <string name="second_user_tools_local_battery_title" formatted="false">Battery</string>
+  <string name="second_user_tools_local_battery_desc" formatted="false">Reads battery status. Turning this off removes the battery tool.</string>
+  <string name="second_user_tools_local_audio_info_title" formatted="false">Audio info</string>
+  <string name="second_user_tools_local_audio_info_desc" formatted="false">Reads current audio output info. Turning this off removes the audio tool.</string>
+  <string name="second_user_tools_local_telephony_info_title" formatted="false">Telephony info</string>
+  <string name="second_user_tools_local_telephony_info_desc" formatted="false">Reads network/telephony info such as carrier and signal. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_wifi_info_title" formatted="false">Wi-Fi info</string>
+  <string name="second_user_tools_local_wifi_info_desc" formatted="false">Reads current Wi-Fi connection info. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_sensors_title" formatted="false">Device sensors</string>
+  <string name="second_user_tools_local_sensors_desc" formatted="false">Lists and reads accelerometer and other device sensors. Turning this off removes sensor tools.</string>
+  <string name="second_user_tools_local_health_sensors_title" formatted="false">Health sensors</string>
+  <string name="second_user_tools_local_health_sensors_desc" formatted="false">Lists and reads health sensors (heart rate etc). Turning this off removes them.</string>
+  <string name="second_user_tools_local_storage_info_title" formatted="false">Storage info</string>
+  <string name="second_user_tools_local_storage_info_desc" formatted="false">Reads internal storage usage. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_toast_title" formatted="false">Toast</string>
+  <string name="second_user_tools_local_toast_desc" formatted="false">Shows a short on-screen toast. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_notification_title" formatted="false">Post notification</string>
+  <string name="second_user_tools_local_notification_desc" formatted="false">Posts a local notification. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_share_title" formatted="false">Share</string>
+  <string name="second_user_tools_local_share_desc" formatted="false">Opens the system share sheet with text. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_torch_title" formatted="false">Flashlight</string>
+  <string name="second_user_tools_local_torch_desc" formatted="false">Toggles the camera flashlight. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_vibrate_title" formatted="false">Vibrate</string>
+  <string name="second_user_tools_local_vibrate_desc" formatted="false">Vibrates the device. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_brightness_title" formatted="false">Brightness</string>
+  <string name="second_user_tools_local_brightness_desc" formatted="false">Reads and sets screen brightness. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_volume_title" formatted="false">Volume</string>
+  <string name="second_user_tools_local_volume_desc" formatted="false">Reads and sets media/ring volume. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_media_player_title" formatted="false">Media playback</string>
+  <string name="second_user_tools_local_media_player_desc" formatted="false">Plays, stops and seeks media playback. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_media_scanner_title" formatted="false">Media scanner</string>
+  <string name="second_user_tools_local_media_scanner_desc" formatted="false">Triggers a media-library rescan. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_download_title" formatted="false">Download file</string>
+  <string name="second_user_tools_local_download_desc" formatted="false">Downloads a file and writes a text file to storage. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_location_title" formatted="false">Location</string>
+  <string name="second_user_tools_local_location_desc" formatted="false">Gets the current GPS/location with reverse geocoding. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_contacts_title" formatted="false">Contacts</string>
+  <string name="second_user_tools_local_contacts_desc" formatted="false">Searches and lists contacts. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_call_log_title" formatted="false">Call log</string>
+  <string name="second_user_tools_local_call_log_desc" formatted="false">Reads recent call history. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_sms_inbox_title" formatted="false">SMS inbox</string>
+  <string name="second_user_tools_local_sms_inbox_desc" formatted="false">Lists and searches received SMS. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_camera_photo_title" formatted="false">Camera photo</string>
+  <string name="second_user_tools_local_camera_photo_desc" formatted="false">Takes a photo. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_mic_recorder_title" formatted="false">Record audio</string>
+  <string name="second_user_tools_local_mic_recorder_desc" formatted="false">Records audio via the microphone. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_speech_to_text_title" formatted="false">Speech to text</string>
+  <string name="second_user_tools_local_speech_to_text_desc" formatted="false">Transcribes speech to text. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_fingerprint_title" formatted="false">Fingerprint</string>
+  <string name="second_user_tools_local_fingerprint_desc" formatted="false">Requests a fingerprint/biometric check. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_cron_jobs_title" formatted="false">Scheduled tasks</string>
+  <string name="second_user_tools_local_cron_jobs_desc" formatted="false">Creates, views, pauses and runs scheduled tasks. Turning this off removes them from the model.</string>
+  <string name="second_user_tools_local_ssh_title" formatted="false">SSH</string>
+  <string name="second_user_tools_local_ssh_desc" formatted="false">Runs commands and transfers files over saved SSH hosts. Turning this off removes the SSH tools.</string>
+  <string name="second_user_tools_local_telegram_bot_title" formatted="false">Telegram bot</string>
+  <string name="second_user_tools_local_telegram_bot_desc" formatted="false">Configures the Telegram bot and sends messages/photos/documents. Turning this off removes them.</string>
+  <string name="second_user_tools_local_screen_automation_title" formatted="false">Screen automation</string>
+  <string name="second_user_tools_local_screen_automation_desc" formatted="false">Taps, swipes, types, reads the window tree and screenshots the screen. Turning this off removes them.</string>
+  <string name="second_user_tools_local_app_launcher_title" formatted="false">App launcher</string>
+  <string name="second_user_tools_local_app_launcher_desc" formatted="false">Launches apps, lists installed apps and opens URLs. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_termux_title" formatted="false">Termux / Linux</string>
+  <string name="second_user_tools_local_termux_desc" formatted="false">Runs commands in Termux and manages Linux/terminal sessions. Turning this off removes the Termux/Linux tools.</string>
+  <string name="second_user_tools_local_notification_listener_title" formatted="false">Notifications</string>
+  <string name="second_user_tools_local_notification_listener_desc" formatted="false">Lists, dismisses and acts on notifications. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_files_title" formatted="false">Files</string>
+  <string name="second_user_tools_local_files_desc" formatted="false">Lists, reads, writes, copies, moves and finds local files. Turning this off removes the file tools.</string>
+  <string name="second_user_tools_local_mcp_control_title" formatted="false">MCP management</string>
+  <string name="second_user_tools_local_mcp_control_desc" formatted="false">Manages local MCP servers and their approval settings. Turning this off removes the MCP-control tools.</string>
+  <string name="second_user_tools_local_external_automation_title" formatted="false">External automation</string>
+  <string name="second_user_tools_local_external_automation_desc" formatted="false">Configures trusted external automation packages. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_reliability_title" formatted="false">Reliability</string>
+  <string name="second_user_tools_local_reliability_desc" formatted="false">Checks for app updates and generates bug reports. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_sub_agents_title" formatted="false">Sub-agents</string>
+  <string name="second_user_tools_local_sub_agents_desc" formatted="false">Dispatches focused sub-agents and research tasks. Turning this off removes them.</string>
+  <string name="second_user_tools_local_cost_guards_title" formatted="false">Token budget</string>
+  <string name="second_user_tools_local_cost_guards_desc" formatted="false">Checks token usage against your budget. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_workflows_title" formatted="false">Workflows</string>
+  <string name="second_user_tools_local_workflows_desc" formatted="false">Creates, edits, enables and runs multi-step workflows. Turning this off removes the workflow tools.</string>
+  <string name="second_user_tools_local_skill_import_title" formatted="false">Skill import</string>
+  <string name="second_user_tools_local_skill_import_desc" formatted="false">Installs skills from a URL or pasted text. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_js_skills_title" formatted="false">JS skills</string>
+  <string name="second_user_tools_local_js_skills_desc" formatted="false">Runs installed JavaScript skills. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_system_intents_title" formatted="false">System intents</string>
+  <string name="second_user_tools_local_system_intents_desc" formatted="false">Creates calendar/contact, sends email/SMS intents, opens Wi-Fi/map. Turning this off removes them.</string>
+  <string name="second_user_tools_local_browser_title" formatted="false">Browser</string>
+  <string name="second_user_tools_local_browser_desc" formatted="false">Drives the in-app browser: open, read, screenshot, click etc. Per-tool write switches stay on the Browser page.</string>
+  <string name="second_user_tools_local_web_fetch_title" formatted="false">Web fetch</string>
+  <string name="second_user_tools_local_web_fetch_desc" formatted="false">Fetches a URL and returns its content. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_sms_send_title" formatted="false">Send SMS</string>
+  <string name="second_user_tools_local_sms_send_desc" formatted="false">Sends an SMS. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_wallpaper_title" formatted="false">Wallpaper</string>
+  <string name="second_user_tools_local_wallpaper_desc" formatted="false">Sets the home/lock wallpaper. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_keystore_title" formatted="false">Keystore</string>
+  <string name="second_user_tools_local_keystore_desc" formatted="false">Generates keys, signs, encrypts/decrypts via the Android Keystore. Turning this off removes them.</string>
+  <string name="second_user_tools_local_nfc_title" formatted="false">NFC</string>
+  <string name="second_user_tools_local_nfc_desc" formatted="false">Reads and writes NFC tags. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_external_storage_title" formatted="false">Storage volumes</string>
+  <string name="second_user_tools_local_external_storage_desc" formatted="false">Lists storage volumes and grants/reads SAF directories. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_archive_title" formatted="false">Archive</string>
+  <string name="second_user_tools_local_archive_desc" formatted="false">Zips and unzips files. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_alarm_title" formatted="false">Alarms</string>
+  <string name="second_user_tools_local_alarm_desc" formatted="false">Creates, lists and deletes device alarms. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_media_library_title" formatted="false">Media library</string>
+  <string name="second_user_tools_local_media_library_desc" formatted="false">Lists images and audio in the media library. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_media_write_title" formatted="false">Media write</string>
+  <string name="second_user_tools_local_media_write_desc" formatted="false">Copies and moves media within the shared library. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_bluetooth_devices_title" formatted="false">Bluetooth devices</string>
+  <string name="second_user_tools_local_bluetooth_devices_desc" formatted="false">Lists paired Bluetooth devices and scans nearby ones. Turning this off removes the tools.</string>
+  <string name="second_user_tools_local_nearby_devices_title" formatted="false">Nearby devices</string>
+  <string name="second_user_tools_local_nearby_devices_desc" formatted="false">Scans for nearby devices. Turning this off removes the scan tool.</string>
+  <string name="second_user_tools_local_external_privilege_bridge_title" formatted="false">Shizuku bridge</string>
+  <string name="second_user_tools_local_external_privilege_bridge_desc" formatted="false">Lists packages and force-stops/clears cache through the Shizuku bridge. Turning this off removes them.</string>
+  <string name="second_user_tools_local_step_counter_title" formatted="false">Step counter</string>
+  <string name="second_user_tools_local_step_counter_desc" formatted="false">Reads the step counter. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_export_conversation_title" formatted="false">Export conversation</string>
+  <string name="second_user_tools_local_export_conversation_desc" formatted="false">Exports the current conversation. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_phone_actions_title" formatted="false">Call phone</string>
+  <string name="second_user_tools_local_phone_actions_desc" formatted="false">Places a phone call. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_package_management_title" formatted="false">Install APK</string>
+  <string name="second_user_tools_local_package_management_desc" formatted="false">Installs an APK. Turning this off removes the tool.</string>
+  <string name="second_user_tools_local_keyboard_control_title" formatted="false">Keyboard control</string>
+  <string name="second_user_tools_local_keyboard_control_desc" formatted="false">Types/reads the active text field through the agent keyboard. Turning this off removes the tools.</string>
+  <string name="second_user_tools_owner_assistant_title" formatted="false">Assistant management</string>
+  <string name="second_user_tools_owner_assistant_desc" formatted="false">Creates, clones, updates and deletes ordinary assistants, and switches models/TTS. Turning this off removes these Owner actions from the model.</string>
+  <string name="second_user_tools_owner_conversation_title" formatted="false">Conversation management</string>
+  <string name="second_user_tools_owner_conversation_desc" formatted="false">Creates, branches, archives and deletes ordinary conversations. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_provider_title" formatted="false">Provider management</string>
+  <string name="second_user_tools_owner_provider_desc" formatted="false">Manages model providers, models and default selection. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_secret_title" formatted="false">Secret vault</string>
+  <string name="second_user_tools_owner_secret_desc" formatted="false">Manages Vault slots/bindings and a user-enabled plaintext session. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_tts_title" formatted="false">TTS management</string>
+  <string name="second_user_tools_owner_tts_desc" formatted="false">Manages TTS providers, playback speed and cached artifacts. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_service_title" formatted="false">Local services</string>
+  <string name="second_user_tools_owner_service_desc" formatted="false">Registers and supervises local Workspace/Termux services. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_mcp_title" formatted="false">MCP servers</string>
+  <string name="second_user_tools_owner_mcp_desc" formatted="false">Discovers, installs, tests, updates and binds MCP servers. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_skill_title" formatted="false">Skill management</string>
+  <string name="second_user_tools_owner_skill_desc" formatted="false">Installs, updates, tests and uninstalls skills. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_workflow_title" formatted="false">Workflow / schedule</string>
+  <string name="second_user_tools_owner_workflow_desc" formatted="false">Creates, runs and deletes workflows, schedules and alarms. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_ui_title" formatted="false">UI navigation</string>
+  <string name="second_user_tools_owner_ui_desc" formatted="false">Navigates to typed pages or a conversation. Turning this off removes the tools.</string>
+  <string name="second_user_tools_owner_doctor_title" formatted="false">Doctor</string>
+  <string name="second_user_tools_owner_doctor_desc" formatted="false">Reads redacted runtime diagnostics and runs safe repairs. Recommended to keep on.</string>
+  <string name="second_user_tools_owner_run_title" formatted="false">Run control</string>
+  <string name="second_user_tools_owner_run_desc" formatted="false">Views, cancels and retries the current runs. Recommended to keep on.</string>
+  <string name="second_user_tools_owner_quick_capture_title" formatted="false">Quick Capture</string>
+  <string name="second_user_tools_owner_quick_capture_desc" formatted="false">Reads and configures Quick Capture, and triggers its surface. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_plugin_title" formatted="false">Plugins</string>
+  <string name="second_user_tools_owner_plugin_desc" formatted="false">Installs, approves, enables, binds and uninstalls plugins. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_memory_title" formatted="false">Memory management</string>
+  <string name="second_user_tools_owner_memory_desc" formatted="false">Inspects memory/dream status and configures assistant memory behaviour. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_prompt_library_title" formatted="false">Prompt / Lorebook</string>
+  <string name="second_user_tools_owner_prompt_library_desc" formatted="false">Manages quick messages, prompt injections and lorebooks. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_asr_title" formatted="false">ASR profiles</string>
+  <string name="second_user_tools_owner_asr_desc" formatted="false">Manages speech-recognition profiles. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_channel_title" formatted="false">Channels</string>
+  <string name="second_user_tools_owner_channel_desc" formatted="false">Inspects and configures local Web/Telegram channels. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_search_title" formatted="false">Search services</string>
+  <string name="second_user_tools_owner_search_desc" formatted="false">Inspects and selects configured search services. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_backup_storage_title" formatted="false">Backup / storage</string>
+  <string name="second_user_tools_owner_backup_storage_desc" formatted="false">Creates local archives or restores while preserving Owner identity. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_app_settings_title" formatted="false">App settings</string>
+  <string name="second_user_tools_owner_app_settings_desc" formatted="false">Reads and updates appearance, performance and notification settings. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_runtime_title" formatted="false">Runtime</string>
+  <string name="second_user_tools_owner_runtime_desc" formatted="false">Inspects and configures local runtime bridges. Turning this off removes them.</string>
+  <string name="second_user_tools_owner_safety_title" formatted="false">Safety control</string>
+  <string name="second_user_tools_owner_safety_desc" formatted="false">Views safety capabilities and can trigger Emergency Stop. Recommended to keep on.</string>
+  <string name="second_user_tools_owner_pet_title" formatted="false">Pet</string>
+  <string name="second_user_tools_owner_pet_desc" formatted="false">Manages the desktop-pet package library and settings. Turning this off removes them.</string>
+    <string name="second_user_tools_all_off_note" formatted="false">Disabling families only narrows what the model can see and invoke. Authority, approvals, HARDLINE and Emergency Stop are never affected.</string>
+  </resources>

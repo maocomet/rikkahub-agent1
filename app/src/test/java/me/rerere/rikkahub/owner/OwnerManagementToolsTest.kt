@@ -64,6 +64,67 @@ class OwnerManagementToolsTest {
         assertTrue(ownerActionGuideCoverageGaps().isEmpty())
     }
 
+    @Test
+    fun `filtering a family removes only that family's model-facing schema`() {
+        SecondUserAuthorityRegistry.install(snapshot)
+        val enabled = OwnerToolFamily.entries - OwnerToolFamily.DOCTOR
+        val tools = createOwnerManagementTools(
+            invocationContext = context(),
+            gateway = { request, _ ->
+                OwnerOperationResult(
+                    ok = true,
+                    requestId = request.requestId,
+                    state = OwnerOperationState.COMMITTED,
+                    code = "OK",
+                    message = "ok",
+                )
+            },
+            enabledFamilies = enabled.toSet(),
+        )
+
+        assertEquals(enabled.size, tools.size)
+        val names = tools.map { it.name }.toSet()
+        assertFalse(OwnerToolFamily.DOCTOR.toolName in names)
+        assertEquals(
+            enabled.map { it.toolName }.toSet(),
+            names,
+        )
+    }
+
+    @Test
+    fun `owner factory with null families keeps every family and empty disables all`() {
+        SecondUserAuthorityRegistry.install(snapshot)
+        val all = createOwnerManagementTools(
+            invocationContext = context(),
+            gateway = { request, _ ->
+                OwnerOperationResult(
+                    ok = true,
+                    requestId = request.requestId,
+                    state = OwnerOperationState.COMMITTED,
+                    code = "OK",
+                    message = "ok",
+                )
+            },
+            enabledFamilies = null,
+        )
+        assertEquals(OwnerToolFamily.entries.size, all.size)
+
+        val none = createOwnerManagementTools(
+            invocationContext = context(),
+            gateway = { request, _ ->
+                OwnerOperationResult(
+                    ok = true,
+                    requestId = request.requestId,
+                    state = OwnerOperationState.COMMITTED,
+                    code = "OK",
+                    message = "ok",
+                )
+            },
+            enabledFamilies = emptySet(),
+        )
+        assertTrue(none.isEmpty())
+    }
+
     private fun context() = ToolInvocationContext(
         callerAssistantId = assistantId.toString(),
         callerConversationId = conversationId.toString(),

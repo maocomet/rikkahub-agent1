@@ -207,6 +207,12 @@ fun SecondUserAuthorityRecoveryPage(
                             ) {
                                 Text(stringResource(R.string.second_user_tool_library_title))
                             }
+                            TextButton(
+                                enabled = !busy,
+                                onClick = { navigator.navigate(Screen.SecondUserTools) },
+                            ) {
+                                Text(stringResource(R.string.second_user_tools_title))
+                            }
                         }
                     }
                 }

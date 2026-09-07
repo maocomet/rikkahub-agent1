@@ -2675,4 +2675,205 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="agent_learning_curator_split">拆分候选项</string>
   <string name="agent_learning_curator_supersede">取代候选项</string>
   <string name="learning_positive_actions_disabled">Agent Runtime 设置中的正向学习操作已关闭。撤销、暂停、归档、回滚、保留清理和擦除仍可使用。</string>
-</resources>
+  <string name="second_user_tools_title" formatted="false">第二用户工具</string>
+  <string name="second_user_tools_desc" formatted="false">选择本机第二用户可用的工具功能族。关闭的功能族不会被构造，也就不会发送给模型；普通助手仍使用各自的工具设置。</string>
+  <string name="second_user_tools_intro_follow" formatted="false">跟随完整内置工具集——未来新增工具会自动启用。</string>
+  <string name="second_user_tools_intro_custom" formatted="false">自定义白名单——未来新增工具默认关闭，需手动启用。</string>
+  <string name="second_user_tools_section_local" formatted="false">设备与执行工具</string>
+  <string name="second_user_tools_section_owner" formatted="false">RikkaHub 管理工具</string>
+  <string name="second_user_tools_enabled_of" formatted="false">已启用 %1$d / %2$d</string>
+  <string name="second_user_tools_mode_follow" formatted="false">跟随默认</string>
+  <string name="second_user_tools_mode_custom" formatted="false">自定义</string>
+  <string name="second_user_tools_all_on" formatted="false">全部开启</string>
+  <string name="second_user_tools_all_off" formatted="false">全部关闭</string>
+  <string name="second_user_tools_restore_default" formatted="false">恢复默认</string>
+  <string name="second_user_tools_recommended_badge" formatted="false">建议保持开启</string>
+  <string name="second_user_tools_browser_sub" formatted="false">浏览器功能组的开关；更细粒度的写入开关在浏览器设置页。</string>
+  <string name="second_user_tools_fallback_title" formatted="false">工具功能族</string>
+  <string name="second_user_tools_fallback_desc" formatted="false">控制该功能族是否对第二用户可用。关闭后其工具不会发送给模型。</string>
+  <string name="second_user_tools_local_javascript_engine_title" formatted="false">JavaScript 引擎</string>
+  <string name="second_user_tools_local_javascript_engine_desc" formatted="false">允许执行 JavaScript 代码片段。关闭后，eval_javascript 不会发送给模型。</string>
+  <string name="second_user_tools_local_time_info_title" formatted="false">时间与日期</string>
+  <string name="second_user_tools_local_time_info_desc" formatted="false">允许读取当前设备时间、日期和时区。关闭后，时间工具不会发送给模型。</string>
+  <string name="second_user_tools_local_clipboard_title" formatted="false">剪贴板</string>
+  <string name="second_user_tools_local_clipboard_desc" formatted="false">允许读取和写入剪贴板文本。关闭后，剪贴板工具不会发送给模型。</string>
+  <string name="second_user_tools_local_tts_title" formatted="false">语音朗读（TTS）</string>
+  <string name="second_user_tools_local_tts_desc" formatted="false">允许把文字朗读出来并管理已保存的语音库。关闭后，相关 TTS 工具不会发送给模型。</string>
+  <string name="second_user_tools_local_ask_user_title" formatted="false">向用户提问</string>
+  <string name="second_user_tools_local_ask_user_desc" formatted="false">允许向你提出澄清问题并提供选项。关闭后，提问工具不会发送给模型。</string>
+  <string name="second_user_tools_local_screen_time_title" formatted="false">屏幕使用时长</string>
+  <string name="second_user_tools_local_screen_time_desc" formatted="false">允许读取各应用的使用时长统计。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_calendar_title" formatted="false">日历</string>
+  <string name="second_user_tools_local_calendar_desc" formatted="false">允许查询、创建、更新和删除日历事件。关闭后，相关日历工具不会发送给模型。</string>
+  <string name="second_user_tools_local_battery_title" formatted="false">电量</string>
+  <string name="second_user_tools_local_battery_desc" formatted="false">允许读取电池状态。关闭后，电量工具不会发送给模型。</string>
+  <string name="second_user_tools_local_audio_info_title" formatted="false">音频信息</string>
+  <string name="second_user_tools_local_audio_info_desc" formatted="false">允许读取当前音频输出信息。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_telephony_info_title" formatted="false">电话网络信息</string>
+  <string name="second_user_tools_local_telephony_info_desc" formatted="false">允许读取运营商、信号等电话网络信息。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_wifi_info_title" formatted="false">Wi-Fi 信息</string>
+  <string name="second_user_tools_local_wifi_info_desc" formatted="false">允许读取当前 Wi-Fi 连接信息。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_sensors_title" formatted="false">设备传感器</string>
+  <string name="second_user_tools_local_sensors_desc" formatted="false">允许读取加速度计等设备传感器数据。关闭后，相关传感器工具不会发送给模型。</string>
+  <string name="second_user_tools_local_health_sensors_title" formatted="false">健康传感器</string>
+  <string name="second_user_tools_local_health_sensors_desc" formatted="false">允许读取心率等健康传感器数据。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_storage_info_title" formatted="false">存储信息</string>
+  <string name="second_user_tools_local_storage_info_desc" formatted="false">允许读取内部存储用量。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_toast_title" formatted="false">屏幕提示（Toast）</string>
+  <string name="second_user_tools_local_toast_desc" formatted="false">允许显示短暂的屏幕提示。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_notification_title" formatted="false">发送通知</string>
+  <string name="second_user_tools_local_notification_desc" formatted="false">允许发送本地系统通知。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_share_title" formatted="false">分享</string>
+  <string name="second_user_tools_local_share_desc" formatted="false">允许调起系统分享面板。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_torch_title" formatted="false">手电筒</string>
+  <string name="second_user_tools_local_torch_desc" formatted="false">允许开关摄像头闪光灯。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_vibrate_title" formatted="false">震动</string>
+  <string name="second_user_tools_local_vibrate_desc" formatted="false">允许让设备震动。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_brightness_title" formatted="false">屏幕亮度</string>
+  <string name="second_user_tools_local_brightness_desc" formatted="false">允许读取和设置屏幕亮度。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_volume_title" formatted="false">音量</string>
+  <string name="second_user_tools_local_volume_desc" formatted="false">允许读取和设置音量。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_media_player_title" formatted="false">媒体播放</string>
+  <string name="second_user_tools_local_media_player_desc" formatted="false">允许播放、停止和快进媒体。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_media_scanner_title" formatted="false">媒体扫描</string>
+  <string name="second_user_tools_local_media_scanner_desc" formatted="false">允许触发媒体库重扫。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_download_title" formatted="false">下载文件</string>
+  <string name="second_user_tools_local_download_desc" formatted="false">允许下载文件并写入文本文件。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_location_title" formatted="false">定位</string>
+  <string name="second_user_tools_local_location_desc" formatted="false">允许获取当前位置并反向解析地址。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_contacts_title" formatted="false">联系人</string>
+  <string name="second_user_tools_local_contacts_desc" formatted="false">允许搜索和列出联系人。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_call_log_title" formatted="false">通话记录</string>
+  <string name="second_user_tools_local_call_log_desc" formatted="false">允许读取最近通话记录。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_sms_inbox_title" formatted="false">短信收件箱</string>
+  <string name="second_user_tools_local_sms_inbox_desc" formatted="false">允许列出和搜索收到的短信。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_camera_photo_title" formatted="false">拍照</string>
+  <string name="second_user_tools_local_camera_photo_desc" formatted="false">允许调用相机拍照。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_mic_recorder_title" formatted="false">录音</string>
+  <string name="second_user_tools_local_mic_recorder_desc" formatted="false">允许用麦克风录音。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_speech_to_text_title" formatted="false">语音转文字</string>
+  <string name="second_user_tools_local_speech_to_text_desc" formatted="false">允许把语音转成文字。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_fingerprint_title" formatted="false">指纹验证</string>
+  <string name="second_user_tools_local_fingerprint_desc" formatted="false">允许进行指纹等生物识别校验。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_cron_jobs_title" formatted="false">定时任务</string>
+  <string name="second_user_tools_local_cron_jobs_desc" formatted="false">允许创建、查看、暂停、恢复和立即执行定时任务。关闭后，模型不能通过聊天管理定时任务。</string>
+  <string name="second_user_tools_local_ssh_title" formatted="false">SSH 远程</string>
+  <string name="second_user_tools_local_ssh_desc" formatted="false">允许通过已保存的 SSH 主机执行命令与传输文件。关闭后，相关 SSH 工具不会发送给模型。</string>
+  <string name="second_user_tools_local_telegram_bot_title" formatted="false">Telegram 机器人</string>
+  <string name="second_user_tools_local_telegram_bot_desc" formatted="false">允许配置 Telegram 机器人并发送消息、图片和文件。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_screen_automation_title" formatted="false">屏幕操作</string>
+  <string name="second_user_tools_local_screen_automation_desc" formatted="false">允许模拟点击、滑动、输入、读取界面并截图。关闭后，相关屏幕操作工具不会发送给模型。</string>
+  <string name="second_user_tools_local_app_launcher_title" formatted="false">启动应用</string>
+  <string name="second_user_tools_local_app_launcher_desc" formatted="false">允许启动应用、列出已装应用和打开链接。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_termux_title" formatted="false">Termux / Linux</string>
+  <string name="second_user_tools_local_termux_desc" formatted="false">允许在 Termux 中执行命令并管理终端/Linux 会话。关闭后，相关 Termux / Linux 工具不会发送给模型。</string>
+  <string name="second_user_tools_local_notification_listener_title" formatted="false">通知管理</string>
+  <string name="second_user_tools_local_notification_listener_desc" formatted="false">允许列出、关闭和处理系统通知。关闭后，相关通知工具不会发送给模型。</string>
+  <string name="second_user_tools_local_files_title" formatted="false">文件</string>
+  <string name="second_user_tools_local_files_desc" formatted="false">允许读取、写入、复制、移动和查找本地文件。关闭后，相关文件工具不会发送给模型。</string>
+  <string name="second_user_tools_local_mcp_control_title" formatted="false">MCP 管理</string>
+  <string name="second_user_tools_local_mcp_control_desc" formatted="false">允许管理本地 MCP 服务器及其审批设置。关闭后，MCP 管理工具不会发送给模型。</string>
+  <string name="second_user_tools_local_external_automation_title" formatted="false">外部自动化</string>
+  <string name="second_user_tools_local_external_automation_desc" formatted="false">允许配置受信任的外部自动化应用。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_reliability_title" formatted="false">可靠性工具</string>
+  <string name="second_user_tools_local_reliability_desc" formatted="false">允许检查更新和生成错误报告。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_sub_agents_title" formatted="false">子代理与调研</string>
+  <string name="second_user_tools_local_sub_agents_desc" formatted="false">允许派发聚焦子代理和调研任务。关闭后，相关子代理/调研工具不会发送给模型。</string>
+  <string name="second_user_tools_local_cost_guards_title" formatted="false">额度检查</string>
+  <string name="second_user_tools_local_cost_guards_desc" formatted="false">允许按预算检查 token 用量。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_workflows_title" formatted="false">Workflow 工作流</string>
+  <string name="second_user_tools_local_workflows_desc" formatted="false">允许创建、编辑、启停和运行多步工作流。关闭后，相关工作流工具不会发送给模型。</string>
+  <string name="second_user_tools_local_skill_import_title" formatted="false">技能导入</string>
+  <string name="second_user_tools_local_skill_import_desc" formatted="false">允许从链接或文本导入技能。关闭后，相关导入工具不会发送给模型。</string>
+  <string name="second_user_tools_local_js_skills_title" formatted="false">JS 技能运行</string>
+  <string name="second_user_tools_local_js_skills_desc" formatted="false">允许运行已安装的 JavaScript 技能。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_system_intents_title" formatted="false">系统 Intent</string>
+  <string name="second_user_tools_local_system_intents_desc" formatted="false">允许创建日程/联系人、发送邮件/短信、打开 Wi-Fi 与地图等系统操作。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_browser_title" formatted="false">浏览器</string>
+  <string name="second_user_tools_local_browser_desc" formatted="false">允许驱动应用内浏览器进行打开、读取、截图、点击等操作。更细粒度的写入开关仍在浏览器设置页。关闭后，浏览器工具不会发送给模型。</string>
+  <string name="second_user_tools_local_web_fetch_title" formatted="false">网页抓取（Web Fetch）</string>
+  <string name="second_user_tools_local_web_fetch_desc" formatted="false">允许抓取网页并返回内容。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_sms_send_title" formatted="false">发送短信</string>
+  <string name="second_user_tools_local_sms_send_desc" formatted="false">允许发送短信。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_wallpaper_title" formatted="false">壁纸</string>
+  <string name="second_user_tools_local_wallpaper_desc" formatted="false">允许设置桌面/锁屏壁纸。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_keystore_title" formatted="false">密钥库（Keystore）</string>
+  <string name="second_user_tools_local_keystore_desc" formatted="false">允许用系统密钥库生成密钥、签名、加密和解密。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_nfc_title" formatted="false">NFC</string>
+  <string name="second_user_tools_local_nfc_desc" formatted="false">允许读写 NFC 标签。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_external_storage_title" formatted="false">外部存储</string>
+  <string name="second_user_tools_local_external_storage_desc" formatted="false">允许列出存储卷并管理授权目录。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_archive_title" formatted="false">压缩与解压</string>
+  <string name="second_user_tools_local_archive_desc" formatted="false">允许压缩和解压文件。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_alarm_title" formatted="false">闹钟</string>
+  <string name="second_user_tools_local_alarm_desc" formatted="false">允许创建、查看和删除系统闹钟。关闭后，相关闹钟工具不会发送给模型。</string>
+  <string name="second_user_tools_local_media_library_title" formatted="false">媒体库浏览</string>
+  <string name="second_user_tools_local_media_library_desc" formatted="false">允许浏览媒体库中的图片和音频。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_media_write_title" formatted="false">媒体写入</string>
+  <string name="second_user_tools_local_media_write_desc" formatted="false">允许在共享媒体库中复制和移动媒体。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_bluetooth_devices_title" formatted="false">蓝牙设备</string>
+  <string name="second_user_tools_local_bluetooth_devices_desc" formatted="false">允许列出已配对设备并扫描附近设备。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_nearby_devices_title" formatted="false">周边设备</string>
+  <string name="second_user_tools_local_nearby_devices_desc" formatted="false">允许扫描周边蓝牙等设备。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_external_privilege_bridge_title" formatted="false">Shizuku 特权桥</string>
+  <string name="second_user_tools_local_external_privilege_bridge_desc" formatted="false">允许通过 Shizuku 列出应用、强停应用与清理缓存。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_local_step_counter_title" formatted="false">计步</string>
+  <string name="second_user_tools_local_step_counter_desc" formatted="false">允许读取计步数据。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_export_conversation_title" formatted="false">导出对话</string>
+  <string name="second_user_tools_local_export_conversation_desc" formatted="false">允许导出当前对话。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_phone_actions_title" formatted="false">拨打电话</string>
+  <string name="second_user_tools_local_phone_actions_desc" formatted="false">允许发起电话呼叫。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_package_management_title" formatted="false">安装应用（APK）</string>
+  <string name="second_user_tools_local_package_management_desc" formatted="false">允许安装 APK 应用。关闭后，该工具不会发送给模型。</string>
+  <string name="second_user_tools_local_keyboard_control_title" formatted="false">键盘控制</string>
+  <string name="second_user_tools_local_keyboard_control_desc" formatted="false">允许通过辅助键盘输入和读取当前文本框。关闭后，相关工具不会发送给模型。</string>
+  <string name="second_user_tools_owner_assistant_title" formatted="false">助手管理</string>
+  <string name="second_user_tools_owner_assistant_desc" formatted="false">允许创建、克隆、更新、删除普通助手并切换模型/TTS。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_conversation_title" formatted="false">对话管理</string>
+  <string name="second_user_tools_owner_conversation_desc" formatted="false">允许创建、分支、归档和删除普通对话。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_provider_title" formatted="false">Provider 管理</string>
+  <string name="second_user_tools_owner_provider_desc" formatted="false">允许管理模型服务商、模型与默认选择。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_secret_title" formatted="false">密钥库（Vault）</string>
+  <string name="second_user_tools_owner_secret_desc" formatted="false">允许管理密钥槽位、绑定与启用的明文会话。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_tts_title" formatted="false">TTS 管理</string>
+  <string name="second_user_tools_owner_tts_desc" formatted="false">允许管理 TTS 服务商、播放速度与缓存音频。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_service_title" formatted="false">本地服务</string>
+  <string name="second_user_tools_owner_service_desc" formatted="false">允许注册并守护 Workspace/Termux 本地服务。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_mcp_title" formatted="false">MCP 服务器</string>
+  <string name="second_user_tools_owner_mcp_desc" formatted="false">允许发现、安装、测试、更新和绑定 MCP 服务器。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_skill_title" formatted="false">Skill 管理</string>
+  <string name="second_user_tools_owner_skill_desc" formatted="false">允许安装、更新、测试和卸载技能。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_workflow_title" formatted="false">Workflow / 计划管理</string>
+  <string name="second_user_tools_owner_workflow_desc" formatted="false">允许创建、运行和删除工作流、计划任务与闹钟。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_ui_title" formatted="false">界面导航</string>
+  <string name="second_user_tools_owner_ui_desc" formatted="false">允许跳转到指定页面或对话。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_doctor_title" formatted="false">Doctor 诊断</string>
+  <string name="second_user_tools_owner_doctor_desc" formatted="false">允许读取脱敏的运行诊断并执行安全修复。建议保持开启。</string>
+  <string name="second_user_tools_owner_run_title" formatted="false">运行控制</string>
+  <string name="second_user_tools_owner_run_desc" formatted="false">允许查看、取消和重试当前运行任务。建议保持开启。</string>
+  <string name="second_user_tools_owner_quick_capture_title" formatted="false">Quick Capture</string>
+  <string name="second_user_tools_owner_quick_capture_desc" formatted="false">允许读取和配置快捷捕获并触发其界面。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_plugin_title" formatted="false">插件管理</string>
+  <string name="second_user_tools_owner_plugin_desc" formatted="false">允许安装、审批、启用、绑定和卸载插件。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_memory_title" formatted="false">记忆管理</string>
+  <string name="second_user_tools_owner_memory_desc" formatted="false">允许查看记忆/Dreaming 状态并配置记忆行为。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_prompt_library_title" formatted="false">提示词 / 世界书</string>
+  <string name="second_user_tools_owner_prompt_library_desc" formatted="false">允许管理快捷消息、提示注入与 Lorebook。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_asr_title" formatted="false">语音识别（ASR）</string>
+  <string name="second_user_tools_owner_asr_desc" formatted="false">允许管理语音识别服务。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_channel_title" formatted="false">渠道配置</string>
+  <string name="second_user_tools_owner_channel_desc" formatted="false">允许查看和配置本地 Web/Telegram 渠道。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_search_title" formatted="false">搜索服务</string>
+  <string name="second_user_tools_owner_search_desc" formatted="false">允许查看和选择已配置的搜索服务。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_backup_storage_title" formatted="false">备份与恢复</string>
+  <string name="second_user_tools_owner_backup_storage_desc" formatted="false">允许创建本地归档或恢复备份（保留 Owner 身份）。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_app_settings_title" formatted="false">应用设置</string>
+  <string name="second_user_tools_owner_app_settings_desc" formatted="false">允许读取和更新外观、性能与通知设置。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_runtime_title" formatted="false">运行时</string>
+  <string name="second_user_tools_owner_runtime_desc" formatted="false">允许查看和配置本地运行时桥。关闭后，这些 Owner 操作不会暴露给模型。</string>
+  <string name="second_user_tools_owner_safety_title" formatted="false">安全控制</string>
+  <string name="second_user_tools_owner_safety_desc" formatted="false">允许查看和调整安全能力，并触发紧急停止。建议保持开启。</string>
+  <string name="second_user_tools_owner_pet_title" formatted="false">桌面宠物</string>
+  <string name="second_user_tools_owner_pet_desc" formatted="false">允许管理桌面宠物库与设置。关闭后，这些 Owner 操作不会暴露给模型。</string>
+    <string name="second_user_tools_all_off_note" formatted="false">关闭功能族只会缩小模型可见与可调用的工具面，不会影响权限、审批、HARDLINE 或紧急停止等底层安全。</string>
+  </resources>

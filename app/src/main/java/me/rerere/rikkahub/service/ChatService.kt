@@ -3236,11 +3236,14 @@ class ChatService(
             } else {
                 null
             }
-            val localToolOptions = if (privilegeContext.expandLocalTools) {
-                me.rerere.rikkahub.data.ai.tools.LocalToolOption.PRIVILEGED_IMPLEMENTED
-            } else {
-                assistant.localTools
-            }
+            val localToolOptions = me.rerere.rikkahub.data.ai.tools.SecondUserToolAllowlist
+                .resolveLocalSurfaceTools(
+                    assistantLocalTools = assistant.localTools,
+                    // A selected local Second-user gets the full privileged surface restricted by
+                    // the owner-configured allowlist (null = follow current full = legacy behaviour).
+                    privileged = privilegeContext.expandLocalTools,
+                    privilegedEnabledTokens = settings.secondUserEnabledLocalToolTokens,
+                )
             val privilegedBridgeEnabled = agentSafetySettings
                 .privilegedBridgeEnabledFlow.first()
             val privilegedBridgeStatus = shizukuBridgeManager.status()
@@ -3711,6 +3714,10 @@ class ChatService(
                                 me.rerere.rikkahub.data.ai.tools.createOwnerManagementTools(
                                     invocationContext = invocationCtx,
                                     gateway = ownerOperationGateway,
+                                    // Owner allowlist: null follows the full 24 families.
+                                    enabledFamilies = me.rerere.rikkahub.data.ai.tools
+                                        .SecondUserToolAllowlist
+                                        .resolveOwnerFamilies(settings.secondUserEnabledOwnerFamilyNames),
                                 ),
                             )
                         }
