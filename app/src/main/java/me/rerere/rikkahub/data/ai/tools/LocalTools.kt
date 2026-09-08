@@ -287,6 +287,24 @@ internal fun appendTopToolExample(tool: Tool): Tool {
     return tool.copy(description = "${tool.description.trim()} Example: $example.")
 }
 
+/**
+ * Single seam that turns a raw tool into the model-visible surface every caller receives:
+ * approval copy, quick-win usage example, and human-readable error envelopes. `getTools`
+ * returns this for interactive / cron / workflow callers alike, and workflow_create /
+ * workflow_update author against the SAME surface so their stamped schema fingerprints match
+ * what the engine re-derives from the returned tools at fire time. Authoring against the raw
+ * internal list instead would fingerprint a description without the appended example and every
+ * decorated action tool (show_toast, post_notification, …) would come back `tool_schema_stale`.
+ */
+private fun renderToolForSurface(tool: Tool): Tool {
+    val withApproval = if (ToolApprovalDefaults.requiresApproval(tool.name)) {
+        tool.copy(needsApproval = { true })
+    } else {
+        tool
+    }
+    return addHumanErrorEnvelopes(appendTopToolExample(withApproval))
+}
+
 internal fun appendHumanErrorToToolResult(part: UIMessagePart): UIMessagePart {
     if (part !is UIMessagePart.Text) return part
     val jsonObject = runCatching {
@@ -1089,14 +1107,14 @@ class LocalTools(
             // with the Workflows toggle on", which is non-deterministic across UI reorder).
             tools.add(me.rerere.rikkahub.workflow.tools.workflowCreateTool(
                 workflowRepository,
-                knownToolsProvider = { tools.toList() },
+                knownToolsProvider = { tools.map(::renderToolForSurface) },
                 callerContext = invocationContext,
             ))
             tools.add(me.rerere.rikkahub.workflow.tools.workflowListTool(workflowRepository))
             tools.add(me.rerere.rikkahub.workflow.tools.workflowGetTool(workflowRepository))
             tools.add(me.rerere.rikkahub.workflow.tools.workflowUpdateTool(
                 workflowRepository,
-                knownToolsProvider = { tools.toList() },
+                knownToolsProvider = { tools.map(::renderToolForSurface) },
                 callerContext = invocationContext,
             ))
             tools.add(me.rerere.rikkahub.workflow.tools.workflowDeleteTool(workflowRepository))
@@ -1213,13 +1231,6 @@ class LocalTools(
         // Centralised opt-in to needsApproval. Tool factories themselves don't have to know
         // whether their op is destructive — ToolApprovalDefaults is the single source of
         // truth, and the GenerationHandler / Telegram/in-app prompt path keys off needsApproval.
-        return tools.map { t ->
-            val withApproval = if (ToolApprovalDefaults.requiresApproval(t.name)) {
-                t.copy(needsApproval = { true })
-            } else {
-                t
-            }
-            addHumanErrorEnvelopes(appendTopToolExample(withApproval))
-        }
+        return tools.map(::renderToolForSurface)
     }
 }
