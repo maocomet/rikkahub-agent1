@@ -185,8 +185,37 @@ class OAuthHttpClient(
             .header("Accept", "application/json")
             .post(form)
             .build()
-        val text = execute(request)
-        return json.decodeFromString(TokenResponse.serializer(), text)
+        val (httpStatus, contentType, body) = readTokenResponse(request)
+        // 先识别 OAuth error 响应：无论 2xx 还是非 2xx，只要 body 是 OAuth error JSON，就以类型化
+        // 异常抛出。否则像 GitHub 这样“2xx + error JSON”的 AS 会把拒绝误报成 success decode 的
+        // MissingField(access_token)（RFC 6749 §5.2 错误响应本应被客户端显式处理）。
+        parseOAuthTokenError(body, json)?.let { err ->
+            throw OAuthTokenEndpointException(
+                // parseOAuthTokenError 仅在 error 非空时返回非 null，这里可安全断言。
+                oauthError = requireNotNull(err.error),
+                oauthErrorDescription = err.errorDescription,
+                httpStatus = httpStatus,
+                contentType = contentType,
+            )
+        }
+        if (httpStatus !in 200..299) {
+            throw IOException("HTTP $httpStatus for ${request.url}: ${body.take(300)}")
+        }
+        // 2xx 且无 OAuth error：按成功解码。真畸形 / 空 body 保留原始 MissingField/序列化语义。
+        val token = runCatching { json.decodeFromString(TokenResponse.serializer(), body) }.getOrNull()
+        if (token != null) return token
+        return json.decodeFromString(TokenResponse.serializer(), body)
+    }
+
+    /** 一次读出 token 端点响应的状态、Content-Type 与 body，供错误分类使用（不含任何凭据）。 */
+    private suspend fun readTokenResponse(request: Request): Triple<Int, String?, String> {
+        return executeRaw(request).use { response ->
+            Triple(
+                response.code,
+                response.header("Content-Type"),
+                response.body.string(),
+            )
+        }
     }
 
     private suspend fun execute(request: Request): String {
@@ -220,6 +249,52 @@ class OAuthHttpClient(
     private companion object {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
+}
+
+/**
+ * OAuth token endpoint 的错误响应（RFC 6749 §5.2 / RFC 6750）。
+ *
+ * 只承载 error / error_description 这类安全字段；绝不含 access/refresh token、authorization
+ * code、client_secret 或 PKCE verifier。
+ */
+@Serializable
+data class OAuthTokenErrorResponse(
+    val error: String? = null,
+    @SerialName("error_description") val errorDescription: String? = null,
+)
+
+private const val MAX_OAUTH_ERROR_DESCRIPTION_LENGTH = 160
+
+/** 组装安全异常消息：只含 OAuth error code + 截断后的 error_description，绝不内嵌凭据。 */
+private fun buildTokenEndpointErrorMessage(error: String, description: String?, httpStatus: Int): String {
+    val safeDescription = description?.take(MAX_OAUTH_ERROR_DESCRIPTION_LENGTH)?.takeIf { it.isNotBlank() }
+    return if (safeDescription == null) {
+        "OAuth token 端点拒绝请求(HTTP $httpStatus): $error"
+    } else {
+        "OAuth token 端点拒绝请求(HTTP $httpStatus): $error ($safeDescription)"
+    }
+}
+
+/**
+ * 类型化 token endpoint 错误。
+ *
+ * 消息只含 OAuth error code + 截断后的 error_description（由协调层直接呈现给用户/UI），
+ * 不内嵌任何凭据或原始响应体。
+ */
+internal class OAuthTokenEndpointException(
+    val oauthError: String,
+    val oauthErrorDescription: String?,
+    val httpStatus: Int,
+    val contentType: String?,
+) : IOException(buildTokenEndpointErrorMessage(oauthError, oauthErrorDescription, httpStatus))
+
+/**
+ * 把 token 端点响应 body 尝试解析为 OAuth error 响应；非 error 形状（非 JSON / 无 `error`
+ * 字段 / error 为空）返回 null。exchange 与 refresh 共用（见 [OAuthHttpClient.postToken]）。
+ */
+internal fun parseOAuthTokenError(body: String, json: Json): OAuthTokenErrorResponse? {
+    val parsed = runCatching { json.decodeFromString(OAuthTokenErrorResponse.serializer(), body) }.getOrNull()
+    return parsed?.takeIf { !it.error.isNullOrBlank() }
 }
 
 /** 使用 Custom Tabs 打开 OAuth 授权页面。 */
