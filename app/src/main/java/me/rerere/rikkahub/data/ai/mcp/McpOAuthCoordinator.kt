@@ -27,6 +27,12 @@ internal const val MCP_OAUTH_CALLBACK_PORT = 52_134
 internal const val MCP_OAUTH_CALLBACK_PATH = "/oauth/callback"
 internal const val MCP_OAUTH_REDIRECT_URI =
     "http://127.0.0.1:$MCP_OAUTH_CALLBACK_PORT$MCP_OAUTH_CALLBACK_PATH"
+
+/** 授权服务器不支持 DCR 且未配置预注册 client_id 时的可操作提示（不再只说“不支持”）。 */
+private const val MCP_OAUTH_NO_USABLE_CLIENT_MESSAGE =
+    "授权服务器不支持动态注册，且未配置预注册 client_id。" +
+        "请在服务器设置的高级 OAuth 中填入授权服务器已签发的 client_id，" +
+        "回调地址需登记为 $MCP_OAUTH_REDIRECT_URI。"
 private val OAUTH_CALLBACK_TIMEOUT = 5.minutes
 
 /**
@@ -77,7 +83,7 @@ internal class McpOAuthCoordinator(
     suspend fun clearAuthorization(config: McpServerConfig): McpServerConfig {
         persistOAuthState(config.id, null)
         return settingsStore.settingsFlow.first().mcpServers.find { it.id == config.id }
-            ?: config.clone(commonOptions = config.commonOptions.copy(oauth = null))
+            ?: config.withOAuthState(null)
     }
 
     /** 按 serverId 串行刷新；拿锁后重读配置，避免并发工具调用重复消耗同一 refresh token。 */
@@ -157,23 +163,43 @@ internal class McpOAuthCoordinator(
                 "OAuth 回调服务器地址不一致: $redirectUri"
             }
             val existing = config.commonOptions.oauth
-            val canReuseClient = existing?.redirectUri == redirectUri && !existing.clientId.isNullOrBlank()
-            var clientId = existing?.clientId.takeIf { canReuseClient }
-            var clientSecret = existing?.clientSecret.takeIf { canReuseClient }
-            if (clientId.isNullOrBlank()) {
-                val registrationEndpoint = metadata.registrationEndpoint
-                    ?: error("授权服务器不支持动态注册，且未预配置 client_id")
-                val registration = oauthClient.registerClient(
-                    registrationEndpoint = registrationEndpoint,
-                    request = OAuthHttpClient.ClientRegistrationRequest(
-                        clientName = config.commonOptions.name.ifBlank { "RikkaHub" },
-                        redirectUris = listOf(redirectUri),
-                        scope = scope,
-                    ),
+            val staticClient = config.commonOptions.oauthStaticClient
+            val resolvedClient: Pair<String, String?> = when (
+                mcpResolveOAuthRegistrationPlan(
+                    staticClientId = staticClient?.clientId,
+                    registeredClientId = existing?.clientId,
+                    registeredRedirectUri = existing?.redirectUri,
+                    redirectUri = redirectUri,
+                    registrationEndpoint = metadata.registrationEndpoint,
                 )
-                clientId = registration.clientId
-                clientSecret = registration.clientSecret
+            ) {
+                McpOAuthRegistrationPlan.StaticClient -> {
+                    val sc = requireNotNull(staticClient)
+                    sc.clientId to sc.clientSecret
+                }
+
+                McpOAuthRegistrationPlan.ReuseRegisteredClient -> {
+                    val ex = requireNotNull(existing)
+                    requireNotNull(ex.clientId) to ex.clientSecret
+                }
+
+                McpOAuthRegistrationPlan.DynamicRegistration -> {
+                    val registration = oauthClient.registerClient(
+                        registrationEndpoint = requireNotNull(metadata.registrationEndpoint),
+                        request = OAuthHttpClient.ClientRegistrationRequest(
+                            clientName = config.commonOptions.name.ifBlank { "RikkaHub" },
+                            redirectUris = listOf(redirectUri),
+                            scope = scope,
+                        ),
+                    )
+                    registration.clientId to registration.clientSecret
+                }
+
+                McpOAuthRegistrationPlan.NoUsableClient ->
+                    error(MCP_OAUTH_NO_USABLE_CLIENT_MESSAGE)
             }
+            val clientId = resolvedClient.first
+            val clientSecret = resolvedClient.second
 
             persistOAuthState(
                 config.id,
@@ -251,7 +277,7 @@ internal class McpOAuthCoordinator(
             old.copy(
                 mcpServers = old.mcpServers.map { server ->
                     if (server.id != configId) server
-                    else server.clone(commonOptions = server.commonOptions.copy(oauth = oauth))
+                    else server.withOAuthState(oauth)
                 }
             )
         }

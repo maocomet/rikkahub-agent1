@@ -13,6 +13,14 @@ data class McpCommonOptions(
     val tools: List<McpTool> = emptyList(),
     /** OAuth 2.1 授权状态（MCP 授权规范）；静态/vault header 之外的鉴权方式。 */
     val oauth: McpOAuthState? = null,
+    /**
+     * 用户预注册的静态 OAuth 客户端配置（非注册结果）。
+     *
+     * 与 [McpOAuthState] 语义分离：本字段是用户手填、应长期保留的“预配置 client_id”；
+     * [McpOAuthState.clientId] 则是“本次 token 的有效签发对象”（可能是静态来源，也可能是
+     * 动态注册结果）。token 清除 / 重新授权不应抹掉这里的用户配置。
+     */
+    val oauthStaticClient: McpStaticOAuthClient? = null,
     /** Immutable source metadata for Owner-installed configurations; never used as a credential. */
     val ownerSource: String? = null,
     val ownerPin: String? = null,
@@ -53,6 +61,19 @@ data class McpOAuthState(
         else -> "***(${length})"
     }
 }
+
+/**
+ * 用户在 OAuth 授权服务器上预先注册的静态客户端凭据（RFC 6749 预配置 client）。
+ *
+ * 面向不支持 RFC 7591 动态注册的授权服务器（如 GitHub）。`clientSecret` 可选：遵循
+ * public client + PKCE (RFC 8252) 时留空即可。回调地址必须与该客户端在授权服务器登记的
+ * redirect_uri 一致（本客户端固定使用 loopback）。
+ */
+@Serializable
+data class McpStaticOAuthClient(
+    val clientId: String = "",
+    val clientSecret: String? = null,
+)
 
 @Serializable
 data class McpTool(

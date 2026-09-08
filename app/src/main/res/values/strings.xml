@@ -744,6 +744,12 @@
   <string name="setting_mcp_page_name_placeholder">e.g.: My MCP Server</string>
   <string name="setting_mcp_page_needs_approval">Needs Approval</string>
   <string name="setting_mcp_page_no_mcp_servers_found">No MCP servers found</string>
+  <string name="setting_mcp_page_oauth_advanced">Advanced OAuth (Pre-registered Client)</string>
+  <string name="setting_mcp_page_oauth_advanced_desc">Optional. For authorization servers without dynamic registration (e.g. GitHub). Register this client with redirect URI http://127.0.0.1:52134/oauth/callback, then fill in its Client ID. Leave Secret empty for public client + PKCE.</string>
+  <string name="setting_mcp_page_oauth_client_id">Client ID</string>
+  <string name="setting_mcp_page_oauth_client_id_placeholder">e.g. Iv1.xxxxxxxxxxxxxxxx</string>
+  <string name="setting_mcp_page_oauth_client_secret">Client Secret (optional)</string>
+  <string name="setting_mcp_page_oauth_client_secret_placeholder">Leave blank for public client + PKCE</string>
   <string name="setting_mcp_page_save">Save</string>
   <string name="setting_mcp_page_server_url">Server URL</string>
   <string name="setting_mcp_page_sse_url_desc">URL address for SSE transport server</string>

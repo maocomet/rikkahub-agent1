@@ -1727,6 +1727,12 @@
   <string name="setting_mcp_page_name_placeholder">例如：My MCP Server</string>
   <string name="setting_mcp_page_needs_approval">需要审批</string>
   <string name="setting_mcp_page_no_mcp_servers_found">未找到 MCP 服务器</string>
+  <string name="setting_mcp_page_oauth_advanced">高级 OAuth（预注册客户端）</string>
+  <string name="setting_mcp_page_oauth_advanced_desc">可选。适用于授权服务器不支持动态注册的情况（如 GitHub）。请先在授权服务器上注册该客户端并把回调地址设为 http://127.0.0.1:52134/oauth/callback，再填入其 Client ID。Public client + PKCE 场景下 Secret 留空即可。</string>
+  <string name="setting_mcp_page_oauth_client_id">Client ID</string>
+  <string name="setting_mcp_page_oauth_client_id_placeholder">例如 Iv1.xxxxxxxxxxxxxxxx</string>
+  <string name="setting_mcp_page_oauth_client_secret">Client Secret（可选）</string>
+  <string name="setting_mcp_page_oauth_client_secret_placeholder">Public client + PKCE 时留空</string>
   <string name="setting_mcp_page_save">保存</string>
   <string name="setting_mcp_page_server_url">服务器地址</string>
   <string name="setting_mcp_page_sse_url_desc">SSE传输服务器的URL地址</string>

@@ -94,6 +94,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.ai.mcp.McpCommonOptions
+import me.rerere.rikkahub.data.ai.mcp.McpStaticOAuthClient
 import me.rerere.rikkahub.data.ai.mcp.McpStatus
 import me.rerere.rikkahub.data.ai.mcp.McpTool
 import me.rerere.rikkahub.ui.components.nav.BackButton
@@ -779,7 +780,68 @@ private fun McpCommonOptionsConfigure(
                 }
             }
         }
+
+        HorizontalDivider()
+
+        // 高级 OAuth：预注册 client_id（面向不支持动态注册的授权服务器，如 GitHub 官方 MCP）
+        FormItem(
+            label = {
+                Text(stringResource(R.string.setting_mcp_page_oauth_advanced))
+            },
+            description = {
+                Text(stringResource(R.string.setting_mcp_page_oauth_advanced_desc))
+            }
+        ) {
+            val staticClient = config.commonOptions.oauthStaticClient
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = staticClient?.clientId ?: "",
+                    onValueChange = { value ->
+                        update(
+                            config.withOAuthStaticClient(
+                                clientId = value.trim(),
+                                clientSecret = staticClient?.clientSecret.orEmpty(),
+                            )
+                        )
+                    },
+                    label = { Text(stringResource(R.string.setting_mcp_page_oauth_client_id)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text(stringResource(R.string.setting_mcp_page_oauth_client_id_placeholder)) }
+                )
+                OutlinedTextField(
+                    value = staticClient?.clientSecret.orEmpty(),
+                    onValueChange = { value ->
+                        update(
+                            config.withOAuthStaticClient(
+                                clientId = staticClient?.clientId.orEmpty(),
+                                clientSecret = value.trim(),
+                            )
+                        )
+                    },
+                    label = { Text(stringResource(R.string.setting_mcp_page_oauth_client_secret)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text(stringResource(R.string.setting_mcp_page_oauth_client_secret_placeholder)) }
+                )
+            }
+        }
     }
+}
+
+/**
+ * 把用户手填的预注册 OAuth 客户端写入 commonOptions.oauthStaticClient。
+ * 两者都为空时清空该配置（置 null），避免遗留“有 secret 无 client_id”的残缺对象。
+ */
+private fun McpServerConfig.withOAuthStaticClient(clientId: String, clientSecret: String): McpServerConfig {
+    val next = when {
+        clientId.isBlank() && clientSecret.isBlank() -> null
+        else -> McpStaticOAuthClient(
+            clientId = clientId,
+            clientSecret = clientSecret.ifBlank { null },
+        )
+    }
+    return clone(commonOptions = commonOptions.copy(oauthStaticClient = next))
 }
 
 @Composable
