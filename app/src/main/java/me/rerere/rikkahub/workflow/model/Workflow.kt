@@ -45,6 +45,28 @@ enum class WorkflowOrigin {
 }
 
 /**
+ * Server-stamped authority describing the tool surface a workflow was authored against.
+ *
+ * Null is reserved for rows that predate this field (legacy) — they are eligible for a bounded
+ * legacy inference at run time ([me.rerere.rikkahub.workflow.model.WorkflowRunSurface]). Every
+ * successful workflow_create / workflow_update re-stamps this from the caller's real privilege
+ * context; it is never taken from LLM/user JSON.
+ */
+enum class WorkflowAuthoringAuthority {
+    /** Authored from an ordinary (non-second-user-expanded) surface. Pinned to `assistant.localTools` at run. */
+    LOCAL,
+    /** Authored from the Second-User confirmed expanded surface. Run re-validates against the CURRENT active Second-User allowlist. */
+    SECOND_USER_CONFIRMED;
+
+    companion object {
+        /** Tolerant decode for stored/round-trip JSON; null on any unknown or malformed value. */
+        fun decodeOrNull(raw: String): WorkflowAuthoringAuthority? = entries.firstOrNull {
+            it.name == raw
+        }
+    }
+}
+
+/**
  * Outcome of one workflow fire.
  *  - SUCCESS / FAILED — actually ran
  *  - SKIPPED_CONDITIONS — at least one condition evaluated false
@@ -108,6 +130,13 @@ data class WorkflowDefinition(
      * LearningDatabase loss or restore.
      */
     val authoritySubjectId: String? = null,
+    /**
+     * Server-stamped authoring surface authority — see [WorkflowAuthoringAuthority]. Absent
+     * (null) only for pre-marker legacy rows, which the engine may heal via bounded inference.
+     * Set on every workflow_create / workflow_update from the caller's real privilege context,
+     * never from the LLM's JSON.
+     */
+    val authoringAuthority: WorkflowAuthoringAuthority? = null,
 )
 
 object WorkflowCapabilitySnapshot {

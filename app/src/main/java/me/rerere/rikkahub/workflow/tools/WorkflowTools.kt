@@ -15,6 +15,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.workflow.execution.WorkflowEngine
 import me.rerere.rikkahub.workflow.model.WorkflowDefinition
 import me.rerere.rikkahub.workflow.model.WorkflowCapabilitySnapshot
+import me.rerere.rikkahub.workflow.model.WorkflowAuthoringAuthority
 import me.rerere.rikkahub.workflow.model.WorkflowJson
 import me.rerere.rikkahub.workflow.repository.WorkflowRepository
 import me.rerere.rikkahub.workflow.trigger.TriggerRegistry
@@ -122,6 +123,8 @@ fun workflowCreateTool(
                 val def = parsed.definition.copy(
                     authoringAssistantId = parsed.definition.authoringAssistantId
                         ?: callerContext.callerAssistantId,
+                    // Server-stamped from the caller's real privilege — never the LLM's JSON.
+                    authoringAuthority = authoringAuthorityOf(callerContext),
                     capabilitySnapshot = WorkflowCapabilitySnapshot.capture(parsed.definition.actions),
                     origin = me.rerere.rikkahub.workflow.model.WorkflowOrigin.USER,
                     sourceCandidateId = null,
@@ -275,6 +278,8 @@ fun workflowUpdateTool(
                     authoringAssistantId = existing.definition.authoringAssistantId
                         ?: parsed.definition.authoringAssistantId
                         ?: callerContext.callerAssistantId,
+                    // Re-stamp from THIS authoring's real privilege on every successful update.
+                    authoringAuthority = authoringAuthorityOf(callerContext),
                     capabilitySnapshot = WorkflowCapabilitySnapshot.capture(parsed.definition.actions),
                     origin = existing.definition.origin,
                     sourceCandidateId = existing.definition.sourceCandidateId,
@@ -408,6 +413,20 @@ fun workflowRunTool(
         }.toString()))
     }
 )
+
+/**
+ * Server-side authoring-authority stamp. `expandLocalTools` is already the resolver's verdict
+ * that this exact caller conversation is a confirmed local Second-User session (authority matches
+ * assistant + conversation AND origin is confirmed local), so it is the single trustworthy signal.
+ */
+private fun authoringAuthorityOf(
+    callerContext: me.rerere.rikkahub.data.ai.tools.ToolInvocationContext,
+): WorkflowAuthoringAuthority =
+    if (callerContext.privilege?.expandLocalTools == true) {
+        WorkflowAuthoringAuthority.SECOND_USER_CONFIRMED
+    } else {
+        WorkflowAuthoringAuthority.LOCAL
+    }
 
 private fun triggerTypeKey(def: WorkflowDefinition): String {
     val flat = WorkflowJson.encode(def)

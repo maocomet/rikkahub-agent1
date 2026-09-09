@@ -22,6 +22,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.privilege.PrivilegedSessionContext
 import me.rerere.rikkahub.workflow.execution.WorkflowActionRunner
+import me.rerere.rikkahub.workflow.model.WorkflowAuthoringAuthority
 import me.rerere.rikkahub.workflow.model.WorkflowCapabilitySnapshot
 import me.rerere.rikkahub.workflow.model.WorkflowDefinition
 import me.rerere.rikkahub.workflow.model.WorkflowJson
@@ -245,6 +246,17 @@ class OwnerWorkflowOperationHandler(
         val old = repository.getById(parsed.definition.id)
         val definition = parsed.definition.copy(
             authoringAssistantId = old?.definition?.authoringAssistantId ?: request.assistantId,
+            // Server-stamped, never caller JSON (the authoring parser already nulls it out). Owner
+            // authoring is a remote/management surface, NOT a confirmed local Second-User session,
+            // so the marker is pinned to LOCAL: we never declare SECOND_USER_CONFIRMED from "target
+            // assistant is currently ACTIVE". Validation/fingerprint surface and marker are kept
+            // consistent by refusing to claim the Second-User allowlist surface here; an Owner
+            // workflow that references a tool outside the target assistant's ordinary localTools
+            // therefore fails closed at run (workflow_tool_unavailable) instead of asserting an
+            // authority the authoring surface did not actually confer. If Owner authoring is later
+            // taught to validate/fingerprint against the assistant's real effective surface, the
+            // marker must be decided together with that surface — never from availableTools alone.
+            authoringAuthority = WorkflowAuthoringAuthority.LOCAL,
             capabilitySnapshot = WorkflowCapabilitySnapshot.capture(parsed.definition.actions),
             createdAtMs = old?.definition?.createdAtMs ?: parsed.definition.createdAtMs,
             updatedAtMs = System.currentTimeMillis(),

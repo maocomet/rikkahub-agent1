@@ -35,7 +35,6 @@ import me.rerere.rikkahub.workflow.model.WorkflowCapabilitySnapshot
 import me.rerere.rikkahub.workflow.model.WorkflowInputSchemaValidator
 import me.rerere.rikkahub.workflow.model.WorkflowOrigin
 import me.rerere.rikkahub.workflow.model.WorkflowRunStatus
-import me.rerere.rikkahub.workflow.model.WorkflowToolSchemaSnapshot
 import me.rerere.rikkahub.workflow.repository.WorkflowRepository
 import me.rerere.rikkahub.workflow.trigger.TriggerFireCallback
 import java.time.LocalDate
@@ -334,19 +333,46 @@ class WorkflowEngine(
             ),
             frozenCapabilities = frozenCapabilities,
         )
-        val tools = localTools.getTools(
-            authoringAssistant.localTools,
-            me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
-                callerAssistantId = authoringAssistant.id.toString(),
-                callerConversationId = null,  // headless workflow fire — no conv
-                callerWorkspaceId = authoringAssistant.workspaceId?.toString(),
-                isHeadless = true,
-            ).copy(
-                callerConversationId = executionContext.conversationId.toString(),
-                callerRunId = executionContext.runId.toString(),
-                callOrigin = ToolCallOrigin.TrustedWorkflow,
-            ),
+        val workflowInvocation = me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
+            callerAssistantId = authoringAssistant.id.toString(),
+            callerConversationId = executionContext.conversationId.toString(),  // headless fire — synthetic conv
+            callerWorkspaceId = authoringAssistant.workspaceId?.toString(),
+            callerRunId = executionContext.runId.toString(),
+            callOrigin = ToolCallOrigin.TrustedWorkflow,
+            isHeadless = true,
         )
+        // A USER workflow validates + executes against the CURRENT effective tool surface of its
+        // authoring assistant — not unconditionally authoringAssistant.localTools. This closes the
+        // authoring/run divergence where a workflow authored in a confirmed Second-User session
+        // (which exposes the full allowlist surface) was later stamped against assistant.localTools
+        // only, so every action tool outside localTools read as `tool_schema_stale`. Second-User
+        // workflows re-validate against the assistant's current allowlist surface ONLY while the
+        // assistant is still the ACTIVE Second User; legacy rows are healed by a bounded inference;
+        // ordinary / LOCAL workflows stay pinned to localTools. See WorkflowRunSurfaceResolver.
+        val localSurfaceTools = localTools.getTools(authoringAssistant.localTools, workflowInvocation)
+        val localSurfaceToolNames = localSurfaceTools.mapTo(hashSetOf()) { it.name }
+        val assistantIsActiveSecondUser = isActiveSecondUser(settings, authoringAssistant.id.toString())
+        val runSurface = me.rerere.rikkahub.workflow.model.WorkflowRunSurfaceResolver.choose(
+            origin = def.origin,
+            authoringAuthority = def.authoringAuthority,
+            referencedToolNames = def.actions.mapTo(hashSetOf()) { it.tool },
+            localSurfaceToolNames = localSurfaceToolNames,
+            assistantIsCurrentActiveSecondUser = assistantIsActiveSecondUser,
+        )
+        val tools = when (runSurface) {
+            me.rerere.rikkahub.workflow.model.WorkflowRunSurface.SECOND_USER_ALLOWLIST -> {
+                if (def.authoringAuthority == null) {
+                    // De-identified: a legacy pre-marker row self-healed via bounded inference.
+                    logSafe("workflow_legacy_second_user_surface_inferred workflow_id=$workflowId")
+                }
+                localTools.getTools(
+                    me.rerere.rikkahub.data.ai.tools.SecondUserToolAllowlist
+                        .resolveLocalOptions(settings.secondUserEnabledLocalToolTokens),
+                    workflowInvocation,
+                )
+            }
+            me.rerere.rikkahub.workflow.model.WorkflowRunSurface.ASSISTANT_LOCAL -> localSurfaceTools
+        }
 
         // Resolver changes may narrow or widen current requirements, but they never mutate the
         // frozen grant. Any newly-required capability makes the durable workflow stale instead
@@ -372,40 +398,59 @@ class WorkflowEngine(
 
         val currentSchemas = me.rerere.rikkahub.toolcatalog.ToolCatalogSnapshot
             .fromDefinitions(tools)
-        val schemaMismatch = def.actions.firstOrNull { action ->
-            val stored = action.toolSchemaFingerprint
-            when {
-                stored == null -> isLearned
-                !WorkflowToolSchemaSnapshot.isCanonical(stored) -> true
-                else -> currentSchemas.entry(action.tool)?.schemaFingerprint != stored
-            }
-        }
-        if (schemaMismatch != null) {
-            // De-identified diagnostic for a second-round tool_schema_stale investigation.
-            // Logs only identity + hashes (never tool args, prompts, tokens or schema text).
-            // Deliberately does not change the stale decision below.
-            logSafe(
-                workflowSchemaStaleDiagnostic(
-                    workflowId = workflowId,
-                    entityOrigin = entity.origin,
-                    isLearned = isLearned,
-                    actionTool = schemaMismatch.tool,
-                    storedFingerprint = schemaMismatch.toolSchemaFingerprint,
-                    actualEntry = currentSchemas.entry(schemaMismatch.tool),
-                    storedAssistantId = def.authoringAssistantId,
-                    runtimeAssistantId = authoringAssistant.id.toString(),
-                    capabilitySnapshot = def.capabilitySnapshot,
+        when (val problem = me.rerere.rikkahub.workflow.model.WorkflowSchemaGate
+            .firstProblem(def.actions, currentSchemas, isLearned)
+        ) {
+            is me.rerere.rikkahub.workflow.model.WorkflowSchemaProblem.Stale -> {
+                // De-identified diagnostic (723b3d0f) kept — now fires only on a TRUE schema
+                // mismatch (tool present in the effective surface but its model-visible schema
+                // changed), never on "tool absent from the current surface".
+                logSafe(
+                    workflowSchemaStaleDiagnostic(
+                        workflowId = workflowId,
+                        entityOrigin = entity.origin,
+                        isLearned = isLearned,
+                        actionTool = problem.action.tool,
+                        storedFingerprint = problem.action.toolSchemaFingerprint,
+                        actualEntry = currentSchemas.entry(problem.action.tool),
+                        storedAssistantId = def.authoringAssistantId,
+                        runtimeAssistantId = authoringAssistant.id.toString(),
+                        capabilitySnapshot = def.capabilitySnapshot,
+                    )
                 )
-            )
-            if (isLearned) repository.disableLearnedAsStale(
-                loaded,
-                WorkflowFailureCode.LEARNED_SCHEMA_STALE,
-            )
-            return persistAndReturn(
-                workflowId, firedAtMs, started, WorkflowRunStatus.FAILED,
-                if (isLearned) WorkflowFailureCode.LEARNED_SCHEMA_STALE else WorkflowFailureCode.SCHEMA_STALE,
-                "", ledgerId,
-            )
+                if (isLearned) repository.disableLearnedAsStale(
+                    loaded,
+                    WorkflowFailureCode.LEARNED_SCHEMA_STALE,
+                )
+                return persistAndReturn(
+                    workflowId, firedAtMs, started, WorkflowRunStatus.FAILED,
+                    if (isLearned) WorkflowFailureCode.LEARNED_SCHEMA_STALE else WorkflowFailureCode.SCHEMA_STALE,
+                    "", ledgerId,
+                )
+            }
+            is me.rerere.rikkahub.workflow.model.WorkflowSchemaProblem.ToolUnavailable -> {
+                // USER action whose tool is not in the CURRENT effective surface — an
+                // availability/policy problem (Second-User revoked, allowlist dropped the tool,
+                // or assistant.localTools no longer has it), NOT a schema change. Distinct durable
+                // code; it self-heals when the tool is re-allowed.
+                logSafe(
+                    workflowToolUnavailableDiagnostic(
+                        workflowId = workflowId,
+                        entityOrigin = entity.origin,
+                        isLearned = isLearned,
+                        actionTool = problem.action.tool,
+                        storedAssistantId = def.authoringAssistantId,
+                        runtimeAssistantId = authoringAssistant.id.toString(),
+                        runSurface = runSurface,
+                        capabilitySnapshot = def.capabilitySnapshot,
+                    )
+                )
+                return persistAndReturn(
+                    workflowId, firedAtMs, started, WorkflowRunStatus.FAILED,
+                    WorkflowFailureCode.WORKFLOW_TOOL_UNAVAILABLE, "", ledgerId,
+                )
+            }
+            null -> Unit // every action is present and schema-current — proceed to execution.
         }
 
         // Execute the action sequence. ActionRunner enforces per-action timeout + HARDLINE.
@@ -529,6 +574,22 @@ class WorkflowEngine(
 
     private fun logSafe(code: String) {
         runCatching { Log.w(TAG, code) }
+    }
+
+    /**
+     * Current ACTIVE Second-User standing for one assistant, read from the durable authority
+     * config (the only trusted source — legacy per-assistant privileged fields are never used for
+     * a run decision). Requires the same assistant id; a reassignment/revocation that moves the
+     * authority elsewhere, or any non-ACTIVE state, removes standing and the run falls back to the
+     * assistant's ordinary localTools surface.
+     */
+    private fun isActiveSecondUser(
+        settings: me.rerere.rikkahub.data.datastore.Settings,
+        assistantId: String,
+    ): Boolean {
+        val config = settings.secondUserAuthority.normalized()
+        return config.state == me.rerere.rikkahub.assistant.SecondUserAuthorityState.ACTIVE &&
+            config.assistantId?.toString() == assistantId
     }
 
     data class FireOutcome(
@@ -710,6 +771,14 @@ object WorkflowFailureCode {
     const val CAPABILITY_STALE = "capability_stale"
     const val LEARNED_SCHEMA_STALE = "learned_schema_stale"
     const val SCHEMA_STALE = "tool_schema_stale"
+    /**
+     * USER action references a tool that is not present in the CURRENT effective run surface
+     * (Second-User allowlist dropped it, the Second-User authority was revoked/reassigned, or the
+     * assistant's localTools no longer include it). Availability/policy problem, NOT schema
+     * staleness — it self-heals when the tool is re-allowed. Learned workflows never receive this
+     * code (they keep fail-closed [LEARNED_SCHEMA_STALE]).
+     */
+    const val WORKFLOW_TOOL_UNAVAILABLE = "workflow_tool_unavailable"
     const val GEOFENCE_FINE_LOCATION_MISSING = "geofence_fine_location_missing"
     const val GEOFENCE_BACKGROUND_LOCATION_MISSING = "geofence_background_location_missing"
     const val NOTIFICATION_LISTENER_MISSING = "notification_listener_missing"
@@ -731,7 +800,8 @@ object WorkflowFailureCode {
         EMERGENCY_STOP, NOT_FOUND, LEARNED_DEFINITION_INVALID, CONDITION_NOT_MET,
         LEARNED_AUTHORITY_INACTIVE, LEARNED_ASSISTANT_MISSING, NO_ASSISTANT,
         LEARNED_CAPABILITY_MISSING, LEARNED_CAPABILITY_STALE, CAPABILITY_STALE,
-        LEARNED_SCHEMA_STALE, SCHEMA_STALE, GEOFENCE_FINE_LOCATION_MISSING,
+        LEARNED_SCHEMA_STALE, SCHEMA_STALE, WORKFLOW_TOOL_UNAVAILABLE,
+        GEOFENCE_FINE_LOCATION_MISSING,
         GEOFENCE_BACKGROUND_LOCATION_MISSING, NOTIFICATION_LISTENER_MISSING,
         ACCESSIBILITY_MISSING, BLUETOOTH_PERMISSION_MISSING, ACTION_HARDLINE_BLOCKED,
         ACTION_UNKNOWN_TOOL, ACTION_INVALID_SCHEMA, ACTION_INVALID_ARGS,
@@ -789,6 +859,31 @@ private fun workflowSchemaStaleDiagnostic(
         append(" capability=[").append(capabilitySnapshot.toSortedSet().joinToString(",")).append("]")
     }.toString()
 }
+
+/**
+ * De-identified availability diagnostic for a USER action whose tool is absent from the current
+ * effective run surface. Identity + surface only — never tool args, prompts, tokens, or schema text.
+ */
+private fun workflowToolUnavailableDiagnostic(
+    workflowId: String,
+    entityOrigin: String,
+    isLearned: Boolean,
+    actionTool: String,
+    storedAssistantId: String?,
+    runtimeAssistantId: String,
+    runSurface: me.rerere.rikkahub.workflow.model.WorkflowRunSurface,
+    capabilitySnapshot: Set<String>,
+): String = buildString {
+    append("workflow_tool_unavailable")
+    append(" workflow_id=").append(workflowId)
+    append(" origin=").append(entityOrigin)
+    append(" is_learned=").append(isLearned)
+    append(" tool=").append(actionTool)
+    append(" stored_assistant=").append(storedAssistantId ?: "null")
+    append(" runtime_assistant=").append(runtimeAssistantId)
+    append(" run_surface=").append(runSurface.name)
+    append(" capability=[").append(capabilitySnapshot.toSortedSet().joinToString(",")).append("]")
+}.toString()
 
 private fun schemaStaleSha256(value: String): String =
     MessageDigest.getInstance("SHA-256")

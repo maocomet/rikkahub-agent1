@@ -49,6 +49,7 @@ object WorkflowJson {
         "created_at_ms",
         "updated_at_ms",
         "authoring_assistant_id",
+        "authoring_authority",
         // Server-owned when workflow_create/workflow_update persist a definition. It remains a
         // known key so canonical stored JSON can also pass through tooling without being
         // mistaken for a schema extension; callers still overwrite it from reviewed actions.
@@ -283,6 +284,28 @@ object WorkflowJson {
             ?.takeIf { it.isNotBlank() }
             ?: kotlin.uuid.Uuid.random().toString()
 
+        // Server-owned permission marker. The AUTHORING parser never treats a caller-supplied value
+        // as a permission fact: it only validates the field's shape (a malformed echo is rejected
+        // with a repair signal) and the returned definition ALWAYS carries null here. Only the
+        // STORED parser (parseStored*) restores a marker the server itself wrote earlier, and every
+        // create/update re-stamps from the trusted caller context before persisting.
+        when (val element = obj["authoring_authority"]) {
+            null, kotlinx.serialization.json.JsonNull -> Unit
+            is JsonPrimitive -> {
+                val decoded = element.contentOrNull?.let { WorkflowAuthoringAuthority.decodeOrNull(it) }
+                if (decoded == null) {
+                    return ParseResult.Err(
+                        "invalid_authoring_authority",
+                        "authoring_authority must be LOCAL or SECOND_USER_CONFIRMED",
+                    )
+                }
+            }
+            else -> return ParseResult.Err(
+                "invalid_authoring_authority",
+                "authoring_authority must be a string",
+            )
+        }
+
         val now = System.currentTimeMillis()
         return ParseResult.Ok(WorkflowDefinition(
             id = id,
@@ -299,6 +322,8 @@ object WorkflowJson {
             authoringAssistantId = (obj["authoring_assistant_id"] as? JsonPrimitive)
                 ?.takeIf { it.isString }?.contentOrNull
                 ?.takeIf { it.isNotBlank() },
+            // Authoring parser: caller value is validated above but never surfaced (see comment).
+            authoringAuthority = null,
         ))
     }
 
@@ -333,6 +358,11 @@ object WorkflowJson {
             put("updated_at_ms", JsonPrimitive(definition.updatedAtMs.toString()))
             if (definition.authoringAssistantId != null) {
                 put("authoring_assistant_id", JsonPrimitive(definition.authoringAssistantId))
+            }
+            // Only present on rows created/updated after the marker shipped; absence is the
+            // legacy state and must round-trip as null so legacy inference stays available.
+            if (definition.authoringAuthority != null) {
+                put("authoring_authority", JsonPrimitive(definition.authoringAuthority.name))
             }
             // An empty in-memory snapshot still represents a legacy definition loaded before
             // this field existed (for example when the user only toggles that row). Preserve
@@ -567,6 +597,13 @@ object WorkflowJson {
             updatedAtMs = obj.optionalLong("updated_at_ms", now) ?: return null,
             authoringAssistantId = obj.optionalString("authoring_assistant_id")?.value
                 ?.takeIf(String::isNotBlank),
+            authoringAuthority = when (val element = obj["authoring_authority"]) {
+                null, kotlinx.serialization.json.JsonNull -> null
+                is JsonPrimitive -> element.contentOrNull
+                    ?.let { WorkflowAuthoringAuthority.decodeOrNull(it) }
+                    ?: return null
+                else -> return null
+            },
             capabilitySnapshot = capabilitySnapshot,
             origin = origin,
             sourceCandidateId = obj.optionalString("source_candidate_id")?.value
