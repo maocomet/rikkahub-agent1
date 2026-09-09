@@ -9,6 +9,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
+import java.security.MessageDigest
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.rikkahub.data.ai.ToolCallOrigin
 import me.rerere.rikkahub.data.ai.execution.ToolExecutionPlanRequest
@@ -377,6 +381,22 @@ class WorkflowEngine(
             }
         }
         if (schemaMismatch != null) {
+            // De-identified diagnostic for a second-round tool_schema_stale investigation.
+            // Logs only identity + hashes (never tool args, prompts, tokens or schema text).
+            // Deliberately does not change the stale decision below.
+            logSafe(
+                workflowSchemaStaleDiagnostic(
+                    workflowId = workflowId,
+                    entityOrigin = entity.origin,
+                    isLearned = isLearned,
+                    actionTool = schemaMismatch.tool,
+                    storedFingerprint = schemaMismatch.toolSchemaFingerprint,
+                    actualEntry = currentSchemas.entry(schemaMismatch.tool),
+                    storedAssistantId = def.authoringAssistantId,
+                    runtimeAssistantId = authoringAssistant.id.toString(),
+                    capabilitySnapshot = def.capabilitySnapshot,
+                )
+            )
             if (isLearned) repository.disableLearnedAsStale(
                 loaded,
                 WorkflowFailureCode.LEARNED_SCHEMA_STALE,
@@ -725,3 +745,54 @@ object WorkflowFailureCode {
         else -> ACTION_RUNTIME_FAILURE
     }
 }
+
+/**
+ * De-identified schema-stale diagnostic. Only fingerprints/hashes and identity are emitted —
+ * never tool arguments, prompts, tokens/secrets, user content, or full schema/description text.
+ * Hashes use the same canonical JSON shape as ToolCatalog (encodeDefaults, no explicit nulls) so
+ * the numbers are comparable to what ToolCatalogSnapshot hashed at authoring time.
+ */
+private fun workflowSchemaStaleDiagnostic(
+    workflowId: String,
+    entityOrigin: String,
+    isLearned: Boolean,
+    actionTool: String,
+    storedFingerprint: String?,
+    actualEntry: me.rerere.rikkahub.toolcatalog.ToolCatalogEntry?,
+    storedAssistantId: String?,
+    runtimeAssistantId: String,
+    capabilitySnapshot: Set<String>,
+): String {
+    val actualFingerprint = actualEntry?.schemaFingerprint?.take(16)
+    val descriptionSha = actualEntry?.let { schemaStaleSha256(it.definition.description).take(16) }
+    val parametersSha = actualEntry?.let { entry ->
+        runCatching {
+            entry.definition.parameters()?.let { parameters ->
+                schemaStaleJson.encodeToString(InputSchema.serializer(), parameters)
+            }
+        }.getOrNull()?.let { schemaStaleSha256(it).take(16) }
+    }
+    return buildString {
+        append("workflow_schema_stale")
+        append(" workflow_id=").append(workflowId)
+        append(" origin=").append(entityOrigin)
+        append(" is_learned=").append(isLearned)
+        append(" tool=").append(actionTool)
+        append(" expected=").append(storedFingerprint?.take(16) ?: "null")
+        append(" actual=").append(actualFingerprint ?: "null")
+        append(" runtime_has_tool=").append(actualEntry != null)
+        append(" stored_assistant=").append(storedAssistantId ?: "null")
+        append(" runtime_assistant=").append(runtimeAssistantId)
+        append(" desc_sha=").append(descriptionSha ?: "null")
+        append(" params_sha=").append(parametersSha ?: "null")
+        append(" source=").append(actualEntry?.source?.name ?: "null")
+        append(" capability=[").append(capabilitySnapshot.toSortedSet().joinToString(",")).append("]")
+    }.toString()
+}
+
+private fun schemaStaleSha256(value: String): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray())
+        .joinToString("") { byte -> "%02x".format(byte) }
+
+private val schemaStaleJson = Json { encodeDefaults = true; explicitNulls = false }
