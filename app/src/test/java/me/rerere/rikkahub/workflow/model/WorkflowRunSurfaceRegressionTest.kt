@@ -129,7 +129,7 @@ class WorkflowRunSurfaceRegressionTest {
     }
 
     @Test
-    fun `before the fix the same workflow was stale from localTools-only surface; now it is availability not stale`() {
+    fun `before the fix the same workflow was stale from the localTools-only surface now it is availability not stale`() {
         val localTool = plainTool("get_time_info")
         val localCatalog = catalog(localTool)
         val storedFp = fingerprint(realPostNotificationTool())
