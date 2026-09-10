@@ -8,6 +8,9 @@ import org.junit.Assert.assertTrue
 class SystemPromptBuilderTest {
     private val builder = SystemPromptBuilder()
 
+    /** A surface with a real cheap/expensive routing choice, so cost guidance is meaningful. */
+    private val routingSurface = setOf("read_window_tree", "take_screenshot")
+
     @Test
     fun `build orders stable sections (assistant, tools) before volatile (memory, chats, addendum)`() {
         val prompt = builder.build(
@@ -16,10 +19,11 @@ class SystemPromptBuilderTest {
             recentChatsPrompt = "**Recent Chats**\nRecent block",
             toolPrompts = listOf("Tool A", "Tool B"),
             systemAddendum = "Surface addendum",
+            modelVisibleToolNames = routingSurface,
         )
 
         assertTrue(prompt.startsWith("Assistant prompt"))
-        assertTrue(prompt.contains("Tool cost guidance: prefer low-cost text tools"))
+        assertTrue(prompt.contains("Tool cost guidance: prefer low-cost text tools before expensive ones."))
         assertTrue(prompt.endsWith("Surface addendum"))
 
         // Stable-first: assistant + tools precede the volatile memory/recent-chats sections.
@@ -39,6 +43,7 @@ class SystemPromptBuilderTest {
             recentChatsPrompt = "**Recent Chats** c1",
             toolPrompts = listOf("tool_a docs"),
             systemAddendum = "telegram chat_id 5",
+            modelVisibleToolNames = routingSurface,
         )
         assertTrue(stable.contains("You are helpful."))
         assertTrue(stable.contains("tool_a docs"))
@@ -59,6 +64,7 @@ class SystemPromptBuilderTest {
             recentChatsPrompt = chats,
             toolPrompts = listOf("tool_a docs"),
             systemAddendum = null,
+            modelVisibleToolNames = routingSurface,
         ).first
         // Turn 1 vs turn 2: memory + recent chats differ; the cached stable prefix must not.
         assertEquals(stableFor("mem v1", "chats v1"), stableFor("mem v2 changed", "chats v2 changed"))

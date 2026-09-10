@@ -10,11 +10,42 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.ToolCallOrigin
 import me.rerere.rikkahub.data.db.fts.MessageSearchSort
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.utils.JsonInstantPretty
 import me.rerere.rikkahub.utils.toLocalDate
 import kotlin.uuid.Uuid
+
+const val RECENT_CHATS_TOOL_NAME = "recent_chats"
+const val CONVERSATION_SEARCH_TOOL_NAME = "conversation_search"
+
+/**
+ * Which on-demand conversation-history tools the ORDINARY (non-privileged) assistant may expose
+ * for this call, given its own opt-in and the call origin.
+ *
+ * This is the whole ordinary-assistant gate. It is deliberately independent of:
+ *  - `Assistant.enableRecentChatsReference`, which governs the legacy static recent-chats block
+ *    in the system prompt, and
+ *  - `Assistant.allowConversationHistoryRead`, which governs the Second-User reader tools on
+ *    their own branch.
+ *
+ * Returns an empty set when the assistant has not opted in, so a default ordinary assistant
+ * carries no cross-conversation read surface at all.
+ */
+fun ordinaryConversationToolNames(
+    historyToolsEnabled: Boolean,
+    callOrigin: ToolCallOrigin,
+): Set<String> {
+    if (!historyToolsEnabled) return emptySet()
+    // `conversation_search` reads across conversations, so it stays restricted to the local chat
+    // surface. `recent_chats` returns titles/dates only and remains available on other origins.
+    return if (callOrigin == ToolCallOrigin.LocalChat) {
+        setOf(RECENT_CHATS_TOOL_NAME, CONVERSATION_SEARCH_TOOL_NAME)
+    } else {
+        setOf(RECENT_CHATS_TOOL_NAME)
+    }
+}
 
 /**
  * Tools that let the assistant query the user's past conversations on demand, instead of
@@ -25,7 +56,7 @@ fun createConversationTools(
     assistantId: Uuid,
 ): List<Tool> = listOf(
     Tool(
-        name = "recent_chats",
+        name = RECENT_CHATS_TOOL_NAME,
         description = """
             List the user's recent conversations with you to understand their preferences and ongoing topics.
             Returns conversation titles and the date of last activity, ordered by pinned first then most recently updated.
@@ -64,7 +95,7 @@ fun createConversationTools(
         }
     ),
     Tool(
-        name = "conversation_search",
+        name = CONVERSATION_SEARCH_TOOL_NAME,
         description = """
             Full-text search across the user's past conversations to recall specific information they mentioned before.
             Use focused keywords. Run multiple searches with different keywords if needed.

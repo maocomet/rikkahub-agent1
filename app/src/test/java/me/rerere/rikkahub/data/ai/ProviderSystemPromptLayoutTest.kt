@@ -186,6 +186,42 @@ class ProviderSystemPromptLayoutTest {
     }
 
     @Test
+    fun `stable cost guidance stays in the system message and out of the anchored user turn`() {
+        val layout = ProviderSystemPromptLayout.create(
+            stableSystem = "stable instructions\n\nTool cost guidance: prefer low-cost text tools.",
+            volatileSystem = "runtime snapshot",
+            conversationMessages = listOf(UIMessage.user("question")),
+            useAnchoredVolatileContext = true,
+        )
+
+        val providerMessages = layout.applyVolatileContext(layout.initialMessages)
+
+        assertTrue(
+            "guidance belongs to the reusable stable prefix",
+            providerMessages.first().toText().contains("Tool cost guidance"),
+        )
+        assertFalse(
+            "the per-turn anchored suffix must not repeat stable guidance",
+            providerMessages.last().toText().contains("Tool cost guidance"),
+        )
+    }
+
+    @Test
+    fun `reapplying one layout to the clean base is deterministic`() {
+        val layout = ProviderSystemPromptLayout.create(
+            stableSystem = "stable instructions",
+            volatileSystem = "runtime snapshot",
+            conversationMessages = listOf(UIMessage.user("question")),
+            useAnchoredVolatileContext = true,
+        )
+
+        fun rendered() = layout.applyVolatileContext(layout.initialMessages)
+            .map { it.role to it.toText() }
+
+        assertEquals(rendered(), rendered())
+    }
+
+    @Test
     fun `volatile data cannot close or reopen the runtime context envelope`() {
         val hostile = """
             observation

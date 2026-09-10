@@ -2816,6 +2816,10 @@ class GenerationHandler(
         ) {
             tools.map { tool -> tool.systemPrompt(model, messages) }
         }
+        // The exact tool set this provider call exposes on the wire (GenerationHandler passes
+        // providerToolDefinitions here, and TextGenerationParams sends the same list). Cost
+        // guidance is derived from it so it can never describe a tool the model cannot see.
+        val breakdownModelVisibleToolNames = tools.mapTo(linkedSetOf()) { it.name }
         val breakdownUserIdentityPrompt = buildUserIdentityPrompt(
             settings.displaySetting.userNickname,
         )
@@ -2837,6 +2841,7 @@ class GenerationHandler(
                 recentChatsPrompt = breakdownRecentChatsPrompt,
                 toolPrompts = breakdownToolPrompts,
                 systemAddendum = providerSystemAddendum,
+                modelVisibleToolNames = breakdownModelVisibleToolNames,
             )
             return ProviderSystemPromptLayout.create(
                 stableSystem = stableSystem,

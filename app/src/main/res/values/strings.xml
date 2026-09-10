@@ -114,6 +114,8 @@
   <string name="assistant_page_quick_messages">Quick Messages</string>
   <string name="assistant_page_recent_chats">Reference Recent Chats</string>
   <string name="assistant_page_recent_chats_desc">When enabled, the assistant will reference recent chat history to provide more contextual responses</string>
+  <string name="assistant_page_conversation_history_tools">Conversation History Tools</string>
+  <string name="assistant_page_conversation_history_tools_desc">Let this assistant list and search your past conversations on demand. When off, it has no access to other conversations.</string>
   <string name="assistant_page_regex_affecting_scopes">Affecting Scopes:</string>
   <string name="assistant_page_regex_desc">Define regex patterns to transform messages before sending/receiving</string>
   <string name="assistant_page_regex_find_regex">Find Regex</string>

@@ -79,6 +79,7 @@ import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.WebSearchPolicy
 import me.rerere.rikkahub.data.ai.tools.createConversationTools
+import me.rerere.rikkahub.data.ai.tools.ordinaryConversationToolNames
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
@@ -3670,11 +3671,20 @@ class ChatService(
                         addAll(createSearchTools(settings))
                     }
                     if (!privilegeContext.isPrivileged) {
-                        addAll(
-                            createConversationTools(conversationRepo, assistant.id).filter { tool ->
-                                callOrigin == ToolCallOrigin.LocalChat || tool.name != "conversation_search"
-                            }
+                        // Ordinary assistants expose the on-demand conversation-history tools only
+                        // when this assistant explicitly opted in. The legacy static recent-chats
+                        // prompt (enableRecentChatsReference) and Second-User history access
+                        // (allowConversationHistoryRead) are separate concerns with their own gates.
+                        val conversationToolNames = ordinaryConversationToolNames(
+                            historyToolsEnabled = assistant.allowConversationHistoryTools,
+                            callOrigin = callOrigin,
                         )
+                        if (conversationToolNames.isNotEmpty()) {
+                            addAll(
+                                createConversationTools(conversationRepo, assistant.id)
+                                    .filter { tool -> tool.name in conversationToolNames }
+                            )
+                        }
                     } else if (assistant.allowConversationHistoryRead) {
                         addAll(
                             me.rerere.rikkahub.data.ai.tools.createSecondUserConversationReaderTools(

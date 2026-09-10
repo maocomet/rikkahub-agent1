@@ -259,6 +259,20 @@ fun MemorySettingsTab(
                         onUpdateAssistant { it.copy(enableRecentChatsReference = enabled) }
                     },
                 )
+                // Separate from the switch above on purpose: that one controls the legacy static
+                // recent-chats block in the system prompt, this one controls the on-demand
+                // conversation-history tools. Off by default so an ordinary assistant carries no
+                // cross-conversation read surface.
+                SettingSwitchRow(
+                    title = stringResource(R.string.assistant_page_conversation_history_tools),
+                    description = stringResource(
+                        R.string.assistant_page_conversation_history_tools_desc,
+                    ),
+                    checked = assistant.allowConversationHistoryTools,
+                    onCheckedChange = { enabled ->
+                        onUpdateAssistant { it.copy(allowConversationHistoryTools = enabled) }
+                    },
+                )
                 SettingSwitchRow(
                     title = stringResource(R.string.assistant_page_time_reminder),
                     description = stringResource(R.string.assistant_page_time_reminder_desc),

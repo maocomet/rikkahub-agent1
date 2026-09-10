@@ -393,6 +393,8 @@
   <string name="assistant_page_quick_messages">快捷消息</string>
   <string name="assistant_page_recent_chats">参考历史聊天记录</string>
   <string name="assistant_page_recent_chats_desc">启用后，助手将参考最近的聊天历史记录来提供更有上下文的回应</string>
+  <string name="assistant_page_conversation_history_tools">对话历史工具</string>
+  <string name="assistant_page_conversation_history_tools_desc">允许该助手按需列出和搜索你的历史对话。关闭时它无法访问其它对话。</string>
   <string name="assistant_page_regex_affecting_scopes">影响范围：</string>
   <string name="assistant_page_regex_desc">定义正则表达式模式，在发送/接收消息前对其进行转换</string>
   <string name="assistant_page_regex_find_regex">查找正则表达式</string>

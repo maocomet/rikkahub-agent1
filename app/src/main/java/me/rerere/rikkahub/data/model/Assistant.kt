@@ -128,6 +128,17 @@ data class Assistant(
     val secondUserPolicyConfirmed: Boolean = false,
     /** Explicit opt-in for temporary read-only access to other local conversation histories. */
     val allowConversationHistoryRead: Boolean = false,
+    /**
+     * Explicit opt-in for the ORDINARY assistant to expose the on-demand conversation-history
+     * tools (`recent_chats`, `conversation_search`). Default off: an ordinary assistant carries
+     * no cross-conversation read surface unless the user asks for it.
+     *
+     * Deliberately independent of [enableRecentChatsReference] (the legacy static recent-chats
+     * system-prompt block) and of [allowConversationHistoryRead] (the Second-User reader tools).
+     * A defaulted field on Assistant avoids a Room migration and keeps old settings and exported
+     * backups readable.
+     */
+    val allowConversationHistoryTools: Boolean = false,
     /** Optional P1 pet sidecar settings. Defaults keep existing assistants and exports unchanged. */
     val petEnabled: Boolean = false,
     val petPackageId: String? = null,

@@ -127,6 +127,47 @@ class WorkflowToolSchemaSurfaceParityTest {
         }
     }
 
+    // ---- surface membership must never stale a tool ----
+
+    @Test
+    fun `surface membership does not change a tool schema fingerprint`() {
+        val conversationTools = listOf(
+            syntheticTool("recent_chats", "List the user's recent conversations."),
+            syntheticTool("conversation_search", "Search across past conversations."),
+        )
+        val otherTools = listOf(
+            syntheticTool("get_time_info", "Read the device clock."),
+            syntheticTool("take_screenshot", "Capture the screen."),
+        )
+
+        val inIsolation = ToolCatalogSnapshot.fromDefinitions(conversationTools)
+        val inFullSurface = ToolCatalogSnapshot.fromDefinitions(conversationTools + otherTools)
+
+        conversationTools.forEach { tool ->
+            assertEquals(
+                "gating ${tool.name} out of a surface must not make it stale",
+                inIsolation.entry(tool.name)?.schemaFingerprint,
+                inFullSurface.entry(tool.name)?.schemaFingerprint,
+            )
+        }
+    }
+
+    @Test
+    fun `conversation history tools are not decoration sensitive`() {
+        val recentChats = syntheticTool("recent_chats", "List the user's recent conversations.")
+        val conversationSearch =
+            syntheticTool("conversation_search", "Search across past conversations.")
+
+        listOf(recentChats, conversationSearch).forEach { tool ->
+            assertEquals(
+                "${tool.name} must not be in TOP_TOOL_EXAMPLES",
+                tool.description,
+                appendTopToolExample(tool).description,
+            )
+            assertEquals(schemaFingerprint(tool), schemaFingerprint(appendTopToolExample(tool)))
+        }
+    }
+
     // ---- pre-fix reproduction: raw authoring surface would mismatch at run time ----
 
     @Test
