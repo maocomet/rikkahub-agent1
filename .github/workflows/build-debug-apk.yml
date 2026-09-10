@@ -139,6 +139,22 @@ jobs:
             --tests "me.rerere.rikkahub.data.ai.OrdinaryAssistantConversationToolSurfaceTest" \
             --tests "me.rerere.rikkahub.data.ai.ToolCostGuidanceSurfaceTest"
 
+      # The allowlist above pins explicit --tests patterns, and Gradle only fails when the
+      # COMBINED filter matches nothing -- a single pattern that matches no class is silent.
+      # Gradle's test logging is off project-wide, so the run log never lists classes. Printing
+      # the JUnit XML basenames is what actually proves a pinned class executed rather than only
+      # compiled.
+      - name: Report executed regression test classes
+        if: always()
+        run: |
+          results=app/build/test-results/testDebugUnitTest
+          if [ ! -d "$results" ]; then
+            echo "::error::No test results at $results -- did :app:testDebugUnitTest run?"
+            exit 1
+          fi
+          echo "Executed test classes:"
+          find "$results" -name '*.xml' -exec basename {} .xml \; | sort
+
       # :web:buildWebUi (pnpm run build) fails with a bare exit code 1 while
       # Gradle's concurrent task output buries the real react-router/vite error.
       # Retry it standalone so the actual error lands at the end of the log.
