@@ -21,6 +21,7 @@ import me.rerere.rikkahub.data.ai.execution.ToolRunPreflight
 import me.rerere.rikkahub.data.ai.execution.ToolRuntime
 import me.rerere.rikkahub.data.ai.execution.ToolRuntimeInvocation
 import me.rerere.rikkahub.data.ai.execution.ToolStartableResolver
+import me.rerere.rikkahub.data.ai.execution.WorkflowActionDiagnostics
 import me.rerere.rikkahub.data.ai.tools.HardlineCommandGuard
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.ToolExecutionContext
@@ -636,104 +637,153 @@ class WorkflowActionRunner(
         beforeAction: suspend () -> Boolean = { true },
     ): RunResult {
         var completed = 0
+        // ── TEMPORARY diagnostics (diag commit) — content-free boundary markers. ────────────
+        // Resolved once per run; the markers never read tool arguments or outputs.
+        val diagWorkflowId = WorkflowActionDiagnostics.workflowIdOf(invocation)
+        val diagOrigin = invocation.executionContext.callOrigin
+        // A workflow action is headless by construction, and TrustedWorkflow is the origin the
+        // engine stamps for exactly this path.
+        val diagHeadless = diagOrigin == ToolCallOrigin.TrustedWorkflow
         for ((idx, action) in actions.withIndex()) {
-            val actionAuthorized = try {
-                beforeAction()
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (_: Throwable) {
-                false
-            }
-            if (!actionAuthorized) {
-                return RunResult(
-                    false,
-                    WorkflowFailureCode.ACTION_RUNTIME_FENCE_REJECTED,
-                    WorkflowFailureCode.ACTIONS_INCOMPLETE,
-                )
-            }
-            val argsJson = action.args.toString()
-            val hardlineReason = HardlineCommandGuard.checkTool(action.tool, argsJson)
-            if (hardlineReason != null) {
-                logSafe(WorkflowFailureCode.ACTION_HARDLINE_BLOCKED)
-                return RunResult(success = false,
-                    error = WorkflowFailureCode.ACTION_HARDLINE_BLOCKED,
-                    summary = WorkflowFailureCode.ACTIONS_INCOMPLETE)
-            }
-            val tool = availableTools.find { it.name == action.tool }
-                ?: return RunResult(
-                    false,
-                    WorkflowFailureCode.ACTION_UNKNOWN_TOOL,
-                    WorkflowFailureCode.ACTIONS_INCOMPLETE,
-                )
-            val inputSchemaError = runCatching {
-                WorkflowInputSchemaValidator.validate(action.args, tool.parameters())
-            }.getOrElse {
-                return RunResult(
-                    false,
-                    WorkflowFailureCode.ACTION_INVALID_SCHEMA,
-                    WorkflowFailureCode.ACTIONS_INCOMPLETE,
-                )
-            }
-            if (inputSchemaError != null) {
-                return RunResult(
-                    false,
-                    WorkflowFailureCode.ACTION_INVALID_ARGS,
-                    WorkflowFailureCode.ACTIONS_INCOMPLETE,
-                )
-            }
-            val runtimeResult = try {
-                toolRuntime.execute(
-                    ToolExecutionPlanRequest(
-                        toolCallId = "workflow-${invocation.executionContext.runId}-$idx",
-                        toolName = tool.name,
-                        toolSchemaFingerprint = me.rerere.rikkahub.toolcatalog.ToolCatalogSnapshot
-                            .fromDefinitions(listOf(tool))
-                            .entry(tool.name)
-                            ?.schemaFingerprint,
-                        args = action.args,
-                        executionContext = invocation.executionContext,
-                        startableTool = toolStartableResolver.resolve(
-                            tool,
-                            invocation.executionContext,
+            val toolCallId = "workflow-${invocation.executionContext.runId}-$idx"
+            WorkflowActionDiagnostics.beginAction(toolCallId)
+            WorkflowActionDiagnostics.mark(
+                "workflow_action_start", toolCallId, action.tool, diagWorkflowId, diagHeadless,
+                diagOrigin.name,
+            )
+            // Diagnostic-only wrapper: guarantees the anchor is released on EVERY
+            // exit path — success, timeout, tool failure, Throwable, the runner-side
+            // early returns below (fence / hardline / unknown tool / schema), and a
+            // rethrown CancellationException. No control flow is altered.
+            try {
+                val actionAuthorized = try {
+                    beforeAction()
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    false
+                }
+                if (!actionAuthorized) {
+                    return RunResult(
+                        false,
+                        WorkflowFailureCode.ACTION_RUNTIME_FENCE_REJECTED,
+                        WorkflowFailureCode.ACTIONS_INCOMPLETE,
+                    )
+                }
+                val argsJson = action.args.toString()
+                val hardlineReason = HardlineCommandGuard.checkTool(action.tool, argsJson)
+                if (hardlineReason != null) {
+                    logSafe(WorkflowFailureCode.ACTION_HARDLINE_BLOCKED)
+                    return RunResult(success = false,
+                        error = WorkflowFailureCode.ACTION_HARDLINE_BLOCKED,
+                        summary = WorkflowFailureCode.ACTIONS_INCOMPLETE)
+                }
+                val tool = availableTools.find { it.name == action.tool }
+                    ?: return RunResult(
+                        false,
+                        WorkflowFailureCode.ACTION_UNKNOWN_TOOL,
+                        WorkflowFailureCode.ACTIONS_INCOMPLETE,
+                    )
+                val inputSchemaError = runCatching {
+                    WorkflowInputSchemaValidator.validate(action.args, tool.parameters())
+                }.getOrElse {
+                    return RunResult(
+                        false,
+                        WorkflowFailureCode.ACTION_INVALID_SCHEMA,
+                        WorkflowFailureCode.ACTIONS_INCOMPLETE,
+                    )
+                }
+                if (inputSchemaError != null) {
+                    return RunResult(
+                        false,
+                        WorkflowFailureCode.ACTION_INVALID_ARGS,
+                        WorkflowFailureCode.ACTIONS_INCOMPLETE,
+                    )
+                }
+                // Nullable only so the diagnostic `finally` below can observe the outcome before
+                // releasing the anchor. Every non-local exit from the try (rethrow / return) means
+                // the fallback after the block is unreachable in practice.
+                var actionOutcome: ToolExecutionPlanResult? = null
+                try {
+                    WorkflowActionDiagnostics.mark(
+                        "before_action_dispatch", toolCallId, action.tool, diagWorkflowId,
+                        diagHeadless, diagOrigin.name,
+                    )
+                    actionOutcome = toolRuntime.execute(
+                        ToolExecutionPlanRequest(
+                            toolCallId = toolCallId,
+                            toolName = tool.name,
+                            toolSchemaFingerprint = me.rerere.rikkahub.toolcatalog.ToolCatalogSnapshot
+                                .fromDefinitions(listOf(tool))
+                                .entry(tool.name)
+                                ?.schemaFingerprint,
+                            args = action.args,
+                            executionContext = invocation.executionContext,
+                            startableTool = toolStartableResolver.resolve(
+                                tool,
+                                invocation.executionContext,
+                            ),
+                            legacyExecute = { input -> tool.execute(input.jsonObject) },
+                            runControl = null,
+                            wallClockBudgetMs = action.timeoutSeconds.toLong()
+                                .coerceAtLeast(0L) * 1_000L,
+                            preExecutionGate = {
+                                preflight.authorize(
+                                    toolName = tool.name,
+                                    args = action.args,
+                                    context = invocation.executionContext,
+                                    unrestrictedOverride = invocation.unrestrictedOverride,
+                                )
+                            },
                         ),
-                        legacyExecute = { input -> tool.execute(input.jsonObject) },
-                        runControl = null,
-                        wallClockBudgetMs = action.timeoutSeconds.toLong()
-                            .coerceAtLeast(0L) * 1_000L,
-                        preExecutionGate = {
-                            preflight.authorize(
-                                toolName = tool.name,
-                                args = action.args,
-                                context = invocation.executionContext,
-                                unrestrictedOverride = invocation.unrestrictedOverride,
-                            )
-                        },
-                    ),
-                )
-            } catch (c: kotlinx.coroutines.CancellationException) {
-                // Don't swallow cancellation — re-throw so structured concurrency can
-                // unwind the fire (e.g. the engine scope is cancelled on shutdown). The
-                // generic catch below would otherwise turn it into a spurious FAILED row.
-                throw c
-            } catch (_: Throwable) {
-                logSafe(WorkflowFailureCode.ACTION_RUNTIME_FAILURE)
-                return RunResult(false,
-                    WorkflowFailureCode.ACTION_RUNTIME_FAILURE,
-                    WorkflowFailureCode.ACTIONS_INCOMPLETE)
-            }
-            if (runtimeResult is ToolExecutionPlanResult.TimedOut) {
-                return RunResult(false,
-                    WorkflowFailureCode.ACTION_TIMEOUT,
-                    WorkflowFailureCode.ACTIONS_INCOMPLETE)
-            }
-            if (runtimeResult is ToolExecutionPlanResult.Rejected) {
-                return RunResult(
+                    )
+                } catch (c: kotlinx.coroutines.CancellationException) {
+                    // Don't swallow cancellation — re-throw so structured concurrency can
+                    // unwind the fire (e.g. the engine scope is cancelled on shutdown). The
+                    // generic catch below would otherwise turn it into a spurious FAILED row.
+                    throw c
+                } catch (_: Throwable) {
+                    logSafe(WorkflowFailureCode.ACTION_RUNTIME_FAILURE)
+                    return RunResult(false,
+                        WorkflowFailureCode.ACTION_RUNTIME_FAILURE,
+                        WorkflowFailureCode.ACTIONS_INCOMPLETE)
+                } finally {
+                    // Nested diagnostic finally. These markers still need a live anchor, so they
+                    // are emitted here; the anchor itself is released by the OUTER finally, which
+                    // runs last and covers the early returns that never reach this block.
+                    WorkflowActionDiagnostics.mark(
+                        "after_action_dispatch", toolCallId, action.tool, diagWorkflowId,
+                        diagHeadless, diagOrigin.name,
+                    )
+                    if (actionOutcome is ToolExecutionPlanResult.TimedOut) {
+                        WorkflowActionDiagnostics.mark(
+                            "workflow_action_timeout", toolCallId, action.tool, diagWorkflowId,
+                            diagHeadless, diagOrigin.name,
+                        )
+                    }
+                }
+                val finished = actionOutcome ?: return RunResult(
                     false,
-                    WorkflowFailureCode.ACTION_REJECTED,
+                    WorkflowFailureCode.ACTION_RUNTIME_FAILURE,
                     WorkflowFailureCode.ACTIONS_INCOMPLETE,
                 )
+                if (finished is ToolExecutionPlanResult.TimedOut) {
+                    return RunResult(false,
+                        WorkflowFailureCode.ACTION_TIMEOUT,
+                        WorkflowFailureCode.ACTIONS_INCOMPLETE)
+                }
+                if (finished is ToolExecutionPlanResult.Rejected) {
+                    return RunResult(
+                        false,
+                        WorkflowFailureCode.ACTION_REJECTED,
+                        WorkflowFailureCode.ACTIONS_INCOMPLETE,
+                    )
+                }
+                completed++
+            } finally {
+                // Markers above need the anchor, so the release is last.
+                WorkflowActionDiagnostics.endAction(toolCallId)
             }
-            completed++
         }
         return RunResult(
             true,

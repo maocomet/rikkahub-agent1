@@ -361,6 +361,17 @@ class DefaultToolRuntime(
             subjectType = context.capabilitySubject?.type,
             legacyExecution = request.startableTool == null,
         )
+        // ── TEMPORARY diagnostics (diag commit) — no-op unless a workflow action anchored
+        // this exact tool-call id. Content-free: phase, workflow id, tool name, elapsed.
+        val diagWorkflowId = WorkflowActionDiagnostics.workflowIdOf(context)
+        val diagOrigin = context.callOrigin
+        val diagHeadless = diagOrigin == ToolCallOrigin.TrustedWorkflow
+        fun diagMark(phase: String) = diagWorkflowId?.let { id ->
+            WorkflowActionDiagnostics.mark(
+                phase, request.toolCallId, request.toolName, id, diagHeadless, diagOrigin.name,
+            )
+        }
+        diagMark("before_dispatch_lifecycle_starting")
         when (val gate = request.preExecutionGate()) {
             ToolPreExecutionDecision.Allow -> Unit
             is ToolPreExecutionDecision.Deny -> {
@@ -440,7 +451,11 @@ class DefaultToolRuntime(
         var executionId: String? = null
         var timeoutTerminationState: ToolTerminationState? = null
         val completed = withTimeoutOrNull(request.wallClockBudgetMs) {
+            // Diagnostic: splits "blocked acquiring the policy mutex" from "everything else in
+            // the budget" — the two candidates the audit could not separate statically.
+            diagMark("before_policy_lock")
             withPolicyLocks(effectivePolicy) {
+                diagMark("after_policy_lock")
                 when (dispatchLifecycle(
                     RedactedToolLifecycleEvent(
                         phase = RedactedToolLifecycleEvent.Phase.STARTING,
@@ -453,10 +468,18 @@ class DefaultToolRuntime(
                     LifecycleDispatch.UNTRACKED -> trackingState = ToolTrackingState.UNTRACKED
                     LifecycleDispatch.TRACKED -> Unit
                 }
+                diagMark("after_dispatch_lifecycle_starting")
                 timing?.executionStarted()
                 coroutineScope {
                     val handle = request.startableTool?.start(request.args, context) ?: run {
-                        val deferred = async(Dispatchers.IO) { request.legacyExecute(request.args) }
+                        val deferred = async(Dispatchers.IO) {
+                            // Diagnostic: proves the tool body is actually invoked, and how much
+                            // of the budget was already spent reaching it.
+                            diagMark("before_tool_execute")
+                            request.legacyExecute(request.args).also {
+                                diagMark("after_tool_execute")
+                            }
+                        }
                         LegacyToolExecutionHandle(result = deferred)
                     }
                     executionId = handle.executionId
