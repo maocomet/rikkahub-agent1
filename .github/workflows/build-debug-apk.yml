@@ -133,7 +133,8 @@ jobs:
             --tests "me.rerere.rikkahub.data.ai.mcp.oauth.OAuthTokenEndpointErrorParsingTest" \
             --tests "me.rerere.rikkahub.data.ai.tools.local.VolumeToolTest" \
             --tests "me.rerere.rikkahub.workflow.model.WorkflowToolSchemaSurfaceParityTest" \
-            --tests "me.rerere.rikkahub.workflow.model.WorkflowRunSurfaceRegressionTest"
+            --tests "me.rerere.rikkahub.workflow.model.WorkflowRunSurfaceRegressionTest" \
+            --tests "me.rerere.rikkahub.data.ai.execution.ToolRuntimeGlobalLockReentrancyTest"
 
       # :web:buildWebUi (pnpm run build) fails with a bare exit code 1 while
       # Gradle's concurrent task output buries the real react-router/vite error.
