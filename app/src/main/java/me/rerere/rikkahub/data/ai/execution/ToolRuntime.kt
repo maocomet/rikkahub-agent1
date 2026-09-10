@@ -7,6 +7,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -713,7 +714,25 @@ class DefaultToolRuntime(
         policy: ToolExecutionPolicy,
         block: suspend () -> T,
     ): T = when (policy.concurrency) {
-        ToolConcurrency.GLOBAL_SERIAL -> globalMutex.withLock { block() }
+        ToolConcurrency.GLOBAL_SERIAL -> {
+            // A nested call that already holds THIS lock must not wait on it again (Mutex is
+            // not reentrant; re-acquiring self-deadlocks until the wall-clock budget expires).
+            // Identity, not presence: a token minted for any OTHER lock fails the comparison
+            // and acquires normally, so a stray or foreign element can never suppress a real
+            // acquisition here. Only a token installed by this same runtime — which requires
+            // passing this `private` mutex, i.e. holding it — can skip the wait.
+            val heldByThisChain =
+                currentCoroutineContext()[GlobalPolicyLockToken.Key]?.mutex === globalMutex
+            if (heldByThisChain) {
+                block()
+            } else {
+                globalMutex.withLock {
+                    // Publish the proof for the duration of the critical section only, so it
+                    // is unreachable to every later, unrelated call.
+                    withContext(GlobalPolicyLockToken(globalMutex)) { block() }
+                }
+            }
+        }
         ToolConcurrency.RESOURCE_SERIAL,
         ToolConcurrency.PARALLEL_SAFE -> {
             val mutexes = policy.resourceKeys

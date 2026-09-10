@@ -408,7 +408,11 @@ fun workflowRunTool(
         listOf(UIMessagePart.Text(buildJsonObject {
             put("ok", outcome.status.name == "SUCCESS")
             put("status", outcome.status.name)
-            put("error", JsonPrimitive(outcome.error))
+            // Omit `error` entirely on success. Writing JsonPrimitive(null) emits the literal
+            // key `"error":null`, and the shared human-error envelope keys off the mere
+            // PRESENCE of an `error` key — so every successful fire was being stamped with a
+            // bogus human_error:"Tool error" alongside ok:true. Absent key, no envelope.
+            outcome.error?.let { put("error", JsonPrimitive(it)) }
             put("output_summary", outcome.summary.take(2000))
         }.toString()))
     }
