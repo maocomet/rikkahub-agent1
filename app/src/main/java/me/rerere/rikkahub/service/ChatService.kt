@@ -3148,6 +3148,15 @@ class ChatService(
             origin = callOrigin,
             privilege = privilegeContext,
         )
+        // Resolved ONCE per run and shared by two consumers: the tool-surface builder below and
+        // the persistence sanitizer. Deriving both from the same value is what keeps an ordinary
+        // assistant's `conversation_search` result from being mistaken for a Second-User
+        // transient reader result. Computed here (not at the sanitize call site) so the surface
+        // and the sanitizer cannot disagree even if settings change mid-run.
+        val transientReaderToolNames = me.rerere.rikkahub.data.ai.tools.transientReaderToolNamesFor(
+            privileged = privilegeContext.isPrivileged,
+            historyReadEnabled = assistant.allowConversationHistoryRead,
+        )
         val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId)
             ?: throw IllegalStateException(
                 "No chat model selected. Pick one in Settings �?Default models, or send /model in Telegram."
@@ -3685,7 +3694,7 @@ class ChatService(
                                     .filter { tool -> tool.name in conversationToolNames }
                             )
                         }
-                    } else if (assistant.allowConversationHistoryRead) {
+                    } else if (transientReaderToolNames.isNotEmpty()) {
                         addAll(
                             me.rerere.rikkahub.data.ai.tools.createSecondUserConversationReaderTools(
                                 reader = conversationLibraryReader,
@@ -3886,7 +3895,9 @@ class ChatService(
                     is GenerationChunk.Messages -> {
                         val correlatedMessages = chunk.messages.withResponseCorrelation(
                             responseCorrelationAnnotation,
-                        ).sanitizeTransientConversationToolResults()
+                        ).sanitizeTransientConversationToolResults(
+                            transientToolNames = transientReaderToolNames,
+                        )
                         val timingAssistantMessage = if (agentTiming != null) {
                             correlatedMessages.lastOrNull()
                                 ?.takeIf(UIMessage::hasAgentTimingRenderableContent)

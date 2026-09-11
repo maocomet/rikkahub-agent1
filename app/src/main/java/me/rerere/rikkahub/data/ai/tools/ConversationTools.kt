@@ -21,6 +21,22 @@ const val RECENT_CHATS_TOOL_NAME = "recent_chats"
 const val CONVERSATION_SEARCH_TOOL_NAME = "conversation_search"
 
 /**
+ * Ordinary-assistant conversation tools whose results carry message *content* rather than just
+ * titles and dates. These keep the stricter `CapabilityCatalog` ConversationHistoryRead entry
+ * (unlocked device + local origins only).
+ *
+ * [RECENT_CHATS_TOOL_NAME] is deliberately excluded: it returns titles/dates only and is meant
+ * to stay reachable from other origins.
+ *
+ * These names must never collide with
+ * [me.rerere.rikkahub.data.ai.tools.TRANSIENT_CONVERSATION_READER_TOOL_NAMES]. A persisted tool
+ * result carries no identity beyond its name, so two different tools sharing one name are
+ * indistinguishable to the persistence sanitizer — which is exactly the bug this constant and
+ * the `transient_` reader naming exist to prevent.
+ */
+val CONTENT_BEARING_CONVERSATION_TOOL_NAMES = setOf(CONVERSATION_SEARCH_TOOL_NAME)
+
+/**
  * Which on-demand conversation-history tools the ORDINARY (non-privileged) assistant may expose
  * for this call, given its own opt-in and the call origin.
  *

@@ -13,21 +13,32 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.rikkahub.data.ai.tools.TRANSIENT_CONVERSATION_READER_TOOL_NAMES
 import me.rerere.rikkahub.utils.JsonInstant
 
 /**
  * Converts raw cross-conversation tool results into a paired audit record before any message
  * snapshot reaches ChatService state, Room, FTS, memory capture, title generation, or UI.
  * GenerationHandler keeps its own unsanitized list for the active provider loop.
+ *
+ * @param transientToolNames the transient reader surface that is ACTIVE for this session, as
+ *   supplied by the caller from trusted runtime state — never derived from the message contents.
+ *   Callers must pass the output of
+ *   [me.rerere.rikkahub.data.ai.tools.transientReaderToolNamesFor], the same function the tool
+ *   surface builder uses, so both paths agree by construction.
+ *
+ *   The parameter is deliberately REQUIRED with no default: a default would let a new call site
+ *   silently either redact everything or redact nothing. An empty set means "no transient reader
+ *   surface was active", which is the correct answer for every ordinary assistant.
  */
-internal fun List<UIMessage>.sanitizeTransientConversationToolResults(): List<UIMessage> = map { message ->
+internal fun List<UIMessage>.sanitizeTransientConversationToolResults(
+    transientToolNames: Set<String>,
+): List<UIMessage> = map { message ->
     message.copy(parts = message.parts.map { part ->
         if (part is UIMessagePart.Tool && part.toolName == "owner_secret_manage") {
             sanitizeSecretOwnerTool(part)
         } else if (part is UIMessagePart.Tool && part.toolName in REDACTED_OWNER_INPUT_TOOLS) {
             part.copy(input = sanitizeOwnerOperationInput(part.input, OWNER_REDACTED_ARGUMENT_KEYS))
-        } else if (part is UIMessagePart.Tool && part.toolName in TRANSIENT_CONVERSATION_READER_TOOL_NAMES) {
+        } else if (part is UIMessagePart.Tool && part.toolName in transientToolNames) {
             part.copy(
                 input = sanitizeTransientToolInput(part.input),
                 output = if (part.output.isEmpty()) {

@@ -1114,10 +1114,23 @@ object CapabilityCatalog {
             allowedOrigins = InvocationSurfacePolicy.LOCAL_UNLOCKED,
         ))
 
+        // Every name here reads message CONTENT across conversations, so all of them require an
+        // unlocked device and a local origin.
+        //
+        // The ordinary assistant's `conversation_search` belongs here on its own merits, and
+        // listing it explicitly matters: it used to be covered only because it shared a name
+        // with the Second-User reader's search tool. When that collision was removed (the reader
+        // is now `transient_conversation_search`), this entry had to name it directly or the
+        // ordinary tool would have silently lost `requiresUnlockedDevice`, which
+        // ToolExecutionGate enforces.
+        //
+        // `recent_chats` is intentionally absent: it returns titles and dates only, and is meant
+        // to stay reachable from other origins.
         reg(CapabilityDescriptor(
             id = CapabilityId.ConversationHistoryRead,
             localToolOption = null,
-            toolNames = me.rerere.rikkahub.data.ai.tools.TRANSIENT_CONVERSATION_READER_TOOL_NAMES,
+            toolNames = me.rerere.rikkahub.data.ai.tools.TRANSIENT_CONVERSATION_READER_TOOL_NAMES +
+                me.rerere.rikkahub.data.ai.tools.CONTENT_BEARING_CONVERSATION_TOOL_NAMES,
             requirements = emptyList(),
             implementationState = ImplementationState.Implemented,
             riskLevel = RiskLevel.Medium,

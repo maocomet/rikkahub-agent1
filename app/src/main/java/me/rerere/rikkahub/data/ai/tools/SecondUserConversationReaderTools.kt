@@ -13,11 +13,44 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import kotlin.uuid.Uuid
 
+const val TRANSIENT_CONVERSATION_LIST_TOOL_NAME = "conversation_list_recent"
+const val TRANSIENT_CONVERSATION_READ_TOOL_NAME = "conversation_read_recent"
+const val TRANSIENT_CONVERSATION_SEARCH_TOOL_NAME = "transient_conversation_search"
+
+/**
+ * The Second-User transient cross-conversation reader surface.
+ *
+ * Every name here MUST be unique across the entire tool surface. A persisted tool result carries
+ * no identity beyond its name, so a name shared with an ordinary tool makes the two
+ * indistinguishable to [me.rerere.rikkahub.data.ai.sanitizeTransientConversationToolResults] —
+ * the ordinary tool's real results would be replaced by the redacted envelope.
+ *
+ * `conversation_search` was exactly such a collision (the ordinary assistant's global search used
+ * the same literal), so the reader's variant carries a `transient_` prefix. Keep this invariant
+ * guarded by `TransientConversationToolIdentityTest`.
+ */
 val TRANSIENT_CONVERSATION_READER_TOOL_NAMES = setOf(
-    "conversation_list_recent",
-    "conversation_read_recent",
-    "conversation_search",
+    TRANSIENT_CONVERSATION_LIST_TOOL_NAME,
+    TRANSIENT_CONVERSATION_READ_TOOL_NAME,
+    TRANSIENT_CONVERSATION_SEARCH_TOOL_NAME,
 )
+
+/**
+ * Single source of truth for "is the transient reader surface active for this session".
+ *
+ * The tool-surface builder ([me.rerere.rikkahub.service.ChatService]) and the persistence
+ * sanitizer must BOTH derive the answer from this function, so the two paths cannot drift. The
+ * sanitizer therefore only ever redacts results that genuinely came from the transient reader
+ * surface — never an ordinary assistant's same-shaped result.
+ *
+ * Returns an empty set unless the session is a privileged second-user session that has
+ * explicitly enabled history read, i.e. it fails closed.
+ */
+fun transientReaderToolNamesFor(
+    privileged: Boolean,
+    historyReadEnabled: Boolean,
+): Set<String> =
+    if (privileged && historyReadEnabled) TRANSIENT_CONVERSATION_READER_TOOL_NAMES else emptySet()
 
 fun createSecondUserConversationReaderTools(
     reader: ConversationLibraryReader,
@@ -68,7 +101,7 @@ fun createSecondUserConversationReaderTools(
 
     return listOf(
         Tool(
-            name = "conversation_list_recent",
+            name = TRANSIENT_CONVERSATION_LIST_TOOL_NAME,
             description = "Read-only: list recent local conversation names and IDs. Results are available only to this task and are not retained as history.",
             parameters = {
                 InputSchema.Obj(
@@ -112,7 +145,7 @@ fun createSecondUserConversationReaderTools(
             },
         ),
         Tool(
-            name = "conversation_read_recent",
+            name = TRANSIENT_CONVERSATION_READ_TOOL_NAME,
             description = "Read-only: read up to 50 selected, visible user/assistant messages from one conversation. Use before_node_index to page backwards. Raw text exists only for this task.",
             parameters = {
                 InputSchema.Obj(
@@ -169,7 +202,7 @@ fun createSecondUserConversationReaderTools(
             },
         ),
         Tool(
-            name = "conversation_search",
+            name = TRANSIENT_CONVERSATION_SEARCH_TOOL_NAME,
             description = "Read-only: search visible messages inside one explicitly identified conversation. No global search. Raw snippets exist only for this task.",
             parameters = {
                 InputSchema.Obj(
