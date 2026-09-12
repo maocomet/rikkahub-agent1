@@ -536,6 +536,20 @@ class WorkflowEngine(
                     WorkflowFailureCode.NOTIFICATION_LISTENER_MISSING
                 } else null
             }
+            is me.rerere.rikkahub.workflow.model.TriggerSpec.SpaceNotificationCreated -> {
+                // Deliberately no precondition, and deliberately NOT a catGardenEnabled check.
+                //
+                // The event source is in-process — the notification row is written by this app —
+                // so there is no permission or service that can be missing. And whether Cat
+                // Garden is still enabled is decided by the shared CatGardenToolSurface when the
+                // run's tool surface is built: if the switch is off, an authored space action
+                // fails as WORKFLOW_TOOL_UNAVAILABLE. Re-checking the flag here would be exactly
+                // the second copy of the gate this design exists to avoid.
+                //
+                // The branch is written out rather than left to `else -> null` so the absence of
+                // a precondition reads as a decision rather than an omission.
+                null
+            }
             is me.rerere.rikkahub.workflow.model.TriggerSpec.AppLaunched,
             is me.rerere.rikkahub.workflow.model.TriggerSpec.AppClosed -> {
                 if (!me.rerere.rikkahub.data.ai.tools.local.AccessibilityServiceHandle.isRunning()) {

@@ -140,6 +140,9 @@ object WorkflowApprovalRenderer {
             t.textMatches?.let { parts += "text matches /$it/" }
             "a notification arrives" + if (parts.isEmpty()) "" else " (${parts.joinToString("; ")})"
         }
+        is TriggerSpec.SpaceNotificationCreated ->
+            "Cat Garden notifies this assistant" +
+                (t.type?.let { " ($it)" } ?: " (a like or a comment)")
         is TriggerSpec.BootCompleted -> "device boots"
         is TriggerSpec.ScreenOn -> "screen turns on"
         is TriggerSpec.ScreenOff -> "screen turns off"

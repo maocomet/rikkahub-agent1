@@ -58,12 +58,19 @@ class TriggerRegistry(
     private val geofence = GeofenceTriggerFamily(context, triggerScope)
     private val appForeground = AppForegroundTriggerFamily(triggerScope)
     private val notification = NotificationTriggerFamily(triggerScope)
+    private val spaceNotification = SpaceNotificationTriggerFamily(
+        scope = triggerScope,
+        repositoryProvider = {
+            org.koin.java.KoinJavaComponent.getKoin()
+                .get<me.rerere.rikkahub.space.SpaceRepository>()
+        },
+    )
     private val boot = BootTriggerFamily(triggerScope)
     private val manual = ManualTriggerFamily()
 
     private val families: List<WorkflowTriggerFamily> = listOf(
         wifi, bluetooth, headphones, power, screen, battery, timeCron, geofence,
-        appForeground, notification, boot, manual,
+        appForeground, notification, spaceNotification, boot, manual,
     )
 
     fun setEngineCallback(callback: TriggerFireCallback) {

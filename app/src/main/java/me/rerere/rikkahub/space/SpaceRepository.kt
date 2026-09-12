@@ -221,20 +221,24 @@ class SpaceRepository(
 
         val stableKey = listOf(type.name, postId, commentId.orEmpty(), actor.kindValue, actor.id)
             .joinToString("|")
-        dao.insertNotification(
-            SpaceNotificationEntity(
-                notificationId = "space:$stableKey",
-                recipientKind = recipient.kindValue,
-                recipientId = recipient.id,
-                actorKind = actor.kindValue,
-                actorId = actor.id,
-                type = type.name,
-                postId = postId,
-                commentId = commentId,
-                createdAtMs = nowMs(),
-                originDepth = (originDepth + 1).coerceAtLeast(0),
-            ),
+        val entity = SpaceNotificationEntity(
+            notificationId = "space:$stableKey",
+            recipientKind = recipient.kindValue,
+            recipientId = recipient.id,
+            actorKind = actor.kindValue,
+            actorId = actor.id,
+            type = type.name,
+            postId = postId,
+            commentId = commentId,
+            createdAtMs = nowMs(),
+            originDepth = (originDepth + 1).coerceAtLeast(0),
         )
+        val inserted = dao.insertNotification(entity)
+        // Announce only a row that was actually created: a repeat of the same action collapses
+        // onto the existing id, and waking a workflow for it would be a duplicate event.
+        if (inserted != -1L) {
+            SpaceNotificationDispatcher.onCreated(entity)
+        }
     }
 
     companion object {

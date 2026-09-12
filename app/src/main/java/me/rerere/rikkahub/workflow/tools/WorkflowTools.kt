@@ -71,6 +71,13 @@ fun workflowCreateTool(
               case-insensitive substring; the *_matches fields hold a Java regex tested
               with find(). If both are set for the same field they are AND-combined (both
               must pass). Invalid regex is rejected at create time.
+          space_notification_created — params: type (optional, "LIKE" or "COMMENT";
+              omit to match both). Fires when Cat Garden notifies the authoring assistant,
+              i.e. when someone likes or comments on that assistant's post. Only
+              user-originated notifications fire it: a like or comment produced by another
+              assistant's automation run is ignored, so two assistants cannot wake each
+              other in a loop. Requires the assistant to have Cat Garden enabled — with it
+              off, a workflow whose actions use space_* tools fails closed.
           boot_completed — no params
           screen_on / screen_off — no params
           manual — only fires via workflow_run tool or "Run now" button
@@ -246,7 +253,7 @@ fun workflowUpdateTool(
         workflow; otherwise the call is rejected. Same trigger / condition / action schema
         as workflow_create — see that tool's description for the full enumeration of
         supported trigger types (time_cron, wifi_*, bluetooth_*, headphones_*, power_*,
-        battery_*, geofence_*, app_*, notification_received, boot_completed, screen_*,
+        battery_*, geofence_*, app_*, notification_received, space_notification_created, boot_completed, screen_*,
         manual) and condition types.
     """.trimIndent().replace("\n", " "),
     parameters = {

@@ -109,6 +109,27 @@ sealed class TriggerSpec {
         val textMatches: String? = null,
     ) : TriggerSpec()
 
+    /**
+     * Fires when a Cat Garden notification is created for this workflow's authoring assistant.
+     *
+     * Only user-originated notifications reach a workflow. A notification produced by an
+     * assistant's own run carries `origin_depth >= 1` and is dropped by the trigger family, which
+     * is what bounds assistant-to-assistant recursion (A comments B, B is woken, B comments A,
+     * A is woken, ...). Each notification is additionally claimed exactly once, so a redelivered
+     * event cannot fire a workflow twice.
+     *
+     * The trigger carries no payload a model could author. The notification id exists only in
+     * runtime-owned context; a woken run reads the content back through `space_list_notifications`
+     * / `space_get_post`. There is deliberately no template interpolation and nothing is written
+     * into an action's arguments.
+     */
+    @Serializable
+    @SerialName("space_notification_created")
+    data class SpaceNotificationCreated(
+        /** Optional filter: `LIKE` or `COMMENT`. Null means both. */
+        val type: String? = null,
+    ) : TriggerSpec()
+
     @Serializable @SerialName("boot_completed") data object BootCompleted : TriggerSpec()
 
     @Serializable @SerialName("screen_on") data object ScreenOn : TriggerSpec()
