@@ -142,7 +142,8 @@ jobs:
             --tests "me.rerere.rikkahub.data.ai.TransientConversationToolIdentityTest" \
             --tests "me.rerere.rikkahub.data.db.AppDatabaseSchemaIdentityContractTest" \
             --tests "me.rerere.rikkahub.data.db.ImportedDatabaseReconcilerContractTest" \
-            --tests "me.rerere.rikkahub.space.SpaceRepositoryTest"
+            --tests "me.rerere.rikkahub.space.SpaceRepositoryTest" \
+            --tests "me.rerere.rikkahub.space.SpaceToolSurfaceTest"
 
       # The allowlist above pins explicit --tests patterns, and Gradle only fails when the
       # COMBINED filter matches nothing -- a single pattern that matches no class is silent.
