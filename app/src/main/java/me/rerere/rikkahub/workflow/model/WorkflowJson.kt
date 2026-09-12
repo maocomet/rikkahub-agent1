@@ -802,10 +802,10 @@ object WorkflowJson {
         // A misspelled type filter would silently never match — the workflow would look
         // configured and simply never fire — so it is rejected at authoring time instead.
         is TriggerSpec.SpaceNotificationCreated -> when {
-            !t.type.isNullOrBlank() && t.type.uppercase() !in SPACE_NOTIFICATION_TYPES ->
+            !t.noticeType.isNullOrBlank() && t.noticeType.uppercase() !in SPACE_NOTIFICATION_TYPES ->
                 ParseResult.Err(
                     "invalid_trigger",
-                    "space_notification_created.type must be one of ${SPACE_NOTIFICATION_TYPES.joinToString()}",
+                    "space_notification_created.notice_type must be one of ${SPACE_NOTIFICATION_TYPES.joinToString()}",
                 )
             else -> null
         }

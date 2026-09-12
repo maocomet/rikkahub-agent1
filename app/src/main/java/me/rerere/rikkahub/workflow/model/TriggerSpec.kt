@@ -126,8 +126,18 @@ sealed class TriggerSpec {
     @Serializable
     @SerialName("space_notification_created")
     data class SpaceNotificationCreated(
-        /** Optional filter: `LIKE` or `COMMENT`. Null means both. */
-        val type: String? = null,
+        /**
+         * Optional filter: `LIKE` or `COMMENT`. Null means both.
+         *
+         * The wire field is `params.notice_type` — deliberately NOT `params.type`. The trigger
+         * object already spends `type` on the polymorphic class discriminator, and kotlinx
+         * filters the discriminator only out of the unknown-key check, never out of element
+         * decoding. A property named `type` therefore collides with it: when the discriminator
+         * survives into the flattened object the property silently receives the serial name
+         * (`"space_notification_created"`), and when `params.type` is supplied it overwrites the
+         * discriminator and the variant cannot be resolved at all. Neither shape is authorable.
+         */
+        @SerialName("notice_type") val noticeType: String? = null,
     ) : TriggerSpec()
 
     @Serializable @SerialName("boot_completed") data object BootCompleted : TriggerSpec()

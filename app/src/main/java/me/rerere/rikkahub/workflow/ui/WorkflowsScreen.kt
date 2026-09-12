@@ -185,7 +185,7 @@ internal fun oneLineTriggerSummary(def: WorkflowDefinition): String = when (val 
     is TriggerSpec.AppClosed -> "${t.packageName} closes"
     is TriggerSpec.NotificationReceived -> "notification${t.packageName?.let { " from $it" } ?: ""}"
     is TriggerSpec.SpaceNotificationCreated ->
-        "Cat Garden ${t.type?.lowercase() ?: "like or comment"}"
+        "Cat Garden ${t.noticeType?.lowercase() ?: "like or comment"}"
     is TriggerSpec.BootCompleted -> "device boots"
     is TriggerSpec.ScreenOn -> "screen on"
     is TriggerSpec.ScreenOff -> "screen off"

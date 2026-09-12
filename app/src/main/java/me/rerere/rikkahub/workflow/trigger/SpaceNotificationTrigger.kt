@@ -71,8 +71,8 @@ internal class SpaceNotificationTriggerFamily(
         val fires = snapshot.mapNotNull { workflow ->
             val spec = workflow.trigger as? TriggerSpec.SpaceNotificationCreated
                 ?: return@mapNotNull null
-            if (!spec.type.isNullOrBlank() &&
-                !spec.type.equals(notification.type, ignoreCase = true)
+            if (!spec.noticeType.isNullOrBlank() &&
+                !spec.noticeType.equals(notification.type, ignoreCase = true)
             ) {
                 return@mapNotNull null
             }
@@ -90,7 +90,7 @@ internal class SpaceNotificationTriggerFamily(
         scope.launch {
             for (workflowId in fires) {
                 val spec = TriggerSpec.SpaceNotificationCreated(
-                    type = notification.type,
+                    noticeType = notification.type,
                 )
                 runCatching { cb.onFire(workflowId, spec) }.onFailure {
                     Log.w(TAG, "space_notification: fire failed for wf=$workflowId", it)

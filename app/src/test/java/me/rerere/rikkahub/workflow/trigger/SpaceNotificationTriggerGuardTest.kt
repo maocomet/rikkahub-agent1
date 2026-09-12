@@ -36,7 +36,7 @@ class SpaceNotificationTriggerGuardTest {
     private fun workflow(id: String, type: String? = null) = WorkflowDefinition(
         id = id,
         name = "wf-$id",
-        trigger = TriggerSpec.SpaceNotificationCreated(type = type),
+        trigger = TriggerSpec.SpaceNotificationCreated(noticeType = type),
         actions = emptyList(),
     )
 

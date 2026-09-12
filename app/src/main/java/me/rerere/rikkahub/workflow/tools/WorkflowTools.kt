@@ -71,7 +71,7 @@ fun workflowCreateTool(
               case-insensitive substring; the *_matches fields hold a Java regex tested
               with find(). If both are set for the same field they are AND-combined (both
               must pass). Invalid regex is rejected at create time.
-          space_notification_created — params: type (optional, "LIKE" or "COMMENT";
+          space_notification_created — params: notice_type (optional, "LIKE" or "COMMENT";
               omit to match both). Fires when Cat Garden notifies the authoring assistant,
               i.e. when someone likes or comments on that assistant's post. Only
               user-originated notifications fire it: a like or comment produced by another

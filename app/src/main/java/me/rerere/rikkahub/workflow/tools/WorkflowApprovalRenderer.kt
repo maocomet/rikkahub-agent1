@@ -142,7 +142,7 @@ object WorkflowApprovalRenderer {
         }
         is TriggerSpec.SpaceNotificationCreated ->
             "Cat Garden notifies this assistant" +
-                (t.type?.let { " ($it)" } ?: " (a like or a comment)")
+                (t.noticeType?.let { " ($it)" } ?: " (a like or a comment)")
         is TriggerSpec.BootCompleted -> "device boots"
         is TriggerSpec.ScreenOn -> "screen turns on"
         is TriggerSpec.ScreenOff -> "screen turns off"
