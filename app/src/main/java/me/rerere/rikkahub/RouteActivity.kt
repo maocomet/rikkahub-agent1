@@ -470,6 +470,10 @@ class RouteActivity : ComponentActivity() {
                                 FavoritePage()
                             }
 
+                            entry<Screen.CatGarden> {
+                                me.rerere.rikkahub.ui.pages.space.CatGardenPage()
+                            }
+
                             entry<Screen.Assistant> {
                                 AssistantPage()
                             }
@@ -840,6 +844,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object Favorite : Screen
+
+    @Serializable
+    data object CatGarden : Screen
 
     @Serializable
     data object Assistant : Screen

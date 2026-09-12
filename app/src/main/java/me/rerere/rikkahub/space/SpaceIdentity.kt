@@ -61,10 +61,17 @@ data class SpaceProfile(
     val isDeleted: Boolean,
 )
 
+/**
+ * Resolve display data for an actor.
+ *
+ * No localised fallback name is supplied here on purpose: this is called from ViewModels, which
+ * have no resources. A deleted assistant comes back as a blank name with [SpaceProfile.isDeleted]
+ * set, and the UI decides what to show — the same way a user actor comes back blank for the UI to
+ * fill in from the current nickname.
+ */
 fun resolveSpaceProfile(
     actor: SpaceActor,
     assistants: List<Assistant>,
-    deletedNameFallback: String,
 ): SpaceProfile = when (actor.kind) {
     SpaceActorKind.USER -> SpaceProfile(
         actor = actor,
@@ -79,7 +86,7 @@ fun resolveSpaceProfile(
         if (assistant == null) {
             SpaceProfile(
                 actor = actor,
-                displayName = deletedNameFallback,
+                displayName = "",
                 avatar = me.rerere.rikkahub.data.model.Avatar.Dummy,
                 isDeleted = true,
             )

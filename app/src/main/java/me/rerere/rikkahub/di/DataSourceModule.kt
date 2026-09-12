@@ -682,6 +682,9 @@ val dataSourceModule = module {
     single { me.rerere.rikkahub.toolcatalog.ToolShortcutRepository(database = get(), dao = get()) }
     single { get<AppDatabase>().spaceDao() }
     single { me.rerere.rikkahub.space.SpaceRepository(dao = get()) }
+    single<me.rerere.rikkahub.space.SpaceIdentitySource> {
+        me.rerere.rikkahub.space.SettingsSpaceIdentitySource(settingsStore = get())
+    }
     single {
         me.rerere.rikkahub.diagnostics.ToolCatalogDiagnostics(
             experiences = get(),

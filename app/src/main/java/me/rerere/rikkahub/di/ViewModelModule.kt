@@ -32,6 +32,7 @@ import me.rerere.rikkahub.ui.pages.memory.MemoryCenterVM
 import me.rerere.rikkahub.ui.pages.learning.LearningCenterVM
 import me.rerere.rikkahub.ui.pages.learning.curator.CuratorReviewVM
 import me.rerere.rikkahub.ui.pages.learning.workflow.WorkflowReviewVM
+import me.rerere.rikkahub.ui.pages.space.CatGardenVM
 import me.rerere.rikkahub.workflow.ui.WorkflowsViewModel
 import org.koin.core.module.dsl.viewModel
 import org.koin.core.module.dsl.viewModelOf
@@ -58,6 +59,14 @@ val viewModelModule = module {
     viewModelOf(::DebugVM)
     viewModelOf(::DeveloperVM)
     viewModelOf(::HistoryVM)
+    // Constructed explicitly rather than with viewModelOf: the third parameter is a test seam
+    // that Koin must not try to resolve from the graph, so the default is used here.
+    viewModel<CatGardenVM> {
+        CatGardenVM(
+            spaceRepository = get(),
+            identitySource = get(),
+        )
+    }
     viewModelOf(::AssistantVM)
     viewModel<AssistantDetailVM> {
         AssistantDetailVM(
