@@ -52,7 +52,7 @@ import kotlin.uuid.Uuid
 
 /** Emulator/disposable-device only. Never run this instrumentation test on the primary phone. */
 @RunWith(AndroidJUnit4::class)
-class AppDatabaseV49BackupRestoreRoundTripTest {
+class AppDatabaseV50BackupRestoreRoundTripTest {
     @get:Rule
     val helper = MigrationTestHelper(
         InstrumentationRegistry.getInstrumentation(),
@@ -62,10 +62,10 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
     )
 
     @Test
-    fun exactSameVersionV49StagedImportPreservesWorkflowAndGrant() {
+    fun exactSameVersionV50StagedImportPreservesWorkflowAndGrant() {
         val name = stagedDatabaseName()
         try {
-            helper.createDatabase(name, 49).use(::insertV49Fixture)
+            helper.createDatabase(name, 50).use(::insertV50Fixture)
             val staged = context().getDatabasePath(name).canonicalFile
 
             ImportedDatabaseReconciler.reconcileStagedFileOrThrow(
@@ -81,12 +81,12 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
     }
 
     @Test
-    fun v49WorkflowAndGrantSurviveArchiveStagePrepareAndLiveSwap() {
-        val sourceName = "v49-backup-source-${randomToken()}"
-        val root = File(context().cacheDir.canonicalFile, "v49-backup-roundtrip-${randomToken()}")
-        val archive = File(context().cacheDir.canonicalFile, "v49-backup-${randomToken()}.zip")
+    fun v50WorkflowAndGrantSurviveArchiveStagePrepareAndLiveSwap() {
+        val sourceName = "v50-backup-source-${randomToken()}"
+        val root = File(context().cacheDir.canonicalFile, "v50-backup-roundtrip-${randomToken()}")
+        val archive = File(context().cacheDir.canonicalFile, "v50-backup-${randomToken()}.zip")
         try {
-            helper.createDatabase(sourceName, 49).use(::insertV49Fixture)
+            helper.createDatabase(sourceName, 50).use(::insertV50Fixture)
             val sourceDatabase = context().getDatabasePath(sourceName).canonicalFile
             val verified = writeAndVerifyArchive(sourceDatabase, archive)
             assertEquals(
@@ -129,16 +129,16 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
     }
 
     @Test
-    fun unknownV49IdentityIsRejectedDuringColdPreparationBeforeLiveSwap() {
-        val sourceName = "v49-unknown-source-${randomToken()}"
-        val root = File(context().cacheDir.canonicalFile, "v49-unknown-roundtrip-${randomToken()}")
-        val archive = File(context().cacheDir.canonicalFile, "v49-unknown-${randomToken()}.zip")
+    fun unknownV50IdentityIsRejectedDuringColdPreparationBeforeLiveSwap() {
+        val sourceName = "v50-unknown-source-${randomToken()}"
+        val root = File(context().cacheDir.canonicalFile, "v50-unknown-roundtrip-${randomToken()}")
+        val archive = File(context().cacheDir.canonicalFile, "v50-unknown-${randomToken()}.zip")
         val oldLive = "old-live-must-remain".toByteArray()
         try {
-            helper.createDatabase(sourceName, 49).use { database ->
+            helper.createDatabase(sourceName, 50).use { database ->
                 insertStream(database)
                 database.execSQL(
-                    "UPDATE room_master_table SET identity_hash = 'unknown-v49' WHERE id = 42",
+                    "UPDATE room_master_table SET identity_hash = 'unknown-v50' WHERE id = 42",
                 )
             }
             val verified = writeAndVerifyArchive(
@@ -180,7 +180,7 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
         }
     }
 
-    private fun insertV49Fixture(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+    private fun insertV50Fixture(database: androidx.sqlite.db.SupportSQLiteDatabase) {
         insertStream(database)
         insertGrantHeadAndRevision(database)
 
@@ -370,7 +370,7 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
             null,
             SQLiteDatabase.OPEN_READONLY,
         ).use { database ->
-            assertEquals(49, database.version)
+            assertEquals(ImportedDatabaseReconciler.EXPECTED_VERSION, database.version)
             database.rawQuery(
                 "SELECT identity_hash FROM room_master_table WHERE id = 42",
                 null,

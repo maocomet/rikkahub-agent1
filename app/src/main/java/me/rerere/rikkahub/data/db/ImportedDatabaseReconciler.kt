@@ -39,6 +39,12 @@ import me.rerere.rikkahub.data.db.migrations.LEARNING_V48_POLICY_GRANT_REVISIONS
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_46_47
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_47_48
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_48_49
+import me.rerere.rikkahub.data.db.migrations.MIGRATION_49_50
+import me.rerere.rikkahub.data.db.migrations.SPACE_V50_COMMENTS_TABLE_SQL
+import me.rerere.rikkahub.data.db.migrations.SPACE_V50_INDEX_SQL
+import me.rerere.rikkahub.data.db.migrations.SPACE_V50_LIKES_TABLE_SQL
+import me.rerere.rikkahub.data.db.migrations.SPACE_V50_NOTIFICATIONS_TABLE_SQL
+import me.rerere.rikkahub.data.db.migrations.SPACE_V50_POSTS_TABLE_SQL
 import me.rerere.rikkahub.data.db.migrations.WORKFLOW_V49_COLUMNS
 import me.rerere.rikkahub.data.db.migrations.workflowV49Backfill
 
@@ -80,9 +86,10 @@ object ImportedDatabaseReconciler {
     private const val TAG = "DbReconciler"
     private const val DB_NAME = "rikka_hub"
 
-    /** Room schema version and exact identity exported from AppDatabase/49.json. */
-    internal const val EXPECTED_VERSION = 49
-    internal const val EXPECTED_IDENTITY_HASH = "967f2a908998f5bac733c1ae71bee5bb"
+    /** Room schema version and exact identity exported from AppDatabase/50.json. */
+    internal const val EXPECTED_VERSION = 50
+    internal const val EXPECTED_IDENTITY_HASH = "d458d247adbdc36f591599a301ac092f"
+    internal const val FINAL_V49_IDENTITY_HASH = "967f2a908998f5bac733c1ae71bee5bb"
     internal const val FINAL_V48_IDENTITY_HASH = "74be67f9e9e32264c091b1d6c4a32b17"
     internal const val FINAL_V47_IDENTITY_HASH = "3208afdfb6ec01eb325a598464e56940"
     internal const val FINAL_V46_IDENTITY_HASH = "670bbac26f583e5c08349fe9a950570b"
@@ -93,7 +100,7 @@ object ImportedDatabaseReconciler {
     internal const val WORKFLOW_CLAIM_TOMBSTONE = "learning_scope_erased_claim_v1"
     internal const val WORKFLOW_REDACTED_NAME = "Erased learned workflow"
     internal val STAGED_COLD_RESTORE_MIGRATIONS =
-        listOf(MIGRATION_46_47, MIGRATION_47_48, MIGRATION_48_49)
+        listOf(MIGRATION_46_47, MIGRATION_47_48, MIGRATION_48_49, MIGRATION_49_50)
 
     /** Canonical database identities are lowercase UUIDs and never the nil sentinel. */
     internal fun isCanonicalNonNilDatabaseUuid(value: String): Boolean =
@@ -112,6 +119,9 @@ object ImportedDatabaseReconciler {
         version == EXPECTED_VERSION && identityHash == EXPECTED_IDENTITY_HASH ->
             ReconcilePlan.SKIP
         version == EXPECTED_VERSION -> ReconcilePlan.REFUSE_UNKNOWN_CURRENT
+        version == 49 && identityHash == FINAL_V49_IDENTITY_HASH ->
+            ReconcilePlan.FULL_COMPATIBILITY
+        version == 49 -> ReconcilePlan.REFUSE_UNKNOWN_CURRENT
         version == 48 && identityHash == FINAL_V48_IDENTITY_HASH ->
             ReconcilePlan.FULL_COMPATIBILITY
         version == 48 -> ReconcilePlan.REFUSE_UNKNOWN_CURRENT
@@ -129,6 +139,7 @@ object ImportedDatabaseReconciler {
 
     internal enum class StagedReconcilePlan {
         ALREADY_CURRENT,
+        MIGRATE_FINAL_V49,
         MIGRATE_FINAL_V48,
         MIGRATE_FINAL_V47,
         MIGRATE_FINAL_V46,
@@ -148,6 +159,8 @@ object ImportedDatabaseReconciler {
     ): StagedReconcilePlan = when {
         version == EXPECTED_VERSION && identityHash == EXPECTED_IDENTITY_HASH ->
             StagedReconcilePlan.ALREADY_CURRENT
+        version == 49 && identityHash == FINAL_V49_IDENTITY_HASH ->
+            StagedReconcilePlan.MIGRATE_FINAL_V49
         version == 48 && identityHash == FINAL_V48_IDENTITY_HASH ->
             StagedReconcilePlan.MIGRATE_FINAL_V48
         version == 47 && identityHash == FINAL_V47_IDENTITY_HASH ->
@@ -181,6 +194,10 @@ object ImportedDatabaseReconciler {
      * backup (where the tables already exist) is a no-op.
      */
     private val FORK_ONLY_DDL: List<String> = listOf(
+        SPACE_V50_POSTS_TABLE_SQL,
+        SPACE_V50_LIKES_TABLE_SQL,
+        SPACE_V50_COMMENTS_TABLE_SQL,
+        SPACE_V50_NOTIFICATIONS_TABLE_SQL,
         "CREATE TABLE IF NOT EXISTS `scheduled_jobs` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `prompt` TEXT, `assistantId` TEXT NOT NULL, `scheduleType` TEXT NOT NULL, `atUnixMs` INTEGER, `intervalSeconds` INTEGER, `enabled` INTEGER NOT NULL, `createdAtMs` INTEGER NOT NULL, `lastRunAtMs` INTEGER, `nextRunAtMs` INTEGER, `mode` TEXT NOT NULL DEFAULT 'llm', `actionsJson` TEXT, `cronExpression` TEXT, `timezone` TEXT, `startAtUnixMs` INTEGER, `endAtUnixMs` INTEGER, `maxRuns` INTEGER, `runsSoFar` INTEGER NOT NULL DEFAULT 0, `catchup` TEXT NOT NULL DEFAULT 'fire_once', `description` TEXT, `tags` TEXT, `targetConversationId` TEXT, PRIMARY KEY(`id`))",
         "CREATE TABLE IF NOT EXISTS `scheduled_job_runs` (`id` TEXT NOT NULL, `jobId` TEXT NOT NULL, `mode` TEXT NOT NULL, `scheduledAtMs` INTEGER NOT NULL, `startedAtMs` INTEGER NOT NULL, `finishedAtMs` INTEGER, `outcome` TEXT NOT NULL, `conversationId` TEXT, `errorMessage` TEXT, PRIMARY KEY(`id`))",
         "CREATE TABLE IF NOT EXISTS `ssh_hosts` (`name` TEXT NOT NULL, `host` TEXT NOT NULL, `port` INTEGER NOT NULL, `user` TEXT NOT NULL, `password` TEXT, `privateKey` TEXT, `passphrase` TEXT, `createdAtMs` INTEGER NOT NULL, PRIMARY KEY(`name`))",
@@ -240,7 +257,7 @@ object ImportedDatabaseReconciler {
         "CREATE UNIQUE INDEX IF NOT EXISTS `index_memory_revisions_memory_id_revision` ON `memory_revisions` (`memory_id`, `revision`)",
         "CREATE INDEX IF NOT EXISTS `index_memory_revisions_memory_id_created_at_ms` ON `memory_revisions` (`memory_id`, `created_at_ms`)",
         "CREATE INDEX IF NOT EXISTS `index_memory_revisions_candidate_id` ON `memory_revisions` (`candidate_id`)",
-    )
+    ) + SPACE_V50_INDEX_SQL
 
     private fun ensureConversationFolderV29Column(db: SQLiteDatabase) {
         val hasFolderId = db.rawQuery("PRAGMA table_info(`ConversationEntity`)", null).use { cursor ->
@@ -1359,6 +1376,14 @@ object ImportedDatabaseReconciler {
         }
         when (plan) {
             StagedReconcilePlan.ALREADY_CURRENT -> Unit
+            StagedReconcilePlan.MIGRATE_FINAL_V49 ->
+                migrateExactStagedToV49(
+                    databaseFile = databaseFile,
+                    expectedStreamId = expectedStreamId,
+                    expectedHeadSeq = expectedHeadSeq,
+                    expectedStartVersion = 49,
+                    expectedStartIdentity = FINAL_V49_IDENTITY_HASH,
+                )
             StagedReconcilePlan.MIGRATE_FINAL_V48 ->
                 migrateExactStagedToV49(
                     databaseFile = databaseFile,
@@ -1468,6 +1493,14 @@ object ImportedDatabaseReconciler {
                         requireV47RewardAuthoritySchema(db)
                         requireV48PolicyGrantSchema(db)
                     }
+                    49 -> {
+                        check(!includeP1Floor && !createStream)
+                        requireHealthyLearningOutbox(db)
+                        requireP1LearningAuthoritySchema(db)
+                        requireV47RewardAuthoritySchema(db)
+                        requireV48PolicyGrantSchema(db)
+                        requireV49WorkflowSchema(db)
+                    }
                     else -> error("Unsupported staged migration start version")
                 }
                 requireExactAuthorityStream(db, expectedStreamId, expectedHeadSeq)
@@ -1481,6 +1514,7 @@ object ImportedDatabaseReconciler {
                             MIGRATION_46_47 -> migrateV46ToV47Raw(db)
                             MIGRATION_47_48 -> migrateV47ToV48Raw(db)
                             MIGRATION_48_49 -> migrateV48ToV49Raw(db)
+                            MIGRATION_49_50 -> migrateV49ToV50Raw(db)
                             else -> error(
                                 "Staged cold-restore migration chain contains an unsupported migration",
                             )
@@ -1534,8 +1568,51 @@ object ImportedDatabaseReconciler {
         ensureColumns(db, "workflows", WORKFLOW_V49_COLUMNS)
         backfillWorkflowV49RowsRaw(db)
         requireV49WorkflowSchema(db)
+        // Stops at 49, not EXPECTED_VERSION: this is one link in a chain, and the chain now
+        // continues to 50. Stamping the current constant here would skip the v50 link entirely.
+        db.version = 49
+        stampIdentity(db, FINAL_V49_IDENTITY_HASH)
+    }
+
+    /** Raw-SQL mirror of [MIGRATION_49_50]: purely additive Space tables, no row backfill. */
+    private fun migrateV49ToV50Raw(db: SQLiteDatabase) {
+        check(db.version == 49) { "Raw 49 -> 50 migration received the wrong version" }
+        requireHealthyLearningOutbox(db)
+        requireP1LearningAuthoritySchema(db)
+        requireV47RewardAuthoritySchema(db)
+        requireV48PolicyGrantSchema(db)
+        requireV49WorkflowSchema(db)
+        db.execSQL(SPACE_V50_POSTS_TABLE_SQL)
+        db.execSQL(SPACE_V50_LIKES_TABLE_SQL)
+        db.execSQL(SPACE_V50_COMMENTS_TABLE_SQL)
+        db.execSQL(SPACE_V50_NOTIFICATIONS_TABLE_SQL)
+        SPACE_V50_INDEX_SQL.forEach(db::execSQL)
+        requireV50SpaceSchema(db)
         db.version = EXPECTED_VERSION
         stampIdentity(db, EXPECTED_IDENTITY_HASH)
+    }
+
+    /**
+     * Verifies the additive v50 tables exist with the exact shape Room validates at open time.
+     * Cold restore is a raw-SQL path that bypasses Room, so nothing else would catch a missing
+     * table or a mis-named index here.
+     */
+    private fun requireV50SpaceSchema(db: SQLiteDatabase) {
+        listOf("space_posts", "space_likes", "space_comments", "space_notifications").forEach { table ->
+            val exists = db.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+                arrayOf(table),
+            ).use { it.moveToFirst() }
+            check(exists) { "v50 Space schema is missing table $table" }
+        }
+        SPACE_V50_INDEX_SQL.forEach { statement ->
+            val indexName = statement.substringAfter("EXISTS `").substringBefore("`")
+            val exists = db.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1",
+                arrayOf(indexName),
+            ).use { it.moveToFirst() }
+            check(exists) { "v50 Space schema is missing index $indexName" }
+        }
     }
 
     private fun backfillWorkflowV49RowsRaw(db: SQLiteDatabase) {

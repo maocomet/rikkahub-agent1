@@ -12,11 +12,15 @@ class ImportedDatabaseReconcilerContractTest {
     val temporaryFolder = TemporaryFolder()
 
     @Test
-    fun `reconciler pins the exported v49 identity and exact v48 predecessor`() {
-        assertEquals(49, ImportedDatabaseReconciler.EXPECTED_VERSION)
+    fun `reconciler pins the exported v50 identity and exact v49 predecessor`() {
+        assertEquals(50, ImportedDatabaseReconciler.EXPECTED_VERSION)
+        assertEquals(
+            "d458d247adbdc36f591599a301ac092f",
+            ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
+        )
         assertEquals(
             "967f2a908998f5bac733c1ae71bee5bb",
-            ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
+            ImportedDatabaseReconciler.FINAL_V49_IDENTITY_HASH,
         )
         assertEquals(
             "74be67f9e9e32264c091b1d6c4a32b17",
@@ -175,7 +179,7 @@ class ImportedDatabaseReconcilerContractTest {
     @Test
     fun `cold staged restore accepts only exact frozen v46 and v47 identities`() {
         assertEquals(
-            listOf(46 to 47, 47 to 48, 48 to 49),
+            listOf(46 to 47, 47 to 48, 48 to 49, 49 to 50),
             ImportedDatabaseReconciler.STAGED_COLD_RESTORE_MIGRATIONS.map {
                 it.startVersion to it.endVersion
             },
@@ -288,12 +292,39 @@ class ImportedDatabaseReconcilerContractTest {
     }
 
     @Test
-    fun `final v49 identity skips raw framework reconciliation`() {
+    fun `final current identity skips raw framework reconciliation`() {
         assertEquals(
             ImportedDatabaseReconciler.ReconcilePlan.SKIP,
             ImportedDatabaseReconciler.reconcilePlan(
+                version = ImportedDatabaseReconciler.EXPECTED_VERSION,
+                identityHash = ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
+            ),
+        )
+    }
+
+    @Test
+    fun `exact final v49 identity follows the raw 49 to 50 migration`() {
+        // The v49 export is now a predecessor rather than the current schema, so it must route
+        // through raw reconciliation instead of being skipped as already current.
+        assertEquals(
+            ImportedDatabaseReconciler.ReconcilePlan.FULL_COMPATIBILITY,
+            ImportedDatabaseReconciler.reconcilePlan(
+                version = 49,
+                identityHash = ImportedDatabaseReconciler.FINAL_V49_IDENTITY_HASH,
+            ),
+        )
+        assertEquals(
+            ImportedDatabaseReconciler.ReconcilePlan.REFUSE_UNKNOWN_CURRENT,
+            ImportedDatabaseReconciler.reconcilePlan(
                 version = 49,
                 identityHash = ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
+            ),
+        )
+        assertEquals(
+            ImportedDatabaseReconciler.StagedReconcilePlan.MIGRATE_FINAL_V49,
+            ImportedDatabaseReconciler.stagedReconcilePlanOrThrow(
+                version = 49,
+                identityHash = ImportedDatabaseReconciler.FINAL_V49_IDENTITY_HASH,
             ),
         )
     }

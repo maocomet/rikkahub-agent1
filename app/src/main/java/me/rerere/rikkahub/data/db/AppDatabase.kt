@@ -104,6 +104,11 @@ import me.rerere.rikkahub.owner.db.HostLocalServiceEntity
 import me.rerere.rikkahub.owner.db.HostOperationDao
 import me.rerere.rikkahub.owner.db.HostOperationEntity
 import me.rerere.rikkahub.owner.db.HostOperationEventEntity
+import me.rerere.rikkahub.space.SpaceCommentEntity
+import me.rerere.rikkahub.space.SpaceDao
+import me.rerere.rikkahub.space.SpaceLikeEntity
+import me.rerere.rikkahub.space.SpaceNotificationEntity
+import me.rerere.rikkahub.space.SpacePostEntity
 
 @Database(
     entities = [
@@ -163,10 +168,14 @@ import me.rerere.rikkahub.owner.db.HostOperationEventEntity
         LearningPolicyGrantRevisionEntity::class,
         RewardFeedbackAuthorityEntity::class,
         RewardFeedbackAuthorityRevisionEntity::class,
+        SpacePostEntity::class,
+        SpaceLikeEntity::class,
+        SpaceCommentEntity::class,
+        SpaceNotificationEntity::class,
     ],
-    // v49 makes workflow capability/provenance authority durable. Learned artifacts remain
-    // disabled until an explicit cross-database promotion completes.
-    version = 49,
+    // v50 adds the Cat Garden Space tables. Purely additive: every prior table, column and index
+    // is unchanged, so an upgrade keeps all existing chats, settings and messages.
+    version = 50,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -262,6 +271,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun learningPolicyGrantDao(): LearningPolicyGrantDao
 
     abstract fun rewardFeedbackAuthorityDao(): RewardFeedbackAuthorityDao
+
+    abstract fun spaceDao(): SpaceDao
 }
 
 object TokenUsageConverter {
