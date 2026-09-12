@@ -81,7 +81,7 @@
   <string name="agent_timing_tool_post_processing">المعالجة اللاحقة %1$s</string>
   <string name="agent_timing_visible_not_observed">لم تتم ملاحظته</string>
   <string name="agent_timing_visible_pending">قيد الانتظار</string>
-  <string name="app_name">RikkaHub Agent</string>
+  <string name="app_name">Cat Garden</string>
   <string name="asr_button_content_description">التعرف على الكلام</string>
   <string name="asr_button_stop">إيقاف</string>
   <string name="assistant_detail_basic_desc">تكوين الاسم والصورة الرمزية والنموذج والمعاملات</string>

@@ -83,7 +83,7 @@
   <string name="agent_timing_tool_post_processing">Постобработка %1$s</string>
   <string name="agent_timing_visible_not_observed">Не наблюдалось</string>
   <string name="agent_timing_visible_pending">Ожидание</string>
-  <string name="app_name">RikkaHub Agent</string>
+  <string name="app_name">Cat Garden</string>
   <string name="asr_button_content_description">Распознавание речи</string>
   <string name="asr_button_stop">Стоп</string>
   <string name="assistant_detail_basic_desc">Настройте имя, аватар, модель и параметры</string>

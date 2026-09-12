@@ -83,7 +83,7 @@
   <string name="agent_timing_tool_post_processing">후처리 %1$s</string>
   <string name="agent_timing_visible_not_observed">관찰되지 않음</string>
   <string name="agent_timing_visible_pending">대기 중</string>
-  <string name="app_name">RikkaHub Agent</string>
+  <string name="app_name">Cat Garden</string>
   <string name="asr_button_content_description">음성 인식</string>
   <string name="asr_button_stop">중지</string>
   <string name="assistant_detail_basic_desc">이름, 아바타, 모델 및 매개변수 구성</string>

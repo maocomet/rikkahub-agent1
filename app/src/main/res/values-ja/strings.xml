@@ -83,7 +83,7 @@
   <string name="agent_timing_tool_post_processing">後処理 %1$s</string>
   <string name="agent_timing_visible_not_observed">観測されず</string>
   <string name="agent_timing_visible_pending">保留中</string>
-  <string name="app_name">RikkaHub Agent</string>
+  <string name="app_name">Cat Garden</string>
   <string name="asr_button_content_description">音声認識</string>
   <string name="asr_button_stop">停止</string>
   <string name="assistant_detail_basic_desc">名前、アバター、モデル、パラメータを設定</string>
