@@ -597,6 +597,7 @@ class ChatService(
     private val templateTransformer: TemplateTransformer,
     private val providerManager: ProviderManager,
     private val localTools: LocalTools,
+    private val spaceRepository: me.rerere.rikkahub.space.SpaceRepository,
     val mcpManager: McpManager,
     private val filesManager: FilesManager,
     private val skillManager: SkillManager,
@@ -3678,6 +3679,23 @@ class ChatService(
                 tools = buildList {
                     if (webSearchToolsEnabled) {
                         addAll(createSearchTools(settings))
+                    }
+                    // Cat Garden. Gated on the ordinary-assistant path only, so the Second-User and
+                    // Owner surfaces are untouched by this feature. When the assistant has not
+                    // opted in — or the origin is not an allowed one — the set is empty and no
+                    // space schema is built at all, rather than a tool that would refuse later.
+                    // The final filter re-applies the same set, so the builder can never widen it.
+                    if (!privilegeContext.isPrivileged) {
+                        val spaceToolNames = me.rerere.rikkahub.space.spaceToolNamesFor(
+                            assistantEnabled = assistant.catGardenEnabled,
+                            callOrigin = callOrigin,
+                        )
+                        if (spaceToolNames.isNotEmpty()) {
+                            addAll(
+                                me.rerere.rikkahub.space.createSpaceTools(spaceRepository, invocationCtx)
+                                    .filter { tool -> tool.name in spaceToolNames }
+                            )
+                        }
                     }
                     if (!privilegeContext.isPrivileged) {
                         // Ordinary assistants expose the on-demand conversation-history tools only

@@ -139,6 +139,19 @@ data class Assistant(
      * backups readable.
      */
     val allowConversationHistoryTools: Boolean = false,
+    /**
+     * Explicit opt-in for this assistant to carry the Cat Garden space tools.
+     *
+     * Default off, and the surface is built only when this is true AND the call came from an
+     * allowed origin, so a disabled assistant (or a remote/automation origin) carries no `space_*`
+     * schema at all rather than a tool that refuses at call time.
+     *
+     * Deliberately a defaulted field on Assistant rather than a `LocalToolOption`: adding an option
+     * changes `SecondUserToolAllowlist.PRIVILEGED_IMPLEMENTED`, which is the canonical second-user
+     * surface, so it would silently widen the privileged surface. A defaulted field avoids that and
+     * a Room migration, and keeps old settings and exported backups readable.
+     */
+    val catGardenEnabled: Boolean = false,
     /** Optional P1 pet sidecar settings. Defaults keep existing assistants and exports unchanged. */
     val petEnabled: Boolean = false,
     val petPackageId: String? = null,

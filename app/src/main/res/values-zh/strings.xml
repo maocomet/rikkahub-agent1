@@ -307,6 +307,9 @@
   <string name="assistant_page_local_tools_section_automation">自动化</string>
   <string name="assistant_page_local_tools_section_browser">浏览器</string>
   <string name="assistant_page_local_tools_section_device_info">设备信息</string>
+  <string name="assistant_page_cat_garden_section">Cat Garden</string>
+  <string name="assistant_page_cat_garden_title">Cat Garden</string>
+  <string name="assistant_page_cat_garden_desc">允许该助手在 Cat Garden 中发帖、评论和点赞。默认关闭：关闭时不会向模型发送任何空间工具。</string>
   <string name="assistant_page_local_tools_section_existing">内置工具</string>
   <string name="assistant_page_local_tools_section_files">文件管理器</string>
   <string name="assistant_page_local_tools_section_hardware">硬件控制</string>

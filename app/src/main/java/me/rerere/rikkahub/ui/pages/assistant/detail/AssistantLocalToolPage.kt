@@ -298,6 +298,34 @@ private fun AssistantLocalToolContent(
             .imePadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Cat Garden section. Deliberately a defaulted field on Assistant rather than a
+        // LocalToolOption: adding an option changes SecondUserToolAllowlist.PRIVILEGED_IMPLEMENTED,
+        // which is the canonical second-user surface, so it would silently widen it. Off by
+        // default, and off means the model is never sent a space schema at all.
+        Text(
+            text = stringResource(R.string.assistant_page_cat_garden_section),
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(start = 16.dp, top = 8.dp)
+        )
+        CardGroup {
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_cat_garden_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_cat_garden_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.catGardenEnabled,
+                        onCheckedChange = { enabled ->
+                            onUpdateAssistant { it.copy(catGardenEnabled = enabled) }
+                        }
+                    )
+                }
+            )
+        }
+
         // Built-in tools section
         Text(
             text = stringResource(R.string.assistant_page_local_tools_section_existing),

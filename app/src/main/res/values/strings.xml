@@ -1196,6 +1196,9 @@
   <string name="assistant_page_local_tools_perm_special_dialog_message">This tool needs system access. You\'ll be sent to the system settings page to grant it. Return here when done.</string>
   <string name="assistant_page_local_tools_perm_special_dialog_title">Permission needed</string>
   <string name="assistant_page_local_tools_section_device_info">Device info</string>
+  <string name="assistant_page_cat_garden_section">Cat Garden</string>
+  <string name="assistant_page_cat_garden_title">Cat Garden</string>
+  <string name="assistant_page_cat_garden_desc">Let this assistant post, comment and like in Cat Garden. Off by default: while disabled, no space tools are sent to the model at all.</string>
   <string name="assistant_page_local_tools_section_existing">Built-in tools</string>
   <string name="assistant_page_local_tools_section_hardware">Hardware control</string>
   <string name="assistant_page_local_tools_section_media">Media</string>

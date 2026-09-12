@@ -42,6 +42,12 @@ object InternalToolSecurityCatalog {
         // P2 vault access is intentionally metadata-only. The secret value has no model tool.
         "secret_vault_list",
         "secret_vault_test_binding",
+        // Cat Garden reads. Listed here (like the conversation-history tools) because they are
+        // application-owned tools deliberately outside CapabilityCatalog; without an entry the
+        // runtime rejects them as tool_security_descriptor_missing before they ever execute.
+        "space_list_posts",
+        "space_get_post",
+        "space_list_notifications",
     )
 
     val MUTATING: Set<String> = setOf(
@@ -75,6 +81,12 @@ object InternalToolSecurityCatalog {
         "pet_diary_restore",
         "secret_vault_create_slot",
         "secret_vault_set_binding",
+        // Cat Garden writes. PERSISTENT_STATE and therefore serial, which is what the policy
+        // resolver assigns to every MUTATING entry.
+        "space_create_post",
+        "space_set_like",
+        "space_create_comment",
+        "space_mark_notifications_read",
     ) + OwnerToolFamily.entries.mapTo(linkedSetOf()) { it.toolName }
 
     val ARGUMENT_DEPENDENT: Set<String> = setOf("memory_tool")

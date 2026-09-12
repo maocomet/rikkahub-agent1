@@ -873,6 +873,7 @@ val appModule = module {
             templateTransformer = get(),
             providerManager = get(),
             localTools = get(),
+            spaceRepository = get(),
             mcpManager = get(),
             filesManager = get(),
             skillManager = get(),
