@@ -57,7 +57,7 @@ class SpaceToolSurfaceTest {
             assertEquals(
                 "origin $origin leaked space tools for a disabled assistant",
                 emptySet<String>(),
-                spaceToolNamesFor(assistantEnabled = false, callOrigin = origin),
+                CatGardenToolSurface.toolNamesFor(assistantEnabled = false, callOrigin = origin),
             )
         }
     }
@@ -66,18 +66,18 @@ class SpaceToolSurfaceTest {
     fun `an enabled assistant on local chat is exposed exactly the designed surface`() {
         assertEquals(
             SPACE_TOOL_NAMES,
-            spaceToolNamesFor(assistantEnabled = true, callOrigin = ToolCallOrigin.LocalChat),
+            CatGardenToolSurface.toolNamesFor(assistantEnabled = true, callOrigin = ToolCallOrigin.LocalChat),
         )
     }
 
     @Test
     fun `an enabled assistant is exposed nothing outside the allowed origins`() {
-        val allowed = SPACE_TOOL_ORIGINS
+        val allowed = CatGardenToolSurface.ALLOWED_ORIGINS
         ToolCallOrigin.entries.filterNot { it in allowed }.forEach { origin ->
             assertEquals(
                 "origin $origin must not carry the space surface",
                 emptySet<String>(),
-                spaceToolNamesFor(assistantEnabled = true, callOrigin = origin),
+                CatGardenToolSurface.toolNamesFor(assistantEnabled = true, callOrigin = origin),
             )
         }
     }
@@ -86,7 +86,7 @@ class SpaceToolSurfaceTest {
     fun `an absent origin fails closed even when the assistant is enabled`() {
         assertEquals(
             emptySet<String>(),
-            spaceToolNamesFor(assistantEnabled = true, callOrigin = null),
+            CatGardenToolSurface.toolNamesFor(assistantEnabled = true, callOrigin = null),
         )
     }
 
@@ -231,6 +231,72 @@ class SpaceToolSurfaceTest {
                     JsonInstant.encodeToString(Assistant(name = "A")),
                 )
                 .catGardenEnabled,
+        )
+    }
+
+    // ── Shared resolver: chat and workflow ───────────────────────────────────────────────────
+
+    @Test
+    fun `the trusted workflow runner may carry the space surface`() {
+        assertEquals(
+            SPACE_TOOL_NAMES,
+            CatGardenToolSurface.toolNamesFor(
+                assistantEnabled = true,
+                callOrigin = ToolCallOrigin.TrustedWorkflow,
+            ),
+        )
+    }
+
+    @Test
+    fun `remote and external origins stay denied`() {
+        listOf(
+            ToolCallOrigin.Telegram,
+            ToolCallOrigin.WebServer,
+            ToolCallOrigin.MCP,
+            ToolCallOrigin.ExternalIntent,
+        ).forEach { origin ->
+            assertEquals(
+                "origin $origin must not carry the space surface",
+                emptySet<String>(),
+                CatGardenToolSurface.toolNamesFor(assistantEnabled = true, callOrigin = origin),
+            )
+        }
+    }
+
+    @Test
+    fun `switching cat garden off empties the workflow surface too`() {
+        // Both surfaces narrow from this one answer, which is what makes an existing workflow
+        // fail closed instead of silently continuing to post.
+        assertEquals(
+            emptySet<String>(),
+            CatGardenToolSurface.toolNamesFor(
+                assistantEnabled = false,
+                callOrigin = ToolCallOrigin.TrustedWorkflow,
+            ),
+        )
+    }
+
+    @Test
+    fun `build reads the origin from the runtime context rather than a separate argument`() {
+        // A caller cannot evaluate the gate against one origin and build with another.
+        assertTrue(
+            CatGardenToolSurface
+                .build(repository, context(callOrigin = ToolCallOrigin.Telegram), assistantEnabled = true)
+                .isEmpty(),
+        )
+        assertEquals(
+            SPACE_TOOL_NAMES,
+            CatGardenToolSurface
+                .build(repository, context(callOrigin = ToolCallOrigin.LocalChat), assistantEnabled = true)
+                .map { it.name }
+                .toSet(),
+        )
+        assertEquals(
+            SPACE_TOOL_NAMES,
+            CatGardenToolSurface
+                .build(repository, context(callOrigin = ToolCallOrigin.TrustedWorkflow), assistantEnabled = true)
+                .map { it.name }
+                .toSet(),
         )
     }
 

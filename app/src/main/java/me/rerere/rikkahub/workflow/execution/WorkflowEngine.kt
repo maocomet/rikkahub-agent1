@@ -105,6 +105,19 @@ class WorkflowEngine(
     }
 
     /**
+     * Cat Garden's data layer, resolved lazily for the same reason as [localTools]: the engine is
+     * constructed early and the repository is only needed at fire time.
+     *
+     * Note what this does NOT do — it does not decide whether the space surface applies. That
+     * decision lives in [me.rerere.rikkahub.space.CatGardenToolSurface], shared with the
+     * interactive chat builder, so switching Cat Garden off narrows both surfaces from one place.
+     */
+    private val spaceRepository: me.rerere.rikkahub.space.SpaceRepository by lazy {
+        org.koin.java.KoinJavaComponent.getKoin()
+            .get<me.rerere.rikkahub.space.SpaceRepository>()
+    }
+
+    /**
      * Phase 24 — unified AgentRun ledger writer. Resolved lazily via Koin (same pattern as
      * [localTools] above) to keep the engine's constructor DI surface minimal — the engine
      * is shared across cron / sub-agent surfaces and a tiny lookup on the rare-fire path is
@@ -350,7 +363,17 @@ class WorkflowEngine(
         // workflows re-validate against the assistant's current allowlist surface ONLY while the
         // assistant is still the ACTIVE Second User; legacy rows are healed by a bounded inference;
         // ordinary / LOCAL workflows stay pinned to localTools. See WorkflowRunSurfaceResolver.
-        val localSurfaceTools = localTools.getTools(authoringAssistant.localTools, workflowInvocation)
+        val localSurfaceTools = localTools.getTools(authoringAssistant.localTools, workflowInvocation) +
+            // Cat Garden tools enter the workflow surface through the SAME resolver the chat
+            // builder uses. Nothing here re-checks catGardenEnabled: when the switch is off the
+            // resolver returns nothing, the tool is absent from the surface below, and
+            // WorkflowSchemaGate turns an authored space action into WORKFLOW_TOOL_UNAVAILABLE.
+            // That is what makes switching Cat Garden off fail an existing workflow closed.
+            me.rerere.rikkahub.space.CatGardenToolSurface.build(
+                repository = spaceRepository,
+                invocationContext = workflowInvocation,
+                assistantEnabled = authoringAssistant.catGardenEnabled,
+            )
         val localSurfaceToolNames = localSurfaceTools.mapTo(hashSetOf()) { it.name }
         val assistantIsActiveSecondUser = isActiveSecondUser(settings, authoringAssistant.id.toString())
         val runSurface = me.rerere.rikkahub.workflow.model.WorkflowRunSurfaceResolver.choose(

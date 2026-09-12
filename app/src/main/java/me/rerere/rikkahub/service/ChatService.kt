@@ -3686,16 +3686,13 @@ class ChatService(
                     // space schema is built at all, rather than a tool that would refuse later.
                     // The final filter re-applies the same set, so the builder can never widen it.
                     if (!privilegeContext.isPrivileged) {
-                        val spaceToolNames = me.rerere.rikkahub.space.spaceToolNamesFor(
-                            assistantEnabled = assistant.catGardenEnabled,
-                            callOrigin = callOrigin,
-                        )
-                        if (spaceToolNames.isNotEmpty()) {
-                            addAll(
-                                me.rerere.rikkahub.space.createSpaceTools(spaceRepository, invocationCtx)
-                                    .filter { tool -> tool.name in spaceToolNames }
+                        addAll(
+                            me.rerere.rikkahub.space.CatGardenToolSurface.build(
+                                repository = spaceRepository,
+                                invocationContext = invocationCtx,
+                                assistantEnabled = assistant.catGardenEnabled,
                             )
-                        }
+                        )
                     }
                     if (!privilegeContext.isPrivileged) {
                         // Ordinary assistants expose the on-demand conversation-history tools only

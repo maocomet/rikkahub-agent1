@@ -15,7 +15,6 @@ import kotlinx.serialization.json.putJsonArray
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.rikkahub.data.ai.ToolCallOrigin
 import me.rerere.rikkahub.data.ai.tools.ToolInvocationContext
 
 const val SPACE_CREATE_POST_TOOL_NAME = "space_create_post"
@@ -36,32 +35,6 @@ val SPACE_TOOL_NAMES: Set<String> = setOf(
     SPACE_LIST_NOTIFICATIONS_TOOL_NAME,
     SPACE_MARK_NOTIFICATIONS_READ_TOOL_NAME,
 )
-
-/**
- * Origins that may carry the Cat Garden surface.
- *
- * Local chat only for this first version. Space writes are persistent, other-visible state, so a
- * remote origin (Telegram, the web server) or an automation origin must not be able to publish as
- * an assistant. Widening this is a deliberate decision, not a default.
- */
-val SPACE_TOOL_ORIGINS: Set<ToolCallOrigin> = setOf(ToolCallOrigin.LocalChat)
-
-/**
- * Which space tools this turn's model may see.
- *
- * The single gate for the space surface, shared by the tool-surface builder and its tests. It
- * fails closed in every direction: no assistant opt-in, or an unknown/absent origin, yields no
- * tools at all — so a disabled assistant carries no `space_*` schema rather than a tool that
- * refuses at call time.
- */
-fun spaceToolNamesFor(
-    assistantEnabled: Boolean,
-    callOrigin: ToolCallOrigin?,
-): Set<String> {
-    if (!assistantEnabled) return emptySet()
-    val origin = callOrigin ?: return emptySet()
-    return if (origin in SPACE_TOOL_ORIGINS) SPACE_TOOL_NAMES else emptySet()
-}
 
 /**
  * The Cat Garden tools for one turn.
