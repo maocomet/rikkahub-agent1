@@ -50,6 +50,11 @@ class SpaceNotificationEndToEndTest {
     private val assistantA = "aaaaaaaa-0000-0000-0000-000000000001"
     private val assistantB = "bbbbbbbb-0000-0000-0000-000000000002"
 
+    // The same two identities in the form the repository takes. Tool callers pass the raw id
+    // (the runtime owns the context); direct repository calls must pass an actor.
+    private val actorA = SpaceActor.fromAssistant(assistantA) ?: error("unusable identity")
+    private val actorB = SpaceActor.fromAssistant(assistantB) ?: error("unusable identity")
+
     private val dao = FakeSpaceDao()
     private var clock = 1_000L
     private var idSeq = 0
@@ -270,7 +275,7 @@ class SpaceNotificationEndToEndTest {
         postAs(assistantA, "from a person")
         toolsFor(assistantA, headless = true)
             .single { it.name == SPACE_CREATE_POST_TOOL_NAME }
-            .call("content" to "from an automation")
+            .call("content" to JsonPrimitive("from an automation"))
 
         val depths = dao.posts.values.associate { it.content to it.originDepth }
         assertEquals(SpaceCausalDepth.USER_INITIATED, depths.getValue("from a person"))
@@ -289,7 +294,7 @@ class SpaceNotificationEndToEndTest {
                 // illegal depth. Both actors differ from the post's author on purpose: if either
                 // call clamped -1 up to 0, it would write a row that looks exactly like the
                 // person's own action and A's workflow would fire.
-                repository.setLike(assistantB, post, liked = true, originDepth = -1)
+                repository.setLike(actorB, post, liked = true, originDepth = -1)
                 repository.createComment(SpaceActor.USER, post, "illegal", originDepth = -1)
                 repository.createPost(SpaceActor.USER, "illegal", originDepth = -1)
             }
@@ -324,10 +329,7 @@ class SpaceNotificationEndToEndTest {
         userLikes(post)
         assertEquals(1, dao.notifications.size)
 
-        val outcome = repository.deletePost(
-            SpaceActor.fromAssistant(assistantA) ?: error("identity"),
-            post,
-        )
+        val outcome = repository.deletePost(actorA, post)
 
         assertTrue(outcome is SpaceWriteOutcome.Created)
         assertEquals(0, dao.notifications.size)
