@@ -110,6 +110,20 @@ class SpaceNotificationTriggerGuardTest {
     }
 
     @Test
+    fun `an out-of-contract negative depth never wakes a workflow`() = runBlocking {
+        val f = family()
+        f.sync(listOf(workflow("wf-1")), callback)
+
+        // A negative depth cannot come from the repository — it refuses one — so this row could only
+        // exist if something bypassed that. It is here because the consumer guard is the last line:
+        // `depth <= 0` would have admitted it as "shallower than the person" and woken the workflow.
+        f.onSpaceNotificationCreated(deliver(notification("n-negative", depth = -1)))
+        f.onSpaceNotificationCreated(deliver(notification("n-min", depth = Int.MIN_VALUE)))
+
+        assertTrue("a negative depth is out of contract, not user-originated", fired.isEmpty())
+    }
+
+    @Test
     fun `a user-originated notification wakes a matching workflow`() = runBlocking {
         val f = family()
         f.sync(listOf(workflow("wf-1")), callback)

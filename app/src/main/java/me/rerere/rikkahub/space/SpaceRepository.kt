@@ -26,6 +26,7 @@ class SpaceRepository(
     // ── Posts ────────────────────────────────────────────────────────────────────────────────
 
     suspend fun createPost(actor: SpaceActor, content: String, originDepth: Int): SpaceWriteOutcome {
+        if (!SpaceCausalDepth.isValid(originDepth)) return invalidOriginDepth(originDepth)
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return SpaceWriteOutcome.Rejected("EMPTY_CONTENT", "Post content is empty.")
         if (trimmed.length > MAX_POST_CHARS) {
@@ -42,7 +43,7 @@ class SpaceRepository(
                 authorId = actor.id,
                 content = trimmed,
                 createdAtMs = nowMs(),
-                originDepth = originDepth.coerceAtLeast(0),
+                originDepth = originDepth,
             ),
         )
         return SpaceWriteOutcome.Created(id)
@@ -111,6 +112,10 @@ class SpaceRepository(
         liked: Boolean,
         originDepth: Int,
     ): SpaceWriteOutcome {
+        // Validated on BOTH like branches, including the unlike one that emits no notification: a
+        // negative depth is an out-of-contract argument, and accepting it here but refusing it one
+        // branch over is the kind of asymmetry that later reads as an oversight.
+        if (!SpaceCausalDepth.isValid(originDepth)) return invalidOriginDepth(originDepth)
         val post = dao.getPost(postId)
             ?: return SpaceWriteOutcome.Rejected("POST_NOT_FOUND", "No post with that id.")
 
@@ -156,6 +161,7 @@ class SpaceRepository(
         content: String,
         originDepth: Int,
     ): SpaceWriteOutcome {
+        if (!SpaceCausalDepth.isValid(originDepth)) return invalidOriginDepth(originDepth)
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return SpaceWriteOutcome.Rejected("EMPTY_CONTENT", "Comment content is empty.")
         if (trimmed.length > MAX_COMMENT_CHARS) {
@@ -176,7 +182,7 @@ class SpaceRepository(
                 authorId = actor.id,
                 content = trimmed,
                 createdAtMs = nowMs(),
-                originDepth = originDepth.coerceAtLeast(0),
+                originDepth = originDepth,
             ),
         )
         notify(
@@ -285,8 +291,14 @@ class SpaceRepository(
      * person yields a depth-0 notification exactly like the like row itself. Only a write performed
      * by an automation run carries depth >= 1, and only its producer can raise that.
      *
-     * A consumer refuses to wake a workflow for depth >= 1, which is what bounds
+     * A consumer refuses to wake a workflow for anything but depth 0, which is what bounds
      * assistant-to-assistant recursion.
+     *
+     * An out-of-contract depth writes NO ROW rather than being clamped. This is the boundary that
+     * matters most: this method is the only writer of the table the trigger reads, so a negative
+     * depth repaired into 0 here would hand the trigger a wake-capable row that no legitimate
+     * producer could have created. The public entry points already refuse such a depth, so reaching
+     * this line means a caller bypassed them — and the answer to that is to write nothing.
      */
     private suspend fun notify(
         recipient: SpaceActor?,
@@ -298,6 +310,7 @@ class SpaceRepository(
     ) {
         if (recipient == null) return
         if (recipient.kind == actor.kind && recipient.id == actor.id) return
+        if (!SpaceCausalDepth.isValid(originDepth)) return
 
         val stableKey = listOf(type.name, postId, commentId.orEmpty(), actor.kindValue, actor.id)
             .joinToString("|")
@@ -311,7 +324,7 @@ class SpaceRepository(
             postId = postId,
             commentId = commentId,
             createdAtMs = nowMs(),
-            originDepth = originDepth.coerceAtLeast(0),
+            originDepth = originDepth,
         )
         val inserted = dao.insertNotification(entity)
         // Announce only a row that was actually created: a repeat of the same action collapses
@@ -325,6 +338,20 @@ class SpaceRepository(
         const val MAX_PAGE_SIZE: Int = 50
         const val MAX_POST_CHARS: Int = 4000
         const val MAX_COMMENT_CHARS: Int = 1000
+
+        /**
+         * An out-of-contract `origin_depth`, refused rather than repaired.
+         *
+         * The depth is quoted back so a caller can see what it sent, and the message names the
+         * contract rather than only the symptom — the tempting "fix" for this rejection is to clamp
+         * the value at the call site, which is the very thing the contract forbids.
+         */
+        fun invalidOriginDepth(depth: Int): SpaceWriteOutcome.Rejected = SpaceWriteOutcome.Rejected(
+            "INVALID_ORIGIN_DEPTH",
+            "origin_depth $depth is out of contract: it must be " +
+                "${SpaceCausalDepth.USER_INITIATED} for the person's own action or >= " +
+                "${SpaceCausalDepth.AUTOMATION_DRIVEN} for an automation run. It is never clamped.",
+        )
     }
 }
 

@@ -278,6 +278,31 @@ class SpaceNotificationEndToEndTest {
     }
 
     @Test
+    fun `an out-of-contract depth cannot be laundered into a wake through the repository`() =
+        runBlocking {
+            val post = postAs(assistantA, "hello from A")
+
+            withFamily { family ->
+                family.sync(listOf(workflow("wf-a", assistantA)), callback)
+
+                // Every write that could otherwise have produced a notification to A, each with an
+                // illegal depth. Both actors differ from the post's author on purpose: if either
+                // call clamped -1 up to 0, it would write a row that looks exactly like the
+                // person's own action and A's workflow would fire.
+                repository.setLike(assistantB, post, liked = true, originDepth = -1)
+                repository.createComment(SpaceActor.USER, post, "illegal", originDepth = -1)
+                repository.createPost(SpaceActor.USER, "illegal", originDepth = -1)
+            }
+
+            assertTrue("no illegal write may reach the trigger", fired.isEmpty())
+            assertTrue("and none of them may store a row", dao.notifications.isEmpty())
+            assertTrue(dao.likes.isEmpty() && dao.comments.isEmpty())
+            // A post authored by the person at an illegal depth would have been wake-capable mail
+            // addressed to A the moment anything reacted to it.
+            assertEquals(1, dao.posts.size)
+        }
+
+    @Test
     fun `a comment notification carries the comment's own depth`() = runBlocking {
         val post = postAs(assistantA, "hello from A")
 

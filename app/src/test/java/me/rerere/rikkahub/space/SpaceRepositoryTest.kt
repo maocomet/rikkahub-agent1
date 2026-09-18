@@ -212,12 +212,94 @@ class SpaceRepositoryTest {
     }
 
     @Test
-    fun `only the person's own action may wake a workflow`() {
-        // The guard's threshold, asserted directly so a future change to the contract has to come
-        // through here rather than silently sliding.
+    fun `exactly one depth value may wake a workflow, and it is zero`() {
+        // The guard's threshold, asserted over every case the contract names, so a future change
+        // has to come through here rather than silently slide.
         assertTrue(SpaceCausalDepth.mayWakeWorkflow(SpaceCausalDepth.USER_INITIATED))
         assertFalse(SpaceCausalDepth.mayWakeWorkflow(SpaceCausalDepth.AUTOMATION_DRIVEN))
         assertFalse(SpaceCausalDepth.mayWakeWorkflow(2))
+        // A NEGATIVE depth is the case a `<=` comparison would have got wrong: it is out of
+        // contract, not "shallower than the person", and it must not be wake-capable.
+        assertFalse(SpaceCausalDepth.mayWakeWorkflow(-1))
+        assertFalse(SpaceCausalDepth.mayWakeWorkflow(Int.MIN_VALUE))
+    }
+
+    @Test
+    fun `only depth zero and above are in contract`() {
+        assertTrue(SpaceCausalDepth.isValid(SpaceCausalDepth.USER_INITIATED))
+        assertTrue(SpaceCausalDepth.isValid(SpaceCausalDepth.AUTOMATION_DRIVEN))
+        assertTrue(SpaceCausalDepth.isValid(2))
+        assertFalse(SpaceCausalDepth.isValid(-1))
+        assertFalse(SpaceCausalDepth.isValid(Int.MIN_VALUE))
+    }
+
+    // ── An illegal depth is refused, never repaired ──────────────────────────────────────────
+
+    @Test
+    fun `a negative origin depth is refused on every write and stores nothing`() = runBlocking {
+        val postId = post(assistantA)
+
+        assertEquals(
+            "INVALID_ORIGIN_DEPTH",
+            (repo.createPost(SpaceActor.USER, "illegal", -1) as SpaceWriteOutcome.Rejected).code,
+        )
+        assertEquals(
+            "INVALID_ORIGIN_DEPTH",
+            (repo.createComment(assistantB, postId, "illegal", -1) as SpaceWriteOutcome.Rejected).code,
+        )
+        assertEquals(
+            "INVALID_ORIGIN_DEPTH",
+            (repo.setLike(assistantB, postId, liked = true, originDepth = -1)
+                as SpaceWriteOutcome.Rejected).code,
+        )
+
+        assertEquals("only the setup post may exist", 1, dao.posts.size)
+        assertEquals(0, dao.comments.size)
+        assertEquals(0, dao.likes.size)
+        assertEquals(0, dao.notifications.size)
+    }
+
+    @Test
+    fun `an illegal depth is never clamped into a wake-capable notification`() = runBlocking {
+        val postId = post(assistantA)
+
+        // The defect this guards against: clamping -1 up to 0 would produce a notification that
+        // looks exactly like the person's own action, and the trigger family would wake a workflow
+        // for something no producer legitimately emitted.
+        repo.createComment(assistantB, postId, "illegal", -1)
+        repo.setLike(assistantB, postId, liked = true, originDepth = -1)
+
+        assertTrue("no row may be written at all", dao.notifications.isEmpty())
+        assertFalse(
+            "nothing may exist that the trigger would treat as user-originated",
+            dao.notifications.values.any {
+                SpaceCausalDepth.mayWakeWorkflow(it.originDepth)
+            },
+        )
+        assertEquals(0, repo.commentCount(postId))
+    }
+
+    @Test
+    fun `the unlike branch refuses an illegal depth too`() = runBlocking {
+        val postId = post(assistantA)
+        repo.setLike(assistantB, postId, liked = true, SpaceCausalDepth.USER_INITIATED)
+
+        // Unlike emits no notification, so it would be easy to skip validation here — but a
+        // negative depth is an out-of-contract argument on this branch as much as on the other.
+        assertEquals(
+            "INVALID_ORIGIN_DEPTH",
+            (repo.setLike(assistantB, postId, liked = false, originDepth = -1)
+                as SpaceWriteOutcome.Rejected).code,
+        )
+        assertEquals("the existing like is untouched", 1, repo.likeCount(postId))
+    }
+
+    @Test
+    fun `a refused illegal depth is reported, not thrown`() = runBlocking {
+        // A caller must be able to see WHY, and the message must not invite clamping it.
+        val rejected = repo.createPost(assistantA, "x", -5) as SpaceWriteOutcome.Rejected
+        assertTrue(rejected.message.contains("-5"))
+        assertTrue(rejected.message.contains("never clamped"))
     }
 
     @Test

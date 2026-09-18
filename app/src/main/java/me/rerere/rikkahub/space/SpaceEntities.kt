@@ -29,11 +29,6 @@ enum class SpaceNotificationType {
  * `origin_depth` answers a single question on every table that carries it — posts, comments and
  * notifications alike: *how many automation hops separate this row from the person's own action?*
  *
- *  - [USER_INITIATED] (0) — the row records the person's own action. Nothing stood between them
- *    and it.
- *  - [AUTOMATION_DRIVEN] (1) and above — the row was produced by an automation run
- *    (`WorkflowEngine`), which by construction is at least one hop from the person.
- *
  * The depth of a write is a property OF THAT WRITE, so it is stored verbatim. A notification
  * produced by the person's like is depth 0, exactly like the like itself — it is not "one deeper"
  * than the thing that caused it, because the notification IS the record of that action, not a
@@ -45,6 +40,22 @@ enum class SpaceNotificationType {
  * ([me.rerere.rikkahub.space.createSpaceTools] stamps headless runs that way), so the notification
  * its write produces can never wake another run. That is what makes assistant-to-assistant
  * ping-pong terminate at one hop rather than merely become unlikely.
+ *
+ * ## The three cases, and no fourth
+ *
+ *  - `depth == 0` ([USER_INITIATED]) — the person's own action. The ONLY value that may wake a
+ *    workflow.
+ *  - `depth >= 1` ([AUTOMATION_DRIVEN] and above) — legal, produced by an automation run, never
+ *    wakes a workflow.
+ *  - `depth < 0` — **illegal**. It is not a deeper automation, it is a value no producer can
+ *    legitimately emit, and it is refused rather than repaired.
+ *
+ * The illegal case is the one worth stating twice, because the tempting handling is exactly
+ * backwards: clamping a negative depth up to zero would turn an out-of-contract value into a
+ * *legal, wake-capable* one, which is the exact opposite of failing closed. So a negative depth is
+ * rejected at the write ([SpaceRepository] returns an `INVALID_ORIGIN_DEPTH` refusal and stores
+ * nothing), [isValid] reports it as out of contract, and [mayWakeWorkflow] answers false for it —
+ * three independent places, none of which can promote it to zero.
  */
 object SpaceCausalDepth {
     /** The row is the person's own action: nothing ran on their behalf. */
@@ -58,10 +69,20 @@ object SpaceCausalDepth {
     const val AUTOMATION_DRIVEN: Int = 1
 
     /**
-     * Whether a notification stored at [depth] may wake a workflow. Fail closed: anything that is
-     * not provably the person's own action is refused, including a negative or unexpected value.
+     * Whether [depth] is a value the contract admits at all. False means out-of-contract, not
+     * "deeper": a caller holding an invalid depth must refuse the write, never normalise it.
      */
-    fun mayWakeWorkflow(depth: Int): Boolean = depth <= USER_INITIATED
+    fun isValid(depth: Int): Boolean = depth >= USER_INITIATED
+
+    /**
+     * Whether a notification stored at [depth] may wake a workflow.
+     *
+     * Strict equality, deliberately. Written as `depth == USER_INITIATED` rather than
+     * `depth <= USER_INITIATED` so that a negative value answers false instead of true — the
+     * comparison is the last line of defence if a negative ever reaches storage by some path that
+     * bypassed validation, and a `<=` would quietly admit it.
+     */
+    fun mayWakeWorkflow(depth: Int): Boolean = depth == USER_INITIATED
 }
 
 /**
