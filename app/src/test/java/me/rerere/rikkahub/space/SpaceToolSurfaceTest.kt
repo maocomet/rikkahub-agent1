@@ -33,10 +33,24 @@ import org.junit.Test
 class SpaceToolSurfaceTest {
 
     private var idSeq = 0
+    private var clock = 1_000L
     private val dao = FakeSpaceDao()
+
+    /**
+     * A monotonic clock, deliberately.
+     *
+     * Comment order is `(created_at_ms, comment_id)`. Under a frozen clock every row shares a
+     * millisecond and the ordering falls through to the id — and the ids here are not sequential
+     * strings (`"id-10"` sorts before `"id-2"`), so the cursor order would not be the creation
+     * order. A test that then asserted "the second page starts at c20" would be asserting an
+     * assumption the contract never made. Advancing the clock makes creation order the cursor
+     * order, which is what the content assertions below actually mean.
+     *
+     * [postWithComments] takes a `frozenClockMs` for the cases that need ties on purpose.
+     */
     private val repository = SpaceRepository(
         dao = dao,
-        nowMs = { 1_000L },
+        nowMs = { clock++ },
         newId = { "id-${++idSeq}" },
     )
 
@@ -376,6 +390,14 @@ class SpaceToolSurfaceTest {
         assertEquals("no comment may repeat across a page boundary", 41, walked.toSet().size)
         assertEquals("c0", walked.first())
         assertEquals("c40", walked.last())
+
+        // The invariant underneath those three pages: paging reproduces the thread's own order
+        // exactly, rather than merely not losing rows.
+        assertEquals(
+            "the paged walk must equal a single-shot read of the whole thread",
+            orderedThread(postId).map { it.content },
+            walked,
+        )
     }
 
     @Test
@@ -389,11 +411,20 @@ class SpaceToolSurfaceTest {
                 .single().let { it as UIMessagePart.Text }.text,
         ).jsonObject
 
-        assertEquals(50, json.getValue("comments").jsonArray.size)
+        val ordered = orderedThread(postId)
+        assertEquals(51, ordered.size)
+
+        val page = json.getValue("comments").jsonArray
+        assertEquals(50, page.size)
         assertEquals("the exact total, not the page length", 51, json.getValue("comment_count").jsonPrimitive.int)
         assertTrue(
             "a caller must be told the page is not the whole thread",
             json.getValue("comments_has_more").jsonPrimitive.booleanOrNull ?: false,
+        )
+        assertEquals(
+            "the returned page must be the thread's first fifty, in order",
+            ordered.take(50).map { it.commentId },
+            page.map { it.jsonObject.getValue("comment_id").jsonPrimitive.content },
         )
 
         // And handed the cursor that actually reads the rest — under this tool's own key names.
@@ -403,7 +434,12 @@ class SpaceToolSurfaceTest {
             afterCreatedAtMs = json.getValue("comments_next_after_created_at_ms").jsonPrimitive.long,
             afterId = json.getValue("comments_next_after_id").jsonPrimitive.content,
         )
-        assertEquals(listOf("c50"), rest.contents())
+        assertEquals("the rest of the thread is one comment", 1, rest.count())
+        assertEquals(
+            "and it must be the row that follows the page, not a repeat of its last",
+            ordered.drop(50).map { it.content },
+            rest.contents(),
+        )
         assertFalse(rest.hasMore())
     }
 
@@ -434,9 +470,10 @@ class SpaceToolSurfaceTest {
 
     @Test
     fun `same-millisecond comments page without repeating or skipping through the tool`() = runBlocking {
-        // The repository clock is frozen, so every comment shares a timestamp and only the cursor's
-        // id half keeps the pages disjoint.
-        val postId = postWithComments(45)
+        // The whole thread is written inside one millisecond, so every comment shares a timestamp
+        // and only the cursor's id half keeps the pages disjoint. Creation order is therefore NOT
+        // the cursor order here, which is why this test asserts identity rather than "c0 first".
+        val postId = postWithComments(45, frozenClockMs = 5_000L)
 
         val seen = mutableListOf<String>()
         var page = commentPage(postId, limit = 10)
@@ -452,16 +489,46 @@ class SpaceToolSurfaceTest {
         assertEquals(5, pages)
         assertEquals(45, seen.size)
         assertEquals(45, seen.toSet().size)
+        // Even with every row tied on time, paging reproduces the thread's own order exactly.
+        assertEquals(orderedThread(postId).map { it.content }, seen)
     }
 
-    private suspend fun postWithComments(count: Int): String {
-        val postId = (repository.createPost(
+    /**
+     * Publishes a post with [count] comments on it and returns its id.
+     *
+     * Pass [frozenClockMs] to create the whole thread inside one millisecond, which is the case a
+     * time-only cursor would lose rows on. Such a thread has no meaningful creation order to assert
+     * against, so tests using it must assert on counts and identity rather than on content order.
+     */
+    private suspend fun postWithComments(count: Int, frozenClockMs: Long? = null): String {
+        val writer = if (frozenClockMs == null) {
+            repository
+        } else {
+            SpaceRepository(dao = dao, nowMs = { frozenClockMs }, newId = { "frozen-${++idSeq}" })
+        }
+        val postId = (writer.createPost(
             SpaceActor(SpaceActorKind.ASSISTANT, assistantId),
             "a thread of $count",
             0,
         ) as SpaceWriteOutcome.Created).id
-        repeat(count) { repository.createComment(SpaceActor.USER, postId, "c$it", 0) }
+        repeat(count) { writer.createComment(SpaceActor.USER, postId, "c$it", 0) }
         return postId
+    }
+
+    /**
+     * The whole thread in the order the query itself returns it, read in one shot.
+     *
+     * Goes to the DAO rather than through the repository on purpose: the repository caps a page at
+     * [SpaceRepository.MAX_PAGE_SIZE], and that cap is exactly what paging exists to work around.
+     * A 51-comment thread read through the paged API would come back as 50 rows, and the yardstick
+     * would then be short by the very row the test is about.
+     */
+    private suspend fun orderedThread(postId: String): List<SpaceCommentEntity> =
+        dao.listComments(postId, THREAD_READ_ALL)
+
+    private companion object {
+        /** "All of them", for the one-shot reads this file uses as a yardstick. */
+        const val THREAD_READ_ALL = 10_000
     }
 
     @Test

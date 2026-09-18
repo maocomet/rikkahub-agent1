@@ -561,14 +561,31 @@ class SpaceRepositoryTest {
         val postId = post(assistantA)
         repeat(21) { repo.createComment(assistantB, postId, "c$it", SpaceCausalDepth.USER_INITIATED) }
 
+        // The thread's OWN order, read in one shot. This fixture's clock is frozen, so every comment
+        // shares a millisecond and the cursor's id half decides the order — the ids are not
+        // sequential strings, so that order is not the order they were created in. Asserting
+        // against "c20" here would be asserting an assumption the contract never made.
+        val ordered = dao.listComments(postId, 100)
+        assertEquals(21, ordered.size)
+
         val page = repo.listCommentsPage(postId, after = null, limit = 20)
 
         assertEquals("the probe row must be trimmed, not returned", 20, page.items.size)
         assertTrue(page.hasMore)
-        // And the cursor built from this page must still be the last row it returned, so the next
-        // page starts at c20 — not at the probe, which would skip it.
+        assertEquals(
+            "the page must be the first twenty rows of the thread's own order",
+            ordered.take(20).map { it.commentId },
+            page.items.map { it.commentId },
+        )
+
+        // And the cursor built from this page must be its last row, so the next page resumes at row
+        // 21 — not at the probe, which would skip it.
         val next = repo.listCommentsPage(postId, after = cursorOf(page.items.last()), limit = 20)
-        assertEquals(listOf("c20"), next.items.map { it.content })
+        assertEquals(
+            "the next page must resume at the twenty-first row",
+            listOf(ordered[20].commentId),
+            next.items.map { it.commentId },
+        )
     }
 
     @Test
