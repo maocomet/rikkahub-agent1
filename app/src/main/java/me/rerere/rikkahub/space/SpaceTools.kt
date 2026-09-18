@@ -192,6 +192,9 @@ fun createSpaceTools(
                 val page = repository.listCommentsPage(postId, after = null, limit = DEFAULT_COMMENT_PAGE)
                 val comments = page.items
                 val encodedPost = spacePostJson(repository, post)
+                // Like `spacePostJson`, the comment total is a suspend read, so it is resolved here
+                // rather than inside the (non-suspend) JSON builder below.
+                val commentCount = repository.commentCount(postId)
                 spaceOk {
                     put("post", encodedPost)
                     putJsonArray("comments") {
@@ -200,7 +203,7 @@ fun createSpaceTools(
                     // A caller must never have to guess whether 50 comments was the whole thread.
                     // `comment_count` is the exact total and `comments_has_more` comes from a
                     // lookahead read rather than from comparing this page against that total.
-                    put("comment_count", repository.commentCount(postId))
+                    put("comment_count", commentCount)
                     put("comments_has_more", page.hasMore)
                     if (page.hasMore) {
                         val last = comments.last()
@@ -261,13 +264,16 @@ fun createSpaceTools(
                     limit = limit,
                 )
                 val comments = page.items
+                // Resolved before the builder: `commentCount` is suspend and the builder lambda is
+                // not.
+                val commentCount = repository.commentCount(postId)
                 spaceOk {
                     put("post_id", postId)
                     put("count", comments.size)
                     putJsonArray("comments") {
                         comments.forEach { comment -> add(spaceCommentJson(comment)) }
                     }
-                    put("comment_count", repository.commentCount(postId))
+                    put("comment_count", commentCount)
                     // Proven by a lookahead read, not guessed from the page size or from how many
                     // comments the whole post has — either guess misreports the last page.
                     put("has_more", page.hasMore)
