@@ -48,8 +48,8 @@ class SpaceRepositoryTest {
         repo.createPost(SpaceActor.USER, "from user", 0)
         repo.createPost(assistantA, "from assistant", 0)
 
-        val userPosts = repo.listPostsByAuthor(SpaceActor.USER, 10)
-        val assistantPosts = repo.listPostsByAuthor(assistantA, 10)
+        val userPosts = postsBy(SpaceActor.USER)
+        val assistantPosts = postsBy(assistantA)
         assertEquals(1, userPosts.size)
         assertEquals(1, assistantPosts.size)
         assertEquals(SpaceActorKind.USER.name, userPosts.single().authorKind)
@@ -139,9 +139,9 @@ class SpaceRepositoryTest {
         val postId = post(assistantA)
         repo.setLike(assistantB, postId, liked = true, originDepth = 0)
 
-        assertEquals(1, repo.listNotifications(assistantA, 10).size)
-        assertEquals(0, repo.listNotifications(assistantB, 10).size)
-        val notification = repo.listNotifications(assistantA, 10).single()
+        assertEquals(1, notifications(assistantA).size)
+        assertEquals(0, notifications(assistantB).size)
+        val notification = notifications(assistantA).single()
         assertEquals(SpaceNotificationType.LIKE.name, notification.type)
         assertEquals(assistantB.id, notification.actorId)
     }
@@ -151,7 +151,7 @@ class SpaceRepositoryTest {
         val postId = post(assistantA)
         repo.createComment(assistantB, postId, "hi", 0)
 
-        val notification = repo.listNotifications(assistantA, 10).single()
+        val notification = notifications(assistantA).single()
         assertEquals(SpaceNotificationType.COMMENT.name, notification.type)
         assertNotNull(notification.commentId)
     }
@@ -162,7 +162,7 @@ class SpaceRepositoryTest {
         repo.setLike(assistantA, postId, liked = true, originDepth = 0)
         repo.createComment(assistantA, postId, "self reply", originDepth = 0)
 
-        assertEquals(0, repo.listNotifications(assistantA, 10).size)
+        assertEquals(0, notifications(assistantA).size)
         assertEquals(0, dao.notifications.size)
     }
 
@@ -175,7 +175,7 @@ class SpaceRepositoryTest {
 
         // The notification id is derived from the action, so the row collapses instead of
         // producing a fresh trigger target on every re-like.
-        assertEquals(1, repo.listNotifications(assistantA, 10).size)
+        assertEquals(1, notifications(assistantA).size)
     }
 
     @Test
@@ -189,7 +189,7 @@ class SpaceRepositoryTest {
         val automation = SpaceActor(SpaceActorKind.ASSISTANT, "cccccccc-0000-0000-0000-000000000003")
         repo.setLike(automation, postId, true, SpaceCausalDepth.AUTOMATION_DRIVEN)
 
-        val byDepth = repo.listNotifications(assistantA, 10).associateBy { it.actorKind }
+        val byDepth = notifications(assistantA).associateBy { it.actorKind }
         assertEquals(
             SpaceCausalDepth.USER_INITIATED,
             byDepth.getValue(SpaceActorKind.USER.name).originDepth,
@@ -206,7 +206,7 @@ class SpaceRepositoryTest {
         repo.createComment(SpaceActor.USER, postId, "from the person", SpaceCausalDepth.USER_INITIATED)
         repo.createComment(assistantB, postId, "from an automation", SpaceCausalDepth.AUTOMATION_DRIVEN)
 
-        val depths = repo.listComments(postId, 10).associate { it.content to it.originDepth }
+        val depths = comments(postId).associate { it.content to it.originDepth }
         assertEquals(SpaceCausalDepth.USER_INITIATED, depths.getValue("from the person"))
         assertEquals(SpaceCausalDepth.AUTOMATION_DRIVEN, depths.getValue("from an automation"))
     }
@@ -306,7 +306,7 @@ class SpaceRepositoryTest {
     fun `a notification is consumed exactly once`() = runBlocking {
         val postId = post(assistantA)
         repo.setLike(assistantB, postId, true, 0)
-        val notificationId = repo.listNotifications(assistantA, 10).single().notificationId
+        val notificationId = notifications(assistantA).single().notificationId
 
         assertTrue(repo.claimNotificationForConsumption(notificationId))
         assertFalse(repo.claimNotificationForConsumption(notificationId))
@@ -317,16 +317,16 @@ class SpaceRepositoryTest {
         val postId = post(assistantA)
         repo.setLike(assistantB, postId, true, 0)
         repo.createComment(assistantB, postId, "hi", 0)
-        val notifications = repo.listNotifications(assistantA, 10)
-        assertEquals(2, notifications.size)
+        val inbox = notifications(assistantA)
+        assertEquals(2, inbox.size)
 
-        val changed = repo.markNotificationsRead(assistantA, listOf(notifications.first().notificationId))
+        val changed = repo.markNotificationsRead(assistantA, listOf(inbox.first().notificationId))
         assertEquals(1, changed)
-        assertEquals(1, repo.listNotifications(assistantA, 10).count { it.readAtMs == null })
+        assertEquals(1, notifications(assistantA).count { it.readAtMs == null })
 
         // A different identity naming those ids changes nothing.
-        assertEquals(0, repo.markNotificationsRead(assistantB, listOf(notifications.last().notificationId)))
-        assertNull(repo.getNotification(notifications.last().notificationId)!!.readAtMs)
+        assertEquals(0, repo.markNotificationsRead(assistantB, listOf(inbox.last().notificationId)))
+        assertNull(repo.getNotification(inbox.last().notificationId)!!.readAtMs)
     }
 
     // ── Pagination ───────────────────────────────────────────────────────────────────────────
@@ -336,35 +336,40 @@ class SpaceRepositoryTest {
         // All posts share a timestamp: a time-only cursor would loop or skip here.
         repeat(5) { repo.createPost(assistantA, "post $it", 0) }
 
-        val firstPage = repo.listPosts(limit = 2)
-        assertEquals(2, firstPage.size)
+        val pages = mutableListOf<SpacePage<SpacePostEntity>>()
+        var cursor: SpaceCursor? = null
+        // Stops at the last page rather than after a fixed number of reads: reading one page past
+        // the end would repeat its rows and make the uniqueness assertion below meaningless.
+        var guard = 0
+        while (true) {
+            val page = repo.listPostsPage(before = cursor, limit = 2)
+            pages += page
+            if (!page.hasMore) break
+            cursor = page.items.last().let { SpaceCursor(it.createdAtMs, it.postId) }
+            check(++guard <= 10) { "post pagination did not terminate" }
+        }
 
-        val secondPage = repo.listPostsBefore(
-            SpaceCursor(firstPage.last().createdAtMs, firstPage.last().postId),
-            limit = 2,
-        )
-        val thirdPage = repo.listPostsBefore(
-            SpaceCursor(secondPage.last().createdAtMs, secondPage.last().postId),
-            limit = 2,
-        )
-
-        val seen = (firstPage + secondPage + thirdPage).map { it.postId }
+        val seen = pages.flatMap { it.items }.map { it.postId }
         assertEquals(5, seen.size)
-        assertEquals(5, seen.toSet().size)
+        assertEquals("a page boundary must not repeat or skip a post", 5, seen.toSet().size)
+        assertEquals(listOf(true, true, false), pages.map { it.hasMore })
     }
 
     @Test
     fun `listing honours the caller limit and the hard page cap`() = runBlocking {
         repeat(3) { repo.createPost(assistantA, "post $it", 0) }
-        assertEquals(2, repo.listPosts(limit = 2).size)
-        assertEquals(3, repo.listPosts(limit = 10).size)
+        assertEquals(2, repo.listPostsPage(before = null, limit = 2).items.size)
+        assertEquals(3, repo.listPostsPage(before = null, limit = 10).items.size)
 
         // A caller asking for more than the cap still gets only the cap: these rows are read into
         // model context, so the ceiling has to hold regardless of what the model requested.
         val fresh = FakeSpaceDao()
         val bigRepo = SpaceRepository(fresh, nowMs = { clock }, newId = { "cap-${++idSeq}" })
         repeat(60) { bigRepo.createPost(assistantA, "p$it", 0) }
-        assertEquals(SpaceRepository.MAX_PAGE_SIZE, bigRepo.listPosts(limit = 500).size)
+        assertEquals(
+            SpaceRepository.MAX_PAGE_SIZE,
+            bigRepo.listPostsPage(before = null, limit = 500).items.size,
+        )
     }
 
     // ── Post deletion and the cascade ────────────────────────────────────────────────────────
@@ -426,13 +431,13 @@ class SpaceRepositoryTest {
         assertEquals(1, repo.commentCount(postId))
         // Every action here is taken by somebody other than the author, so each one notifies the
         // author exactly once: two likes and one comment.
-        assertEquals(3, repo.listNotifications(assistantA, 10).size)
+        assertEquals(3, notifications(assistantA).size)
 
         assertTrue(repo.deletePost(assistantA, postId) is SpaceWriteOutcome.Created)
 
         assertEquals(0, repo.likeCount(postId))
         assertEquals(0, repo.commentCount(postId))
-        assertEquals(0, repo.listNotifications(assistantA, 10).size)
+        assertEquals(0, notifications(assistantA).size)
         assertTrue(dao.likes.isEmpty() && dao.comments.isEmpty() && dao.notifications.isEmpty())
     }
 
@@ -450,7 +455,7 @@ class SpaceRepositoryTest {
         assertEquals(1, repo.likeCount(survivor))
         assertEquals(1, repo.commentCount(survivor))
         // The survivor keeps its own like and comment notifications; the doomed post's are gone.
-        assertEquals(2, repo.listNotifications(assistantA, 10).size)
+        assertEquals(2, notifications(assistantA).size)
     }
 
     // ── Comment pagination ───────────────────────────────────────────────────────────────────
@@ -462,15 +467,11 @@ class SpaceRepositoryTest {
         // skip here.
         repeat(5) { repo.createComment(assistantB, postId, "c$it", SpaceCausalDepth.USER_INITIATED) }
 
-        val first = repo.listComments(postId, limit = 2)
-        val second = repo.listCommentsAfter(postId, cursorOf(first.last()), limit = 2)
-        val third = repo.listCommentsAfter(postId, cursorOf(second.last()), limit = 2)
-        val fourth = repo.listCommentsAfter(postId, cursorOf(third.last()), limit = 2)
-
-        val seen = (first + second + third + fourth).map { it.commentId }
+        val pages = walkComments(postId, limit = 2)
+        val seen = pages.flatMap { it.items }.map { it.commentId }
         assertEquals(5, seen.size)
         assertEquals("a page boundary must not repeat or skip a comment", 5, seen.toSet().size)
-        assertTrue(fourth.isEmpty())
+        assertEquals(listOf(true, true, false), pages.map { it.hasMore })
     }
 
     @Test
@@ -483,11 +484,11 @@ class SpaceRepositoryTest {
         clock = 3_000L
         repo.createComment(assistantB, postId, "third", SpaceCausalDepth.USER_INITIATED)
 
-        val head = repo.listComments(postId, 1)
-        val tail = repo.listCommentsAfter(postId, cursorOf(head.last()), 10)
+        val head = repo.listCommentsPage(postId, after = null, limit = 1)
+        val tail = repo.listCommentsPage(postId, after = cursorOf(head.items.last()), limit = 10)
 
-        assertEquals(listOf("first"), head.map { it.content })
-        assertEquals(listOf("second", "third"), tail.map { it.content })
+        assertEquals(listOf("first"), head.items.map { it.content })
+        assertEquals(listOf("second", "third"), tail.items.map { it.content })
     }
 
     @Test
@@ -497,11 +498,127 @@ class SpaceRepositoryTest {
         repo.createComment(assistantB, postId, "mine", SpaceCausalDepth.USER_INITIATED)
         repo.createComment(assistantB, otherPost, "theirs", SpaceCausalDepth.USER_INITIATED)
 
-        // An empty cursor walks the thread from its start; the other post's comments must not
-        // appear, and neither must an unrelated thread be reachable through this post's cursor.
-        val page = repo.listComments(postId, 10)
-        assertEquals(listOf("mine"), page.map { it.content })
-        assertTrue(repo.listComments(otherPost, 10).map { it.content } == listOf("theirs"))
+        // A null cursor walks the thread from its start; the other post's comments must not appear,
+        // and neither must an unrelated thread be reachable through this post's cursor.
+        val page = repo.listCommentsPage(postId, after = null, limit = 10)
+        assertEquals(listOf("mine"), page.items.map { it.content })
+        assertEquals(
+            listOf("theirs"),
+            repo.listCommentsPage(otherPost, after = null, limit = 10).items.map { it.content },
+        )
+    }
+
+    // ── `hasMore` is proven, not guessed ─────────────────────────────────────────────────────
+
+    @Test
+    fun `hasMore is exact at forty comments with a twenty-comment page`() = runBlocking {
+        val postId = post(assistantA)
+        repeat(40) { repo.createComment(assistantB, postId, "c$it", SpaceCausalDepth.USER_INITIATED) }
+
+        val pages = walkComments(postId, limit = 20)
+
+        assertEquals(2, pages.size)
+        assertEquals(20, pages[0].items.size)
+        assertEquals(20, pages[1].items.size)
+        // The old rule (`size == limit && size < total`) answered `true` here, so the second page
+        // offered a "load more" that returned nothing.
+        assertEquals(listOf(true, false), pages.map { it.hasMore })
+    }
+
+    @Test
+    fun `hasMore is exact at forty-one comments with a twenty-comment page`() = runBlocking {
+        val postId = post(assistantA)
+        repeat(41) { repo.createComment(assistantB, postId, "c$it", SpaceCausalDepth.USER_INITIATED) }
+
+        val pages = walkComments(postId, limit = 20)
+
+        assertEquals(3, pages.size)
+        assertEquals(listOf(20, 20, 1), pages.map { it.items.size })
+        assertEquals(listOf(true, true, false), pages.map { it.hasMore })
+    }
+
+    @Test
+    fun `hasMore is exact when the thread ends just short of a page`() = runBlocking {
+        val postId = post(assistantA)
+        repeat(19) { repo.createComment(assistantB, postId, "c$it", SpaceCausalDepth.USER_INITIATED) }
+
+        val page = repo.listCommentsPage(postId, after = null, limit = 20)
+
+        assertEquals(19, page.items.size)
+        assertFalse(page.hasMore)
+    }
+
+    @Test
+    fun `an empty thread has nothing more`() = runBlocking {
+        val postId = post(assistantA)
+        val page = repo.listCommentsPage(postId, after = null, limit = 20)
+        assertTrue(page.items.isEmpty())
+        assertFalse(page.hasMore)
+    }
+
+    @Test
+    fun `a page never returns the lookahead row it used to prove hasMore`() = runBlocking {
+        val postId = post(assistantA)
+        repeat(21) { repo.createComment(assistantB, postId, "c$it", SpaceCausalDepth.USER_INITIATED) }
+
+        val page = repo.listCommentsPage(postId, after = null, limit = 20)
+
+        assertEquals("the probe row must be trimmed, not returned", 20, page.items.size)
+        assertTrue(page.hasMore)
+        // And the cursor built from this page must still be the last row it returned, so the next
+        // page starts at c20 — not at the probe, which would skip it.
+        val next = repo.listCommentsPage(postId, after = cursorOf(page.items.last()), limit = 20)
+        assertEquals(listOf("c20"), next.items.map { it.content })
+    }
+
+    @Test
+    fun `post pages prove hasMore the same way`() = runBlocking {
+        repeat(20) { repo.createPost(assistantA, "post $it", 0) }
+        val exact = repo.listPostsPage(before = null, limit = 20)
+        assertEquals(20, exact.items.size)
+        assertFalse("a timeline ending on the boundary has nothing more", exact.hasMore)
+
+        repo.createPost(assistantA, "post 20", 0)
+        val over = repo.listPostsPage(before = null, limit = 20)
+        assertEquals(20, over.items.size)
+        assertTrue(over.hasMore)
+    }
+
+    @Test
+    fun `author pages prove hasMore the same way`() = runBlocking {
+        repeat(20) { repo.createPost(SpaceActor.USER, "mine $it", 0) }
+        // Posts by somebody else must not be counted towards this author's "more".
+        repeat(5) { repo.createPost(assistantA, "theirs $it", 0) }
+
+        val page = repo.listPostsByAuthorPage(SpaceActor.USER, before = null, limit = 20)
+
+        assertEquals(20, page.items.size)
+        assertFalse(page.hasMore)
+    }
+
+    @Test
+    fun `notification pages prove hasMore the same way`() = runBlocking {
+        val postId = post(assistantA)
+        repeat(20) { repo.createComment(assistantB, postId, "c$it", SpaceCausalDepth.USER_INITIATED) }
+
+        // One notification per comment, since the id is derived from the action.
+        val exact = repo.listNotificationsPage(assistantA, before = null, limit = 20)
+        assertEquals(20, exact.items.size)
+        assertFalse("exactly twenty notifications is not 'more'", exact.hasMore)
+    }
+
+    /** Walks a comment thread to its end, asserting the walk terminates. */
+    private suspend fun walkComments(postId: String, limit: Int): List<SpacePage<SpaceCommentEntity>> {
+        val pages = mutableListOf<SpacePage<SpaceCommentEntity>>()
+        var cursor: SpaceCursor? = null
+        // Bounded so a cursor bug fails as a test failure rather than an infinite loop.
+        repeat(100) {
+            val page = repo.listCommentsPage(postId, after = cursor, limit = limit)
+            pages += page
+            if (!page.hasMore) return pages
+            cursor = cursorOf(page.items.last())
+        }
+        error("comment pagination did not terminate after 100 pages")
     }
 
     // ── Pending (unconsumed) notifications ───────────────────────────────────────────────────
@@ -540,6 +657,18 @@ class SpaceRepositoryTest {
 
     private fun cursorOf(comment: SpaceCommentEntity) =
         SpaceCursor(comment.createdAtMs, comment.commentId)
+
+    // Read helpers for tests that are about something other than paging. They go through the SAME
+    // page API production uses — there is deliberately no raw list reader on the repository, so a
+    // test cannot accidentally exercise a path production does not have.
+    private suspend fun notifications(actor: SpaceActor, limit: Int = 10) =
+        repo.listNotificationsPage(actor, before = null, limit = limit).items
+
+    private suspend fun postsBy(actor: SpaceActor, limit: Int = 10) =
+        repo.listPostsByAuthorPage(actor, before = null, limit = limit).items
+
+    private suspend fun comments(postId: String, limit: Int = 10) =
+        repo.listCommentsPage(postId, after = null, limit = limit).items
 
     private suspend fun post(author: SpaceActor): String =
         (repo.createPost(author, "content", originDepth = 0) as SpaceWriteOutcome.Created).id

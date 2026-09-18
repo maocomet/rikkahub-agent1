@@ -51,26 +51,28 @@ class SpaceRepository(
 
     suspend fun getPost(postId: String): SpacePostEntity? = dao.getPost(postId)
 
-    suspend fun listPosts(limit: Int): List<SpacePostEntity> =
-        dao.listPosts(limit.coerceIn(1, MAX_PAGE_SIZE))
+    /** The timeline page preceding [before], or the first page when [before] is null. */
+    suspend fun listPostsPage(before: SpaceCursor?, limit: Int): SpacePage<SpacePostEntity> =
+        pageOf(limit) { probe ->
+            if (before == null) {
+                dao.listPosts(probe)
+            } else {
+                dao.listPostsBefore(before.createdAtMs, before.id, probe)
+            }
+        }
 
-    suspend fun listPostsBefore(before: SpaceCursor, limit: Int): List<SpacePostEntity> =
-        dao.listPostsBefore(before.createdAtMs, before.id, limit.coerceIn(1, MAX_PAGE_SIZE))
-
-    suspend fun listPostsByAuthor(actor: SpaceActor, limit: Int): List<SpacePostEntity> =
-        dao.listPostsByAuthor(actor.kindValue, actor.id, limit.coerceIn(1, MAX_PAGE_SIZE))
-
-    suspend fun listPostsByAuthorBefore(
+    /** The same page shape, narrowed to one author's posts — what the "Mine" tab reads. */
+    suspend fun listPostsByAuthorPage(
         actor: SpaceActor,
-        before: SpaceCursor,
+        before: SpaceCursor?,
         limit: Int,
-    ): List<SpacePostEntity> = dao.listPostsByAuthorBefore(
-        actor.kindValue,
-        actor.id,
-        before.createdAtMs,
-        before.id,
-        limit.coerceIn(1, MAX_PAGE_SIZE),
-    )
+    ): SpacePage<SpacePostEntity> = pageOf(limit) { probe ->
+        if (before == null) {
+            dao.listPostsByAuthor(actor.kindValue, actor.id, probe)
+        } else {
+            dao.listPostsByAuthorBefore(actor.kindValue, actor.id, before.createdAtMs, before.id, probe)
+        }
+    }
 
     /**
      * Removes a post the acting identity published, or refuses.
@@ -198,42 +200,45 @@ class SpaceRepository(
 
     suspend fun getComment(commentId: String): SpaceCommentEntity? = dao.getComment(commentId)
 
-    suspend fun listComments(postId: String, limit: Int): List<SpaceCommentEntity> =
-        dao.listComments(postId, limit.coerceIn(1, MAX_PAGE_SIZE))
-
     /**
      * The page of a comment thread that follows [after], in the same oldest-first order the thread
-     * reads in. The cursor is `(created_at_ms, comment_id)` — see [SpaceCursor].
+     * reads in. The cursor is `(created_at_ms, comment_id)` — see [SpaceCursor]. A null [after]
+     * starts at the oldest comment.
      */
-    suspend fun listCommentsAfter(
+    suspend fun listCommentsPage(
         postId: String,
-        after: SpaceCursor,
+        after: SpaceCursor?,
         limit: Int,
-    ): List<SpaceCommentEntity> = dao.listCommentsAfter(
-        postId,
-        after.createdAtMs,
-        after.id,
-        limit.coerceIn(1, MAX_PAGE_SIZE),
-    )
+    ): SpacePage<SpaceCommentEntity> = pageOf(limit) { probe ->
+        if (after == null) {
+            dao.listComments(postId, probe)
+        } else {
+            dao.listCommentsAfter(postId, after.createdAtMs, after.id, probe)
+        }
+    }
 
     suspend fun commentCount(postId: String): Int = dao.commentCount(postId)
 
     // ── Notifications ────────────────────────────────────────────────────────────────────────
 
-    suspend fun listNotifications(actor: SpaceActor, limit: Int): List<SpaceNotificationEntity> =
-        dao.listNotifications(actor.kindValue, actor.id, limit.coerceIn(1, MAX_PAGE_SIZE))
-
-    suspend fun listNotificationsBefore(
+    /** The notification page preceding [before], newest first, or the first page when null. */
+    suspend fun listNotificationsPage(
         actor: SpaceActor,
-        before: SpaceCursor,
+        before: SpaceCursor?,
         limit: Int,
-    ): List<SpaceNotificationEntity> = dao.listNotificationsBefore(
-        actor.kindValue,
-        actor.id,
-        before.createdAtMs,
-        before.id,
-        limit.coerceIn(1, MAX_PAGE_SIZE),
-    )
+    ): SpacePage<SpaceNotificationEntity> = pageOf(limit) { probe ->
+        if (before == null) {
+            dao.listNotifications(actor.kindValue, actor.id, probe)
+        } else {
+            dao.listNotificationsBefore(
+                actor.kindValue,
+                actor.id,
+                before.createdAtMs,
+                before.id,
+                probe,
+            )
+        }
+    }
 
     fun observeUnreadCount(actor: SpaceActor): Flow<Int> =
         dao.observeUnreadCount(actor.kindValue, actor.id)
@@ -334,6 +339,29 @@ class SpaceRepository(
         }
     }
 
+    /**
+     * Reads one row more than [limit] and trims it back.
+     *
+     * The extra row is the ONLY sound way to answer "is there another page?" here, and it is never
+     * returned. The two tempting shortcuts are both wrong:
+     *  - `items.size == limit` reports another page whenever a read ends exactly on a boundary, so
+     *    a 20-post feed offers a Load More that yields nothing;
+     *  - `items.size < total` compares a page against a table-wide count and ignores how far the
+     *    cursor has already travelled, so it keeps answering "more" on the last page of any
+     *    multi-page thread.
+     *
+     * A caller builds its next cursor from `items.last()`, never from the probe row: the probe is
+     * the FIRST row of the next page, so treating it as the last of this one would skip it.
+     */
+    private suspend fun <T> pageOf(
+        limit: Int,
+        fetch: suspend (probeSize: Int) -> List<T>,
+    ): SpacePage<T> {
+        val size = limit.coerceIn(1, MAX_PAGE_SIZE)
+        val rows = fetch(size + 1)
+        return SpacePage(items = rows.take(size), hasMore = rows.size > size)
+    }
+
     companion object {
         const val MAX_PAGE_SIZE: Int = 50
         const val MAX_POST_CHARS: Int = 4000
@@ -364,4 +392,21 @@ class SpaceRepository(
 data class SpaceCursor(
     val createdAtMs: Long,
     val id: String,
+)
+
+/**
+ * One cursor-bounded page, plus a verdict on whether another page exists that is PROVEN rather
+ * than inferred.
+ *
+ * [hasMore] comes from a lookahead read — see `pageOf`. Every paged read in this repository returns
+ * this type, so there is exactly one place where "is there more?" is decided and exactly one shape
+ * a caller can consume. A raw `List` return would leave each caller to invent its own answer, which
+ * is how the `size == limit` bug was able to appear in four separate surfaces at once.
+ *
+ * [items] is at most the requested limit, and its last element is the one a next-page cursor must
+ * be built from.
+ */
+data class SpacePage<T>(
+    val items: List<T>,
+    val hasMore: Boolean,
 )

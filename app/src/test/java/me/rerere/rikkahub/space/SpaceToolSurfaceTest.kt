@@ -2,6 +2,7 @@ package me.rerere.rikkahub.space
 
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
@@ -286,37 +287,181 @@ class SpaceToolSurfaceTest {
         assertEquals(5, first.getValue("comments").jsonArray.size)
         assertFalse(first.getValue("comments_has_more").jsonPrimitive.booleanOrNull ?: true)
 
-        val listComments = toolsFor(context()).single { it.name == SPACE_LIST_COMMENTS_TOOL_NAME }
-        val page = Json.parseToJsonElement(
-            // A JSON integer, as a model would emit for an "integer" schema property — not the
-            // string "2", which the tool's intOrNull read is not obliged to coerce.
-            listComments.execute(buildJsonObject { put("post_id", postId); put("limit", 2) })
+        // A JSON integer, as a model would emit for an "integer" schema property — not the string
+        // "2", which the tool's intOrNull read is not obliged to coerce.
+        val page = commentPage(postId, limit = 2)
+
+        assertEquals(2, page.count())
+        assertEquals(5, page.getValue("comment_count").jsonPrimitive.int)
+        assertTrue(page.hasMore())
+
+        // And the cursor it hands back is the one the next page actually needs.
+        val next = nextPage(postId, 20, page)
+        assertEquals(listOf("c2", "c3", "c4"), next.contents())
+        // Checking only the second page's CONTENT is what let the has_more bug through: three
+        // comments against a page size of twenty is a complete read, and must say so.
+        assertFalse("the rest of a five-comment thread is not 'more'", next.hasMore())
+    }
+
+    /** Runs `space_list_comments`, optionally resuming from an explicit cursor. */
+    private suspend fun commentPage(
+        postId: String,
+        limit: Int? = null,
+        afterCreatedAtMs: Long? = null,
+        afterId: String? = null,
+    ) = Json.parseToJsonElement(
+        toolsFor(context())
+            .single { it.name == SPACE_LIST_COMMENTS_TOOL_NAME }
+            .execute(
+                buildJsonObject {
+                    put("post_id", postId)
+                    limit?.let { put("limit", it) }
+                    afterCreatedAtMs?.let { put("after_created_at_ms", it) }
+                    afterId?.let { put("after_id", it) }
+                },
+            )
+            .single().let { it as UIMessagePart.Text }.text,
+    ).jsonObject
+
+    private fun JsonObject.contents(): List<String> =
+        getValue("comments").jsonArray.map { it.jsonObject.getValue("content").jsonPrimitive.content }
+
+    private fun JsonObject.count(): Int = getValue("count").jsonPrimitive.int
+
+    private fun JsonObject.hasMore(): Boolean = getValue("has_more").jsonPrimitive.booleanOrNull ?: false
+
+    /** Resumes the walk from this page's own cursor. */
+    private suspend fun nextPage(postId: String, limit: Int, from: JsonObject): JsonObject {
+        assertTrue("cannot continue without a cursor", from.containsKey("next_after_id"))
+        return commentPage(
+            postId = postId,
+            limit = limit,
+            afterCreatedAtMs = from.getValue("next_after_created_at_ms").jsonPrimitive.long,
+            afterId = from.getValue("next_after_id").jsonPrimitive.content,
+        )
+    }
+
+    @Test
+    fun `has_more is false on the last page of a forty-comment thread`() = runBlocking {
+        val postId = postWithComments(40)
+
+        val page1 = commentPage(postId, limit = 20)
+        assertEquals(20, page1.count())
+        assertTrue("page 1 of 40 has more", page1.hasMore())
+
+        val page2 = nextPage(postId, 20, page1)
+        assertEquals(20, page2.count())
+        // The bug this pins: the old rule compared the page against the whole-post count, so it
+        // still claimed more here and told the caller to fetch a page that does not exist.
+        assertFalse("page 2 of 40 is the last page", page2.hasMore())
+        assertFalse("and it must not offer a cursor", page2.containsKey("next_after_id"))
+        assertEquals(40, page2.getValue("comment_count").jsonPrimitive.int)
+    }
+
+    @Test
+    fun `has_more steps true true false across a forty-one-comment thread`() = runBlocking {
+        val postId = postWithComments(41)
+
+        val page1 = commentPage(postId, limit = 20)
+        val page2 = nextPage(postId, 20, page1)
+        val page3 = nextPage(postId, 20, page2)
+
+        assertEquals(listOf(20, 20, 1), listOf(page1, page2, page3).map { it.count() })
+        assertEquals(listOf(true, true, false), listOf(page1, page2, page3).map { it.hasMore() })
+        // The last page has nowhere to go, so it must not hand back a cursor.
+        assertFalse(page3.containsKey("next_after_id"))
+
+        val walked = listOf(page1, page2, page3).flatMap { it.contents() }
+        assertEquals(41, walked.size)
+        assertEquals("no comment may repeat across a page boundary", 41, walked.toSet().size)
+        assertEquals("c0", walked.first())
+        assertEquals("c40", walked.last())
+    }
+
+    @Test
+    fun `space_get_post says fifty comments are not the whole thread`() = runBlocking {
+        val postId = postWithComments(51)
+
+        val json = Json.parseToJsonElement(
+            toolsFor(context())
+                .single { it.name == SPACE_GET_POST_TOOL_NAME }
+                .execute(buildJsonObject { put("post_id", postId) })
                 .single().let { it as UIMessagePart.Text }.text,
         ).jsonObject
 
-        assertEquals(2, page.getValue("count").jsonPrimitive.int)
-        assertEquals(5, page.getValue("comment_count").jsonPrimitive.int)
-        assertTrue(page.getValue("has_more").jsonPrimitive.booleanOrNull ?: false)
-
-        // And the cursor it hands back is the one the next page actually needs.
-        val next = Json.parseToJsonElement(
-            listComments.execute(
-                buildJsonObject {
-                    put("post_id", postId)
-                    put(
-                        "after_created_at_ms",
-                        page.getValue("next_after_created_at_ms").jsonPrimitive.long,
-                    )
-                    put("after_id", page.getValue("next_after_id").jsonPrimitive.content)
-                },
-            ).single().let { it as UIMessagePart.Text }.text,
-        ).jsonObject
-        assertEquals(
-            listOf("c2", "c3", "c4"),
-            next.getValue("comments").jsonArray.map { comment ->
-                comment.jsonObject.getValue("content").jsonPrimitive.content
-            },
+        assertEquals(50, json.getValue("comments").jsonArray.size)
+        assertEquals("the exact total, not the page length", 51, json.getValue("comment_count").jsonPrimitive.int)
+        assertTrue(
+            "a caller must be told the page is not the whole thread",
+            json.getValue("comments_has_more").jsonPrimitive.booleanOrNull ?: false,
         )
+
+        // And handed the cursor that actually reads the rest — under this tool's own key names.
+        val rest = commentPage(
+            postId = postId,
+            limit = 20,
+            afterCreatedAtMs = json.getValue("comments_next_after_created_at_ms").jsonPrimitive.long,
+            afterId = json.getValue("comments_next_after_id").jsonPrimitive.content,
+        )
+        assertEquals(listOf("c50"), rest.contents())
+        assertFalse(rest.hasMore())
+    }
+
+    @Test
+    fun `space_get_post reports no more when the whole thread fits in one page`() = runBlocking {
+        val postId = postWithComments(3)
+        val json = Json.parseToJsonElement(
+            toolsFor(context())
+                .single { it.name == SPACE_GET_POST_TOOL_NAME }
+                .execute(buildJsonObject { put("post_id", postId) })
+                .single().let { it as UIMessagePart.Text }.text,
+        ).jsonObject
+
+        assertEquals(3, json.getValue("comments").jsonArray.size)
+        assertEquals(3, json.getValue("comment_count").jsonPrimitive.int)
+        assertFalse(json.getValue("comments_has_more").jsonPrimitive.booleanOrNull ?: true)
+        assertFalse(json.containsKey("comments_next_after_id"))
+    }
+
+    @Test
+    fun `a thread that ends just short of a page reports no more`() = runBlocking {
+        val postId = postWithComments(19)
+        val page = commentPage(postId, limit = 20)
+        assertEquals(19, page.count())
+        assertFalse(page.hasMore())
+        assertFalse("no cursor when there is no next page", page.containsKey("next_after_id"))
+    }
+
+    @Test
+    fun `same-millisecond comments page without repeating or skipping through the tool`() = runBlocking {
+        // The repository clock is frozen, so every comment shares a timestamp and only the cursor's
+        // id half keeps the pages disjoint.
+        val postId = postWithComments(45)
+
+        val seen = mutableListOf<String>()
+        var page = commentPage(postId, limit = 10)
+        var pages = 1
+        seen += page.contents()
+        while (page.hasMore()) {
+            page = nextPage(postId, 10, page)
+            seen += page.contents()
+            pages++
+            check(pages <= 10) { "comment pagination did not terminate" }
+        }
+
+        assertEquals(5, pages)
+        assertEquals(45, seen.size)
+        assertEquals(45, seen.toSet().size)
+    }
+
+    private suspend fun postWithComments(count: Int): String {
+        val postId = (repository.createPost(
+            SpaceActor(SpaceActorKind.ASSISTANT, assistantId),
+            "a thread of $count",
+            0,
+        ) as SpaceWriteOutcome.Created).id
+        repeat(count) { repository.createComment(SpaceActor.USER, postId, "c$it", 0) }
+        return postId
     }
 
     @Test

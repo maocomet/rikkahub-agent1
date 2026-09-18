@@ -11,6 +11,7 @@ import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.space.FakeSpaceDao
 import me.rerere.rikkahub.space.SpaceActor
 import me.rerere.rikkahub.space.SpaceActorKind
+import me.rerere.rikkahub.space.SpaceCursor
 import me.rerere.rikkahub.space.SpaceIdentitySource
 import me.rerere.rikkahub.space.SpaceRepository
 import me.rerere.rikkahub.space.SpaceWriteOutcome
@@ -29,6 +30,9 @@ class CatGardenVMTest {
 
     private var idSeq = 0
     private var clock = 1_000L
+
+    /** Ids for the throwaway stores [vmWithPosts] builds, kept unique across all of them. */
+    private var generatedIds = 0
     private val dao = FakeSpaceDao()
     private val repository = SpaceRepository(
         dao = dao,
@@ -165,18 +169,15 @@ class CatGardenVMTest {
     }
 
     @Test
-    fun `mine exhausts even when the last page lands exactly on the page size`() = runBlocking {
+    fun `mine does not offer more when the last page lands exactly on the page size`() = runBlocking {
         repeat(20) { repository.createPost(SpaceActor.USER, "post $it", originDepth = 0) }
 
         val vm = viewModel()
         assertEquals(20, vm.mine.value.size)
-        // Twenty rows came back, so a page may still exist — asking is legitimate here.
-        assertTrue(vm.mineHasMore.value)
-
-        vm.loadMoreMine()
-
-        assertEquals(20, vm.mine.value.size)
-        assertFalse("the empty page proved the end", vm.mineHasMore.value)
+        // Twenty rows is exactly the whole list. The old rule (`size < PAGE_SIZE`) guessed "maybe
+        // more" from the row count alone and made the reader tap Load More to learn there is
+        // nothing; the lookahead proves it up front.
+        assertFalse("exactly one page is not 'more'", vm.mineHasMore.value)
     }
 
     @Test
@@ -224,6 +225,117 @@ class CatGardenVMTest {
     fun `an empty mine offers nothing to load`() = runBlocking {
         val vm = viewModel()
         assertTrue(vm.mine.value.isEmpty())
+        assertFalse(vm.mineHasMore.value)
+        assertFalse(vm.feedHasMore.value)
+    }
+
+    // ── The load-more control is honest at every boundary ────────────────────────────────────
+
+    /**
+     * Builds a ViewModel over its own store holding [postCount] posts by the person.
+     *
+     * A fresh store per count because the assertion is about what the FIRST load offers, which
+     * only a clean read can show.
+     */
+    private suspend fun vmWithPosts(postCount: Int, frozenClockMs: Long? = null): CatGardenVM {
+        val localDao = FakeSpaceDao()
+        var tick = 1_000L
+        val localRepo = SpaceRepository(
+            dao = localDao,
+            nowMs = { frozenClockMs ?: tick++ },
+            newId = { "generated-${++generatedIds}" },
+        )
+        repeat(postCount) { localRepo.createPost(SpaceActor.USER, "post $it", originDepth = 0) }
+        return CatGardenVM(
+            spaceRepository = localRepo,
+            identitySource = FakeIdentitySource(listOf(assistant), "Owner", Avatar.Dummy),
+            injectedScope = CoroutineScope(Dispatchers.Unconfined),
+        )
+    }
+
+    @Test
+    fun `neither tab offers a load more that would return nothing`() = runBlocking {
+        // Every boundary the UI can land on: empty, short of a page, exactly one page, one over,
+        // exactly two pages, one over two pages.
+        val cases = listOf(
+            Triple(0, 0, 0),   // posts, size after first load, further loads needed
+            Triple(19, 19, 0),
+            Triple(20, 20, 0),
+            Triple(21, 20, 1),
+            Triple(40, 20, 1),
+            Triple(41, 20, 2),
+        )
+
+        for ((count, firstPage, further) in cases) {
+            val vm = vmWithPosts(count)
+
+            assertEquals("feed size at $count", firstPage, vm.feed.value.size)
+            assertEquals("mine size at $count", firstPage, vm.mine.value.size)
+            assertEquals("feed offers more at $count", count > 20, vm.feedHasMore.value)
+            assertEquals("mine offers more at $count", count > 20, vm.mineHasMore.value)
+
+            repeat(further) {
+                vm.loadMoreFeed()
+                vm.loadMoreMine()
+            }
+
+            assertEquals("feed total at $count", count, vm.feed.value.size)
+            assertEquals("mine total at $count", count, vm.mine.value.size)
+            assertFalse("feed must stop offering at $count", vm.feedHasMore.value)
+            assertFalse("mine must stop offering at $count", vm.mineHasMore.value)
+            assertEquals(
+                "feed must not repeat a post at $count",
+                count,
+                vm.feed.value.map { it.post.postId }.toSet().size,
+            )
+            assertEquals(
+                "mine must not repeat a post at $count",
+                count,
+                vm.mine.value.map { it.post.postId }.toSet().size,
+            )
+        }
+    }
+
+    @Test
+    fun `the lookahead row is never rendered as part of the page`() = runBlocking {
+        // 21 posts: the probe row is real and must be trimmed out of this page, then returned by
+        // the NEXT page rather than skipped or shown twice.
+        val vm = vmWithPosts(21)
+
+        assertEquals(20, vm.feed.value.size)
+        assertTrue(vm.feedHasMore.value)
+        val firstPageIds = vm.feed.value.map { it.post.postId }
+
+        vm.loadMoreFeed()
+
+        assertEquals(21, vm.feed.value.size)
+        assertEquals(1, vm.feed.value.drop(20).size)
+        assertTrue(
+            "the probe row must arrive on the next page, not appear twice",
+            vm.feed.value.map { it.post.postId }.toSet().size == 21 &&
+                vm.feed.value.drop(20).none { it.post.postId in firstPageIds },
+        )
+    }
+
+    @Test
+    fun `same-millisecond posts page without repeating or skipping in either tab`() = runBlocking {
+        // A frozen clock: every post shares a timestamp, so only the cursor's id half keeps the
+        // pages disjoint.
+        val vm = vmWithPosts(25, frozenClockMs = 5_000L)
+
+        assertEquals(20, vm.feed.value.size)
+        assertEquals(20, vm.mine.value.size)
+        assertTrue(vm.feedHasMore.value)
+        assertTrue(vm.mineHasMore.value)
+
+        vm.loadMoreFeed()
+        vm.loadMoreMine()
+
+        assertEquals(25, vm.feed.value.size)
+        assertEquals(25, vm.mine.value.size)
+        assertEquals(25, vm.feed.value.map { it.post.postId }.toSet().size)
+        assertEquals(25, vm.mine.value.map { it.post.postId }.toSet().size)
+        assertFalse(vm.feedHasMore.value)
         assertFalse(vm.mineHasMore.value)
     }
 
@@ -299,6 +411,82 @@ class CatGardenVMTest {
         assertEquals(1, thread.totalCount)
         // The card behind the view refreshes too.
         assertEquals(1, vm.feed.value.single().commentCount)
+    }
+
+    @Test
+    fun `a comment written while the thread is incomplete cannot swallow the unread gap`() =
+        runBlocking {
+            val postId = repository.createPost(assistantActor, "hello", originDepth = 0).let {
+                (it as SpaceWriteOutcome.Created).id
+            }
+            // c0..c24.
+            repeat(25) { repository.createComment(SpaceActor.USER, postId, "c$it", originDepth = 0) }
+
+            val vm = viewModel()
+            vm.openComments(postId)
+            val opened = requireNotNull(vm.commentThread.value)
+            assertEquals(20, opened.comments.size)
+            assertEquals("c0", opened.comments.first().comment.content)
+            assertEquals("c19", opened.comments.last().comment.content)
+            assertTrue(opened.hasMore)
+
+            vm.createComment(postId, "newest")
+
+            // Appending here would move the loaded prefix's end from c19 to "newest", and the next
+            // page would then ask for everything AFTER it — losing c20..c24 for good. The prefix
+            // stays put and only the count moves; the new comment is past the unread gap.
+            val afterWrite = requireNotNull(vm.commentThread.value)
+            assertEquals("the loaded prefix must not move", 20, afterWrite.comments.size)
+            assertEquals("c19", afterWrite.comments.last().comment.content)
+            assertTrue(
+                "the new comment must not appear above the unread gap",
+                afterWrite.comments.none { it.comment.content == "newest" },
+            )
+            assertEquals("but the count is exact", 26, afterWrite.totalCount)
+            assertTrue(afterWrite.hasMore)
+
+            val firstCursor = afterWrite.comments.last().comment.let {
+                SpaceCursor(it.createdAtMs, it.commentId)
+            }
+            val stillC19 = repository.listCommentsPage(postId, firstCursor, 20).items.first()
+            assertEquals(
+                "the next page must resume from c19, not from the new comment",
+                "c20",
+                stillC19.content,
+            )
+
+            vm.loadMoreComments()
+
+            val loaded = requireNotNull(vm.commentThread.value)
+            val contents = loaded.comments.map { it.comment.content }
+            assertEquals("c20..c24 plus the new comment", 26, contents.size)
+            assertEquals(26, contents.toSet().size)
+            assertEquals(listOf("c20", "c21", "c22", "c23", "c24", "newest"), contents.drop(20))
+            assertEquals(26, loaded.totalCount)
+            assertFalse("nothing is left, so nothing may be offered", loaded.hasMore)
+        }
+
+    @Test
+    fun `a comment written into a complete thread is appended at its tail`() = runBlocking {
+        val postId = repository.createPost(assistantActor, "hello", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        repeat(3) { repository.createComment(SpaceActor.USER, postId, "c$it", originDepth = 0) }
+
+        val vm = viewModel()
+        vm.openComments(postId)
+        val opened = requireNotNull(vm.commentThread.value)
+        assertEquals(3, opened.comments.size)
+        assertFalse("three comments fit in one page", opened.hasMore)
+
+        vm.createComment(postId, "newest")
+
+        val loaded = requireNotNull(vm.commentThread.value)
+        // Complete thread: the loaded list IS the whole thread, so its tail is where the new
+        // comment belongs and appending keeps the prefix contiguous.
+        assertEquals(listOf("c0", "c1", "c2", "newest"), loaded.comments.map { it.comment.content })
+        assertEquals(4, loaded.totalCount)
+        assertFalse(loaded.hasMore)
     }
 
     @Test

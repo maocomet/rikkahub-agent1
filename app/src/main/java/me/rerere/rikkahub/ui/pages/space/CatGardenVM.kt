@@ -174,15 +174,18 @@ class CatGardenVM(
     private suspend fun appendFeedPage() {
         if (feedExhausted) return
         val assistants = currentAssistants()
-        val page = feedCursor
-            ?.let { spaceRepository.listPostsBefore(it, PAGE_SIZE) }
-            ?: spaceRepository.listPosts(PAGE_SIZE)
-        if (page.size < PAGE_SIZE) feedExhausted = true
-        _feedHasMore.value = !feedExhausted
-        if (page.isEmpty()) return
+        val page = spaceRepository.listPostsPage(feedCursor, PAGE_SIZE)
+        // `hasMore` is a lookahead verdict from the repository, not an inference from the page
+        // length: a timeline that ends exactly on a page boundary reports "no more" here rather
+        // than offering a Load More that would return nothing.
+        feedExhausted = !page.hasMore
+        _feedHasMore.value = page.hasMore
+        if (page.items.isEmpty()) return
 
-        feedCursor = page.last().let { SpaceCursor(it.createdAtMs, it.postId) }
-        val items = page.map { toFeedItem(it, assistants) }
+        // The cursor is the last RENDERED post. The lookahead row that produced `hasMore` is the
+        // first post of the next page; using it here would skip that post entirely.
+        feedCursor = page.items.last().let { SpaceCursor(it.createdAtMs, it.postId) }
+        val items = page.items.map { toFeedItem(it, assistants) }
         _feed.value = _feed.value + items
     }
 
@@ -196,21 +199,19 @@ class CatGardenVM(
     private suspend fun appendMinePage() {
         if (mineExhausted) return
         val assistants = currentAssistants()
-        val page = mineCursor
-            ?.let { spaceRepository.listPostsByAuthorBefore(viewer, it, PAGE_SIZE) }
-            ?: spaceRepository.listPostsByAuthor(viewer, PAGE_SIZE)
-        if (page.size < PAGE_SIZE) mineExhausted = true
-        _mineHasMore.value = !mineExhausted
-        if (page.isEmpty()) return
+        val page = spaceRepository.listPostsByAuthorPage(viewer, mineCursor, PAGE_SIZE)
+        mineExhausted = !page.hasMore
+        _mineHasMore.value = page.hasMore
+        if (page.items.isEmpty()) return
 
-        mineCursor = page.last().let { SpaceCursor(it.createdAtMs, it.postId) }
-        val items = page.map { toFeedItem(it, assistants) }
+        mineCursor = page.items.last().let { SpaceCursor(it.createdAtMs, it.postId) }
+        val items = page.items.map { toFeedItem(it, assistants) }
         _mine.value = _mine.value + items
     }
 
     private suspend fun reloadNotifications() {
         val assistants = currentAssistants()
-        val page = spaceRepository.listNotifications(viewer, PAGE_SIZE)
+        val page = spaceRepository.listNotificationsPage(viewer, before = null, limit = PAGE_SIZE).items
         _notifications.value = page.map { notification ->
             SpaceNotificationView(
                 notification = notification,
@@ -229,7 +230,9 @@ class CatGardenVM(
             .mapNotNull { like -> SpaceActor.fromStored(like.actorKind, like.actorId) }
             .map { actor -> resolveSpaceProfile(actor, assistants).displayName }
             .filter { it.isNotBlank() }
-        val comments = spaceRepository.listComments(post.postId, COMMENT_PREVIEW)
+        val comments = spaceRepository
+            .listCommentsPage(post.postId, after = null, limit = COMMENT_PREVIEW)
+            .items
             .map { toCommentView(it, assistants) }
         return SpaceFeedItem(
             post = post,
@@ -263,18 +266,16 @@ class CatGardenVM(
     fun openComments(postId: String) = workScope.launch {
         val assistants = currentAssistants()
         val post = spaceRepository.getPost(postId) ?: return@launch
-        val total = spaceRepository.commentCount(postId)
-        val comments = spaceRepository.listComments(postId, COMMENT_PAGE_SIZE)
-            .map { toCommentView(it, assistants) }
+        val page = spaceRepository.listCommentsPage(postId, after = null, limit = COMMENT_PAGE_SIZE)
         _commentThread.value = SpaceCommentThread(
             post = post,
             author = resolveSpaceProfile(
                 SpaceActor.fromStored(post.authorKind, post.authorId) ?: viewer,
                 assistants,
             ),
-            totalCount = total,
-            comments = comments,
-            hasMore = comments.size < total,
+            totalCount = spaceRepository.commentCount(postId),
+            comments = page.items.map { toCommentView(it, assistants) },
+            hasMore = page.hasMore,
         )
     }
 
@@ -292,21 +293,27 @@ class CatGardenVM(
         _commentThread.value = thread.copy(loadingMore = true)
 
         val assistants = currentAssistants()
-        val page = spaceRepository.listCommentsAfter(
+        val page = spaceRepository.listCommentsPage(
             postId = thread.post.postId,
             after = SpaceCursor(last.createdAtMs, last.commentId),
             limit = COMMENT_PAGE_SIZE,
         )
-        val merged = thread.comments + page.map { toCommentView(it, assistants) }
-        val total = spaceRepository.commentCount(thread.post.postId)
-        // Re-read the thread first: a delete or a close may have landed while this page was loading,
-        // and writing `thread` back would resurrect the view the reader already dismissed.
+        // Re-read the thread before writing: a close or a delete may have landed while this page was
+        // loading, and writing the snapshot back would resurrect a view the reader already
+        // dismissed. Merging onto `current` rather than onto `thread` also keeps anything that
+        // arrived in the meantime.
         val current = _commentThread.value ?: return@launch
         if (current.post.postId != thread.post.postId) return@launch
+        val known = current.comments.mapTo(mutableSetOf()) { it.comment.commentId }
+        val merged = current.comments + page.items
+            .filter { it.commentId !in known }
+            .map { toCommentView(it, assistants) }
         _commentThread.value = current.copy(
             comments = merged,
-            totalCount = total,
-            hasMore = merged.size < total,
+            totalCount = spaceRepository.commentCount(thread.post.postId),
+            // The page's own lookahead verdict, not `merged.size < totalCount`: the latter is the
+            // same cursor-blind guess that misreports the last page of a multi-page thread.
+            hasMore = page.hasMore,
             loadingMore = false,
         )
     }
@@ -314,24 +321,46 @@ class CatGardenVM(
     /**
      * Brings the open thread in line with a comment that was just written.
      *
-     * The new comment is appended rather than re-fetching the thread, so pages the reader already
-     * scrolled through are not thrown away; the total is re-read because other identities may have
-     * commented in the meantime and only the count needs to be exact.
+     * The loaded list is a cursor PREFIX of the thread's database order, and every page read
+     * resumes from its last row. That invariant is what makes appending the new comment unsafe
+     * whenever the prefix is incomplete: with c1..c20 on screen and c21..c25 unread, appending a
+     * brand-new c26 would move the prefix end to c26, and the next page would ask for everything
+     * after c26 — skipping c21..c25 permanently.
+     *
+     * So the two cases are genuinely different:
+     *  - **incomplete** ([SpaceCommentThread.hasMore]) — only the total is updated. The new comment
+     *    is past the prefix end, so the ordinary Load More reaches it in its proper place, in order,
+     *    with nothing skipped.
+     *  - **complete** — the loaded list IS the whole thread, so the new comment belongs at its tail
+     *    and appending keeps the prefix contiguous.
+     *
+     * `hasMore` is deliberately left untouched in both branches: incomplete stays incomplete,
+     * complete stays complete. It is never recomputed from `size < total`, which is the cursor-blind
+     * guess this whole change exists to remove.
      */
     private suspend fun refreshOpenThread(postId: String, newCommentId: String?) {
-        val thread = _commentThread.value ?: return
-        if (thread.post.postId != postId) return
+        if (_commentThread.value?.post?.postId != postId) return
         val total = spaceRepository.commentCount(postId)
-        val added = newCommentId
-            ?.let { spaceRepository.getComment(it) }
-            ?.takeIf { comment -> thread.comments.none { it.comment.commentId == comment.commentId } }
-            ?.let { toCommentView(it, currentAssistants()) }
-        val comments = if (added != null) thread.comments + added else thread.comments
-        _commentThread.value = thread.copy(
-            comments = comments,
-            totalCount = total,
-            hasMore = comments.size < total,
-        )
+        val added = newCommentId?.let { spaceRepository.getComment(it) }
+
+        // Re-read before deciding, and decide from THIS state: the thread may have been closed,
+        // reopened, or paged while the reads above were in flight, and only the list actually on
+        // screen has a prefix whose end is a valid cursor.
+        val current = _commentThread.value ?: return
+        if (current.post.postId != postId) return
+        val view = if (current.hasMore || added == null) {
+            null
+        } else {
+            toCommentView(added, currentAssistants())
+        }
+        val comments = if (view != null &&
+            current.comments.none { it.comment.commentId == view.comment.commentId }
+        ) {
+            current.comments + view
+        } else {
+            current.comments
+        }
+        _commentThread.value = current.copy(comments = comments, totalCount = total)
     }
 
     // ── Mutations (all as the local user) ────────────────────────────────────────────────────

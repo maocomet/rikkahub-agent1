@@ -87,8 +87,8 @@ class SpacePostDeletionCascadeTest {
 
         // Four actions by identities other than the author, so four notifications — all addressed
         // to the author, because that is the only person any of them acted on.
-        assertEquals(4, repository.listNotifications(author, 10).size)
-        assertTrue(repository.listNotifications(SpaceActor.USER, 10).isEmpty())
+        assertEquals(4, notificationsOf(author).size)
+        assertTrue(notificationsOf(SpaceActor.USER).isEmpty())
         assertEquals(2, repository.likeCount(postId))
         assertEquals(2, repository.commentCount(postId))
 
@@ -97,8 +97,8 @@ class SpacePostDeletionCascadeTest {
         assertNull(repository.getPost(postId))
         assertEquals(0, repository.likeCount(postId))
         assertEquals(0, repository.commentCount(postId))
-        assertTrue(repository.listNotifications(author, 10).isEmpty())
-        assertTrue(repository.listNotifications(SpaceActor.USER, 10).isEmpty())
+        assertTrue(notificationsOf(author).isEmpty())
+        assertTrue(notificationsOf(SpaceActor.USER).isEmpty())
         assertTrue(
             dao.listPendingNotifications(SpaceActorKind.ASSISTANT.name, author.id, 0L, 10).isEmpty(),
         )
@@ -118,8 +118,8 @@ class SpacePostDeletionCascadeTest {
         assertEquals(1, repository.likeCount(survivor))
         assertEquals(1, repository.commentCount(survivor))
         // The survivor's own like and comment notifications, and nothing from the doomed post.
-        assertEquals(2, repository.listNotifications(author, 10).size)
-        assertEquals("on the survivor", repository.listComments(survivor, 10).single().content)
+        assertEquals(2, notificationsOf(author).size)
+        assertEquals("on the survivor", commentsOf(survivor).single().content)
     }
 
     @Test
@@ -180,4 +180,12 @@ class SpacePostDeletionCascadeTest {
     private suspend fun post(who: SpaceActor): String =
         (repository.createPost(who, "content ${++idSeq}", SpaceCausalDepth.USER_INITIATED)
             as SpaceWriteOutcome.Created).id
+
+    // Read helpers for tests that are about the cascade, not about paging. They go through the same
+    // page API production uses — the repository deliberately has no raw list reader.
+    private suspend fun notificationsOf(actor: SpaceActor, limit: Int = 10) =
+        repository.listNotificationsPage(actor, before = null, limit = limit).items
+
+    private suspend fun commentsOf(postId: String, limit: Int = 10) =
+        repository.listCommentsPage(postId, after = null, limit = limit).items
 }

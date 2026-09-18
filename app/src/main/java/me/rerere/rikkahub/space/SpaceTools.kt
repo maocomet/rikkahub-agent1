@@ -144,23 +144,22 @@ fun createSpaceTools(
 
                 // Both cursor halves are required together: a time-only cursor silently skips or
                 // repeats rows whenever several share a millisecond.
-                val posts = if (beforeCreatedAt != null && !beforeId.isNullOrBlank()) {
-                    repository.listPostsBefore(SpaceCursor(beforeCreatedAt, beforeId), limit)
-                } else {
-                    repository.listPosts(limit)
-                }
+                val page = repository.listPostsPage(cursorOrNull(beforeCreatedAt, beforeId), limit)
+                val posts = page.items
                 // Like/comment counts are suspend reads, so they are resolved before the JSON is
                 // assembled rather than inside the (non-suspend) builder lambda.
                 val encodedPosts = posts.map { spacePostJson(repository, it) }
                 spaceOk {
                     put("count", posts.size)
                     putJsonArray("posts") { encodedPosts.forEach { add(it) } }
-                    val last = posts.lastOrNull()
-                    if (last != null && posts.size == limit) {
+                    // The cursor is the last row actually returned. `has_more` is a lookahead
+                    // verdict, so it is true exactly when such a row exists.
+                    if (page.hasMore) {
+                        val last = posts.last()
                         put("next_before_created_at_ms", last.createdAtMs)
                         put("next_before_id", last.postId)
                     }
-                    put("has_more", posts.size == limit)
+                    put("has_more", page.hasMore)
                 }
             },
         ),
@@ -190,8 +189,8 @@ fun createSpaceTools(
                     ?: return@Tool spaceRejected(
                         SpaceWriteOutcome.Rejected("POST_NOT_FOUND", "No post with that id."),
                     )
-                val comments = repository.listComments(postId, DEFAULT_COMMENT_PAGE)
-                val commentCount = repository.commentCount(postId)
+                val page = repository.listCommentsPage(postId, after = null, limit = DEFAULT_COMMENT_PAGE)
+                val comments = page.items
                 val encodedPost = spacePostJson(repository, post)
                 spaceOk {
                     put("post", encodedPost)
@@ -199,10 +198,12 @@ fun createSpaceTools(
                         comments.forEach { comment -> add(spaceCommentJson(comment)) }
                     }
                     // A caller must never have to guess whether 50 comments was the whole thread.
-                    // The total is exact, and the cursor halves are the ones the paging query needs.
-                    put("comment_count", commentCount)
-                    put("comments_has_more", comments.size < commentCount)
-                    comments.lastOrNull()?.let { last ->
+                    // `comment_count` is the exact total and `comments_has_more` comes from a
+                    // lookahead read rather than from comparing this page against that total.
+                    put("comment_count", repository.commentCount(postId))
+                    put("comments_has_more", page.hasMore)
+                    if (page.hasMore) {
+                        val last = comments.last()
                         put("comments_next_after_created_at_ms", last.createdAtMs)
                         put("comments_next_after_id", last.commentId)
                     }
@@ -254,21 +255,24 @@ fun createSpaceTools(
 
                 // Both cursor halves travel together: a time-only cursor silently skips or repeats
                 // comments whenever several share a millisecond.
-                val comments = if (afterCreatedAt != null && !afterId.isNullOrBlank()) {
-                    repository.listCommentsAfter(postId, SpaceCursor(afterCreatedAt, afterId), limit)
-                } else {
-                    repository.listComments(postId, limit)
-                }
-                val commentCount = repository.commentCount(postId)
+                val page = repository.listCommentsPage(
+                    postId = postId,
+                    after = cursorOrNull(afterCreatedAt, afterId),
+                    limit = limit,
+                )
+                val comments = page.items
                 spaceOk {
                     put("post_id", postId)
                     put("count", comments.size)
                     putJsonArray("comments") {
                         comments.forEach { comment -> add(spaceCommentJson(comment)) }
                     }
-                    put("comment_count", commentCount)
-                    put("has_more", comments.size == limit && comments.size < commentCount)
-                    comments.lastOrNull()?.let { last ->
+                    put("comment_count", repository.commentCount(postId))
+                    // Proven by a lookahead read, not guessed from the page size or from how many
+                    // comments the whole post has — either guess misreports the last page.
+                    put("has_more", page.hasMore)
+                    if (page.hasMore) {
+                        val last = comments.last()
                         put("next_after_created_at_ms", last.createdAtMs)
                         put("next_after_id", last.commentId)
                     }
@@ -434,15 +438,12 @@ fun createSpaceTools(
                 val beforeCreatedAt = args["before_created_at_ms"]?.jsonPrimitive?.longOrNull
                 val beforeId = args["before_id"]?.jsonPrimitive?.contentOrNull
 
-                val notifications = if (beforeCreatedAt != null && !beforeId.isNullOrBlank()) {
-                    repository.listNotificationsBefore(
-                        actor,
-                        SpaceCursor(beforeCreatedAt, beforeId),
-                        limit,
-                    )
-                } else {
-                    repository.listNotifications(actor, limit)
-                }
+                val page = repository.listNotificationsPage(
+                    actor = actor,
+                    before = cursorOrNull(beforeCreatedAt, beforeId),
+                    limit = limit,
+                )
+                val notifications = page.items
                 spaceOk {
                     put("count", notifications.size)
                     putJsonArray("notifications") {
@@ -459,12 +460,12 @@ fun createSpaceTools(
                             })
                         }
                     }
-                    val last = notifications.lastOrNull()
-                    if (last != null && notifications.size == limit) {
+                    if (page.hasMore) {
+                        val last = notifications.last()
                         put("next_before_created_at_ms", last.createdAtMs)
                         put("next_before_id", last.notificationId)
                     }
-                    put("has_more", notifications.size == limit)
+                    put("has_more", page.hasMore)
                 }
             },
         ),
@@ -505,6 +506,17 @@ fun createSpaceTools(
 
 private const val DEFAULT_PAGE_SIZE = 20
 private const val DEFAULT_COMMENT_PAGE = 50
+
+/**
+ * A cursor only when BOTH halves were supplied.
+ *
+ * A time-only cursor silently skips or repeats rows whenever several share a millisecond, so a
+ * half-supplied cursor is read as "no cursor" — the first page — rather than as a cursor that
+ * happens to be missing its tiebreak. Returning the first page again is a visible, harmless
+ * mistake; a half cursor is an invisible one that loses rows.
+ */
+private fun cursorOrNull(createdAtMs: Long?, id: String?): SpaceCursor? =
+    if (createdAtMs != null && !id.isNullOrBlank()) SpaceCursor(createdAtMs, id) else null
 
 private fun spaceOk(build: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit): List<UIMessagePart> =
     listOf(
