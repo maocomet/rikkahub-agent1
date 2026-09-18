@@ -5,6 +5,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.long
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.InputSchema
@@ -17,6 +20,8 @@ import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -94,7 +99,7 @@ class SpaceToolSurfaceTest {
     fun `the built surface is exactly the designed set`() {
         val built = toolsFor(context()).map { it.name }.toSet()
         assertEquals(SPACE_TOOL_NAMES, built)
-        assertEquals(7, built.size)
+        assertEquals(9, built.size)
     }
 
     @Test
@@ -189,6 +194,129 @@ class SpaceToolSurfaceTest {
         val depths = dao.posts.values.associate { it.content to it.originDepth }
         assertEquals(0, depths.getValue("from a person"))
         assertEquals(1, depths.getValue("from an automation"))
+    }
+
+    @Test
+    fun `the delete tool accepts only a post id and refuses another assistant's post`() = runBlocking {
+        val otherId = "bbbbbbbb-0000-0000-0000-000000000002"
+        val foreignPost = (repository.createPost(
+            SpaceActor(SpaceActorKind.ASSISTANT, otherId),
+            "not yours",
+            0,
+        ) as SpaceWriteOutcome.Created).id
+
+        val tool = toolsFor(context()).single { it.name == SPACE_DELETE_POST_TOOL_NAME }
+        assertEquals(
+            setOf("post_id"),
+            (tool.parameters() as InputSchema.Obj).properties.keys,
+        )
+
+        // The model supplies identity-looking arguments; they must be ignored, not honoured, and
+        // the write must still be refused because the runtime identity does not own the post.
+        val payload = tool.execute(
+            buildJsonObject {
+                put("post_id", foreignPost)
+                put("author_id", otherId)
+                put("actor_id", otherId)
+            },
+        ).single().let { it as UIMessagePart.Text }.text
+
+        val json = Json.parseToJsonElement(payload).jsonObject
+        assertFalse(json.getValue("ok").jsonPrimitive.booleanOrNull ?: true)
+        assertEquals("NOT_POST_OWNER", json.getValue("code").jsonPrimitive.content)
+        assertNotNull(repository.getPost(foreignPost))
+    }
+
+    @Test
+    fun `the delete tool removes the caller's own post`() = runBlocking {
+        val mine = (repository.createPost(
+            SpaceActor(SpaceActorKind.ASSISTANT, assistantId),
+            "mine to delete",
+            0,
+        ) as SpaceWriteOutcome.Created).id
+
+        val payload = toolsFor(context())
+            .single { it.name == SPACE_DELETE_POST_TOOL_NAME }
+            .execute(buildJsonObject { put("post_id", mine) })
+            .single().let { it as UIMessagePart.Text }.text
+
+        val json = Json.parseToJsonElement(payload).jsonObject
+        assertTrue(json.getValue("ok").jsonPrimitive.booleanOrNull ?: false)
+        assertNull(repository.getPost(mine))
+    }
+
+    @Test
+    fun `a run with no trusted identity cannot delete anything`() = runBlocking {
+        val mine = (repository.createPost(
+            SpaceActor(SpaceActorKind.ASSISTANT, assistantId),
+            "keep me",
+            0,
+        ) as SpaceWriteOutcome.Created).id
+
+        val payload = toolsFor(context(callerAssistantId = null))
+            .single { it.name == SPACE_DELETE_POST_TOOL_NAME }
+            .execute(buildJsonObject { put("post_id", mine) })
+            .single().let { it as UIMessagePart.Text }.text
+
+        assertEquals(
+            "SPACE_IDENTITY_UNAVAILABLE",
+            Json.parseToJsonElement(payload).jsonObject.getValue("code").jsonPrimitive.content,
+        )
+        assertNotNull(repository.getPost(mine))
+    }
+
+    @Test
+    fun `a full comment thread is reachable a page at a time`() = runBlocking {
+        val postId = (repository.createPost(
+            SpaceActor(SpaceActorKind.ASSISTANT, assistantId),
+            "many comments",
+            0,
+        ) as SpaceWriteOutcome.Created).id
+        repeat(5) { repository.createComment(SpaceActor.USER, postId, "c$it", 0) }
+
+        val getPost = toolsFor(context()).single { it.name == SPACE_GET_POST_TOOL_NAME }
+        val first = Json.parseToJsonElement(
+            getPost.execute(buildJsonObject { put("post_id", postId) })
+                .single().let { it as UIMessagePart.Text }.text,
+        ).jsonObject
+
+        // The reader must be told the truth about the thread's size, not handed a truncated list
+        // that looks complete.
+        assertEquals(5, first.getValue("comment_count").jsonPrimitive.int)
+        assertEquals(5, first.getValue("comments").jsonArray.size)
+        assertFalse(first.getValue("comments_has_more").jsonPrimitive.booleanOrNull ?: true)
+
+        val listComments = toolsFor(context()).single { it.name == SPACE_LIST_COMMENTS_TOOL_NAME }
+        val page = Json.parseToJsonElement(
+            // A JSON integer, as a model would emit for an "integer" schema property — not the
+            // string "2", which the tool's intOrNull read is not obliged to coerce.
+            listComments.execute(buildJsonObject { put("post_id", postId); put("limit", 2) })
+                .single().let { it as UIMessagePart.Text }.text,
+        ).jsonObject
+
+        assertEquals(2, page.getValue("count").jsonPrimitive.int)
+        assertEquals(5, page.getValue("comment_count").jsonPrimitive.int)
+        assertTrue(page.getValue("has_more").jsonPrimitive.booleanOrNull ?: false)
+
+        // And the cursor it hands back is the one the next page actually needs.
+        val next = Json.parseToJsonElement(
+            listComments.execute(
+                buildJsonObject {
+                    put("post_id", postId)
+                    put(
+                        "after_created_at_ms",
+                        page.getValue("next_after_created_at_ms").jsonPrimitive.long,
+                    )
+                    put("after_id", page.getValue("next_after_id").jsonPrimitive.content)
+                },
+            ).single().let { it as UIMessagePart.Text }.text,
+        ).jsonObject
+        assertEquals(
+            listOf("c2", "c3", "c4"),
+            next.getValue("comments").jsonArray.map { comment ->
+                comment.jsonObject.getValue("content").jsonPrimitive.content
+            },
+        )
     }
 
     @Test

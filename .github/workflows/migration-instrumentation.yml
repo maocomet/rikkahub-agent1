@@ -74,6 +74,9 @@ jobs:
           CLASSES="$CLASSES,me.rerere.rikkahub.data.db.migrations.AppDatabaseEveryAdjacentMigrationTest"
           CLASSES="$CLASSES,me.rerere.rikkahub.data.db.AppDatabaseV50BackupRestoreRoundTripTest"
           CLASSES="$CLASSES,me.rerere.rikkahub.data.db.ImportedDatabaseReconcilerGrantRestoreTest"
+          # Cat Garden's post delete relies on ON DELETE CASCADE, which no JVM contract test can
+          # prove — the fake only reproduces the constraint. This one runs against real SQLite.
+          CLASSES="$CLASSES,me.rerere.rikkahub.data.db.SpacePostDeletionCascadeTest"
           echo "Instrumentation filter: $CLASSES"
           ls -l /dev/kvm
           ./gradlew :app:p5DisposablePixel6Api35DebugAndroidTest --no-parallel \

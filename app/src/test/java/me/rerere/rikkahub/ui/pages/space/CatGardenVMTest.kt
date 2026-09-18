@@ -147,6 +147,248 @@ class CatGardenVMTest {
         assertEquals(0, vm.unreadCount.value)
     }
 
+    // ── Mine tab pagination ──────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `mine pages past the first twenty posts`() = runBlocking {
+        repeat(25) { repository.createPost(SpaceActor.USER, "post $it", originDepth = 0) }
+
+        val vm = viewModel()
+        assertEquals(20, vm.mine.value.size)
+        assertTrue("a 21st post exists, so more must be offered", vm.mineHasMore.value)
+
+        vm.loadMoreMine()
+
+        assertEquals(25, vm.mine.value.size)
+        assertEquals("every post must appear exactly once", 25, vm.mine.value.map { it.post.postId }.toSet().size)
+        assertFalse("nothing is left, so no more may be offered", vm.mineHasMore.value)
+    }
+
+    @Test
+    fun `mine exhausts even when the last page lands exactly on the page size`() = runBlocking {
+        repeat(20) { repository.createPost(SpaceActor.USER, "post $it", originDepth = 0) }
+
+        val vm = viewModel()
+        assertEquals(20, vm.mine.value.size)
+        // Twenty rows came back, so a page may still exist — asking is legitimate here.
+        assertTrue(vm.mineHasMore.value)
+
+        vm.loadMoreMine()
+
+        assertEquals(20, vm.mine.value.size)
+        assertFalse("the empty page proved the end", vm.mineHasMore.value)
+    }
+
+    @Test
+    fun `mine and feed paginate independently`() = runBlocking {
+        repeat(25) { repository.createPost(SpaceActor.USER, "post $it", originDepth = 0) }
+
+        val vm = viewModel()
+        assertEquals(20, vm.feed.value.size)
+        assertEquals(20, vm.mine.value.size)
+
+        // Sharing one cursor between the tabs would make the second call resume from the first
+        // tab's position, silently skipping this author's older posts.
+        vm.loadMoreFeed()
+        assertEquals(25, vm.feed.value.size)
+        assertEquals(20, vm.mine.value.size)
+
+        vm.loadMoreMine()
+        assertEquals(25, vm.mine.value.size)
+        assertEquals(25, vm.mine.value.map { it.post.postId }.toSet().size)
+    }
+
+    @Test
+    fun `mine pages correctly when every post shares a millisecond`() = runBlocking {
+        // The VM's clock is frozen for this test, so a time-only cursor would loop here.
+        val frozenClock = SpaceRepository(
+            dao = dao,
+            nowMs = { 5_000L },
+            newId = { "frozen-${++idSeq}" },
+        )
+        repeat(25) { frozenClock.createPost(SpaceActor.USER, "post $it", originDepth = 0) }
+
+        val vm = CatGardenVM(
+            spaceRepository = frozenClock,
+            identitySource = FakeIdentitySource(listOf(assistant), "Owner", Avatar.Dummy),
+            injectedScope = CoroutineScope(Dispatchers.Unconfined),
+        )
+        vm.loadMoreMine()
+
+        assertEquals(25, vm.mine.value.size)
+        assertEquals(25, vm.mine.value.map { it.post.postId }.toSet().size)
+        assertFalse(vm.mineHasMore.value)
+    }
+
+    @Test
+    fun `an empty mine offers nothing to load`() = runBlocking {
+        val vm = viewModel()
+        assertTrue(vm.mine.value.isEmpty())
+        assertFalse(vm.mineHasMore.value)
+    }
+
+    // ── The full comment view ────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `opening comments shows the post and the real total, not the preview`() = runBlocking {
+        val postId = repository.createPost(assistantActor, "hello", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        repeat(5) { repository.createComment(SpaceActor.USER, postId, "c$it", originDepth = 0) }
+
+        val vm = viewModel()
+        // The card keeps a short preview so the timeline does not grow without bound.
+        assertEquals(2, vm.feed.value.single().comments.size)
+        // ... while still reporting the true count.
+        assertEquals(5, vm.feed.value.single().commentCount)
+
+        vm.openComments(postId)
+
+        val thread = requireNotNull(vm.commentThread.value) { "the full view did not open" }
+        assertEquals(postId, thread.post.postId)
+        assertEquals("Mimi", thread.author.displayName)
+        assertEquals(5, thread.totalCount)
+        assertEquals(5, thread.comments.size)
+        assertFalse(thread.hasMore)
+        assertEquals(listOf("c0", "c1", "c2", "c3", "c4"), thread.comments.map { it.comment.content })
+    }
+
+    @Test
+    fun `the full comment view pages without repeating or skipping a comment`() = runBlocking {
+        val postId = repository.createPost(assistantActor, "hello", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        // A frozen clock: every comment shares a millisecond, so the cursor's id half is the only
+        // thing keeping pages disjoint.
+        val frozenClock = SpaceRepository(dao = dao, nowMs = { 7_000L }, newId = { "c-${++idSeq}" })
+        repeat(25) { frozenClock.createComment(SpaceActor.USER, postId, "c$it", originDepth = 0) }
+
+        val vm = CatGardenVM(
+            spaceRepository = frozenClock,
+            identitySource = FakeIdentitySource(listOf(assistant), "Owner", Avatar.Dummy),
+            injectedScope = CoroutineScope(Dispatchers.Unconfined),
+        )
+        vm.openComments(postId)
+
+        assertEquals(20, vm.commentThread.value!!.comments.size)
+        assertEquals(25, vm.commentThread.value!!.totalCount)
+        assertTrue(vm.commentThread.value!!.hasMore)
+
+        vm.loadMoreComments()
+
+        val thread = vm.commentThread.value!!
+        assertEquals(25, thread.comments.size)
+        assertEquals(25, thread.comments.map { it.comment.commentId }.toSet().size)
+        assertEquals(25, thread.totalCount)
+        assertFalse(thread.hasMore)
+    }
+
+    @Test
+    fun `a comment written in the full view is appended to it`() = runBlocking {
+        val postId = repository.createPost(assistantActor, "hello", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        val vm = viewModel()
+        vm.openComments(postId)
+        assertEquals(0, vm.commentThread.value!!.comments.size)
+
+        vm.createComment(postId, "from the person")
+
+        val thread = requireNotNull(vm.commentThread.value)
+        assertEquals(listOf("from the person"), thread.comments.map { it.comment.content })
+        assertEquals(1, thread.totalCount)
+        // The card behind the view refreshes too.
+        assertEquals(1, vm.feed.value.single().commentCount)
+    }
+
+    @Test
+    fun `closing the full view clears it`() = runBlocking {
+        val postId = repository.createPost(assistantActor, "hello", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        val vm = viewModel()
+        vm.openComments(postId)
+        assertTrue(vm.commentThread.value != null)
+
+        vm.closeComments()
+
+        assertTrue(vm.commentThread.value == null)
+    }
+
+    @Test
+    fun `opening a post that no longer exists leaves the view closed`() = runBlocking {
+        val vm = viewModel()
+        vm.openComments("no-such-post")
+        assertTrue(vm.commentThread.value == null)
+    }
+
+    // ── Deleting the person's own posts ──────────────────────────────────────────────────────
+
+    @Test
+    fun `deleting the person's own post drops it from the feed and from mine`() = runBlocking {
+        val postId = repository.createPost(SpaceActor.USER, "mine to delete", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        repository.createPost(assistantActor, "not mine", originDepth = 0)
+
+        val vm = viewModel()
+        assertEquals(2, vm.feed.value.size)
+        assertEquals(1, vm.mine.value.size)
+
+        vm.deletePost(postId)
+
+        assertEquals(listOf("not mine"), vm.feed.value.map { it.post.content })
+        assertTrue(vm.mine.value.isEmpty())
+        assertTrue(vm.mineHasMore.value == false)
+    }
+
+    @Test
+    fun `the viewer cannot delete an assistant's post`() = runBlocking {
+        val assistantPost = repository.createPost(assistantActor, "not mine", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+
+        val vm = viewModel()
+        vm.deletePost(assistantPost)
+
+        // Refused by the repository's ownership check, so nothing disappears from the screen.
+        assertEquals(1, vm.feed.value.size)
+        assertTrue(repository.getPost(assistantPost) != null)
+    }
+
+    @Test
+    fun `deleting a post closes its open comment view`() = runBlocking {
+        val postId = repository.createPost(SpaceActor.USER, "doomed", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        repository.createComment(assistantActor, postId, "a comment", originDepth = 0)
+
+        val vm = viewModel()
+        vm.openComments(postId)
+        assertTrue(vm.commentThread.value != null)
+
+        vm.deletePost(postId)
+
+        assertTrue("the thread cannot outlive the post it was reading", vm.commentThread.value == null)
+        assertTrue(vm.feed.value.isEmpty())
+    }
+
+    @Test
+    fun `deleting a post clears the notifications it cascaded away`() = runBlocking {
+        val postId = repository.createPost(SpaceActor.USER, "my post", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        repository.setLike(assistantActor, postId, liked = true, originDepth = 0)
+
+        val vm = viewModel()
+        assertEquals(1, vm.notifications.value.size)
+
+        vm.deletePost(postId)
+
+        assertTrue("the badge cannot keep counting a post that is gone", vm.notifications.value.isEmpty())
+        assertEquals(0, vm.unreadCount.value)
+    }
+
     private class FakeIdentitySource(
         private val assistants: List<Assistant>,
         nickname: String,

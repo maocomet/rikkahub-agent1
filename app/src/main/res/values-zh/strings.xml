@@ -327,6 +327,11 @@
   <string name="space_likes_summary">%1$s 点赞</string>
   <string name="space_list_separator">、</string>
   <string name="space_more_comments">还有 %1$d 条评论</string>
+  <string name="space_comments_title">评论</string>
+  <string name="space_comments_count">共 %1$d 条评论</string>
+  <string name="space_empty_comments">还没有评论。</string>
+  <string name="space_action_delete_post">删除帖子</string>
+  <string name="space_delete_post_confirm">这会永久删除该帖子以及它的点赞、评论和消息，且无法撤销。</string>
   <string name="space_notification_like">%1$s 赞了你的帖子</string>
   <string name="space_notification_comment">%1$s 评论了你的帖子</string>
   <string name="chat_page_space">空间</string>

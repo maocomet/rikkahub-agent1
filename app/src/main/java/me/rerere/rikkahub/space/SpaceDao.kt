@@ -55,6 +55,31 @@ interface SpaceDao {
         limit: Int,
     ): List<SpacePostEntity>
 
+    @Query(
+        "SELECT * FROM space_posts WHERE author_kind = :authorKind AND author_id = :authorId " +
+            "AND (created_at_ms < :beforeCreatedAtMs " +
+            "OR (created_at_ms = :beforeCreatedAtMs AND post_id < :beforePostId)) " +
+            "ORDER BY created_at_ms DESC, post_id DESC LIMIT :limit",
+    )
+    suspend fun listPostsByAuthorBefore(
+        authorKind: String,
+        authorId: String,
+        beforeCreatedAtMs: Long,
+        beforePostId: String,
+        limit: Int,
+    ): List<SpacePostEntity>
+
+    /**
+     * Deletes the post row. Dependent likes, comments and notifications go with it through the
+     * declared `ON DELETE CASCADE` foreign keys — the schema already expresses that a post's
+     * reactions have no meaning without it, and Room enables constraint enforcement on every
+     * connection it opens, so no explicit child sweep is needed here.
+     *
+     * Returns the number of parent rows removed, so a caller can tell a real delete from a no-op.
+     */
+    @Query("DELETE FROM space_posts WHERE post_id = :postId")
+    suspend fun deletePost(postId: String): Int
+
     // ── Likes ────────────────────────────────────────────────────────────────────────────────
 
     /**
@@ -95,6 +120,26 @@ interface SpaceDao {
             "ORDER BY created_at_ms ASC, comment_id ASC LIMIT :limit",
     )
     suspend fun listComments(postId: String, limit: Int): List<SpaceCommentEntity>
+
+    /**
+     * The next page of a comment thread, in the same oldest-first order as [listComments].
+     *
+     * The cursor is `(created_at_ms, comment_id)` and is applied as a strict "after", because the
+     * thread reads forwards. Both halves are required: comments routinely share a millisecond, and
+     * a time-only cursor would skip or repeat every one of them at a page boundary.
+     */
+    @Query(
+        "SELECT * FROM space_comments WHERE post_id = :postId " +
+            "AND (created_at_ms > :afterCreatedAtMs " +
+            "OR (created_at_ms = :afterCreatedAtMs AND comment_id > :afterCommentId)) " +
+            "ORDER BY created_at_ms ASC, comment_id ASC LIMIT :limit",
+    )
+    suspend fun listCommentsAfter(
+        postId: String,
+        afterCreatedAtMs: Long,
+        afterCommentId: String,
+        limit: Int,
+    ): List<SpaceCommentEntity>
 
     @Query("SELECT COUNT(*) FROM space_comments WHERE post_id = :postId")
     suspend fun commentCount(postId: String): Int
@@ -154,8 +199,12 @@ interface SpaceDao {
     ): Int
 
     /**
-     * Exactly-once claim. Returns 1 only for the caller that observed `consumed_at_ms` as NULL,
-     * so a notification can never drive two workflow runs even if the event is redelivered.
+     * Exactly-once claim. Returns 1 only for the caller that observed `consumed_at_ms` as NULL, so
+     * a notification can never drive two fire attempts even if the event is redelivered or replayed
+     * after a restart.
+     *
+     * This is exactly-once *claiming*, not exactly-once execution: the flip happens before the run
+     * is handed off, so a process that dies in between loses that fire rather than repeating it.
      */
     @Query(
         "UPDATE space_notifications SET consumed_at_ms = :consumedAtMs " +
@@ -168,4 +217,29 @@ interface SpaceDao {
 
     @Query("SELECT * FROM space_notifications WHERE notification_id = :notificationId LIMIT 1")
     suspend fun getNotification(notificationId: String): SpaceNotificationEntity?
+
+    /**
+     * Unconsumed notifications for one recipient, oldest first — the restart/replay scan.
+     *
+     * `consumed_at_ms IS NULL` is the whole point: a row in this result was never handed to a
+     * workflow, whether because the process was dead, no family was bound, or the recipient had no
+     * matching workflow at the time. Rows already claimed never come back, so replay can only ever
+     * re-present work that was genuinely missed.
+     *
+     * Bounded by both `sinceMs` (a caller-chosen window) and `limit`; there is deliberately no
+     * unbounded form, for the same token/latency reason as every other listing here. Served by the
+     * existing `(recipient_kind, recipient_id, created_at_ms)` index.
+     */
+    @Query(
+        "SELECT * FROM space_notifications " +
+            "WHERE recipient_kind = :recipientKind AND recipient_id = :recipientId " +
+            "AND consumed_at_ms IS NULL AND created_at_ms >= :sinceMs " +
+            "ORDER BY created_at_ms ASC, notification_id ASC LIMIT :limit",
+    )
+    suspend fun listPendingNotifications(
+        recipientKind: String,
+        recipientId: String,
+        sinceMs: Long,
+        limit: Int,
+    ): List<SpaceNotificationEntity>
 }

@@ -179,18 +179,45 @@ class SpaceRepositoryTest {
     }
 
     @Test
-    fun `assistant-originated notifications carry a greater causal depth than user ones`() = runBlocking {
+    fun `a notification records the causal depth of the action that produced it`() = runBlocking {
         val postId = post(assistantA)
-        // The user acting directly: the notification records depth 1, one step from the origin.
-        repo.setLike(SpaceActor.USER, postId, true, originDepth = 0)
-        // An assistant acting inside an automation run that is itself one step from the user:
-        // the notification must record depth 2, which the trigger gate refuses to act on.
+        // The person acting directly: the notification IS the record of that action, so it carries
+        // the same depth the action did — zero. It is not a further hop beyond the like.
+        repo.setLike(SpaceActor.USER, postId, true, SpaceCausalDepth.USER_INITIATED)
+        // An assistant acting inside an automation run. This is the depth the trigger gate refuses,
+        // and it is the depth the headless tool surface stamps.
         val automation = SpaceActor(SpaceActorKind.ASSISTANT, "cccccccc-0000-0000-0000-000000000003")
-        repo.setLike(automation, postId, true, originDepth = 1)
+        repo.setLike(automation, postId, true, SpaceCausalDepth.AUTOMATION_DRIVEN)
 
         val byDepth = repo.listNotifications(assistantA, 10).associateBy { it.actorKind }
-        assertEquals(1, byDepth.getValue(SpaceActorKind.USER.name).originDepth)
-        assertEquals(2, byDepth.getValue(SpaceActorKind.ASSISTANT.name).originDepth)
+        assertEquals(
+            SpaceCausalDepth.USER_INITIATED,
+            byDepth.getValue(SpaceActorKind.USER.name).originDepth,
+        )
+        assertEquals(
+            SpaceCausalDepth.AUTOMATION_DRIVEN,
+            byDepth.getValue(SpaceActorKind.ASSISTANT.name).originDepth,
+        )
+    }
+
+    @Test
+    fun `a comment records the causal depth of the acting write`() = runBlocking {
+        val postId = post(assistantA)
+        repo.createComment(SpaceActor.USER, postId, "from the person", SpaceCausalDepth.USER_INITIATED)
+        repo.createComment(assistantB, postId, "from an automation", SpaceCausalDepth.AUTOMATION_DRIVEN)
+
+        val depths = repo.listComments(postId, 10).associate { it.content to it.originDepth }
+        assertEquals(SpaceCausalDepth.USER_INITIATED, depths.getValue("from the person"))
+        assertEquals(SpaceCausalDepth.AUTOMATION_DRIVEN, depths.getValue("from an automation"))
+    }
+
+    @Test
+    fun `only the person's own action may wake a workflow`() {
+        // The guard's threshold, asserted directly so a future change to the contract has to come
+        // through here rather than silently sliding.
+        assertTrue(SpaceCausalDepth.mayWakeWorkflow(SpaceCausalDepth.USER_INITIATED))
+        assertFalse(SpaceCausalDepth.mayWakeWorkflow(SpaceCausalDepth.AUTOMATION_DRIVEN))
+        assertFalse(SpaceCausalDepth.mayWakeWorkflow(2))
     }
 
     @Test
@@ -257,6 +284,180 @@ class SpaceRepositoryTest {
         repeat(60) { bigRepo.createPost(assistantA, "p$it", 0) }
         assertEquals(SpaceRepository.MAX_PAGE_SIZE, bigRepo.listPosts(limit = 500).size)
     }
+
+    // ── Post deletion and the cascade ────────────────────────────────────────────────────────
+
+    @Test
+    fun `the author may delete their own post`() = runBlocking {
+        val postId = post(assistantA)
+        assertTrue(repo.deletePost(assistantA, postId) is SpaceWriteOutcome.Created)
+        assertNull(repo.getPost(postId))
+    }
+
+    @Test
+    fun `the local user may delete their own post`() = runBlocking {
+        val postId = post(SpaceActor.USER)
+        assertTrue(repo.deletePost(SpaceActor.USER, postId) is SpaceWriteOutcome.Created)
+        assertNull(repo.getPost(postId))
+    }
+
+    @Test
+    fun `deleting a post that does not exist reports POST_NOT_FOUND`() = runBlocking {
+        val outcome = repo.deletePost(assistantA, "no-such-post")
+        assertEquals("POST_NOT_FOUND", (outcome as SpaceWriteOutcome.Rejected).code)
+    }
+
+    @Test
+    fun `another assistant cannot delete a post and is told why`() = runBlocking {
+        val postId = post(assistantA)
+        val outcome = repo.deletePost(assistantB, postId)
+        assertEquals("NOT_POST_OWNER", (outcome as SpaceWriteOutcome.Rejected).code)
+        assertNotNull(repo.getPost(postId))
+    }
+
+    @Test
+    fun `the user cannot delete an assistant's post and vice versa`() = runBlocking {
+        val assistantPost = post(assistantA)
+        val userPost = post(SpaceActor.USER)
+
+        // Identity is a (kind, id) pair: a USER actor is never "close enough" to an assistant, no
+        // matter what ids are involved.
+        assertEquals(
+            "NOT_POST_OWNER",
+            (repo.deletePost(SpaceActor.USER, assistantPost) as SpaceWriteOutcome.Rejected).code,
+        )
+        assertEquals(
+            "NOT_POST_OWNER",
+            (repo.deletePost(assistantA, userPost) as SpaceWriteOutcome.Rejected).code,
+        )
+        assertNotNull(repo.getPost(assistantPost))
+        assertNotNull(repo.getPost(userPost))
+    }
+
+    @Test
+    fun `deleting a post takes its likes, comments and notifications with it`() = runBlocking {
+        val postId = post(assistantA)
+        repo.setLike(assistantB, postId, true, SpaceCausalDepth.USER_INITIATED)
+        repo.setLike(SpaceActor.USER, postId, true, SpaceCausalDepth.USER_INITIATED)
+        repo.createComment(assistantB, postId, "nice one", SpaceCausalDepth.USER_INITIATED)
+        assertEquals(2, repo.likeCount(postId))
+        assertEquals(1, repo.commentCount(postId))
+        // Every action here is taken by somebody other than the author, so each one notifies the
+        // author exactly once: two likes and one comment.
+        assertEquals(3, repo.listNotifications(assistantA, 10).size)
+
+        assertTrue(repo.deletePost(assistantA, postId) is SpaceWriteOutcome.Created)
+
+        assertEquals(0, repo.likeCount(postId))
+        assertEquals(0, repo.commentCount(postId))
+        assertEquals(0, repo.listNotifications(assistantA, 10).size)
+        assertTrue(dao.likes.isEmpty() && dao.comments.isEmpty() && dao.notifications.isEmpty())
+    }
+
+    @Test
+    fun `deleting one post leaves another post's reactions alone`() = runBlocking {
+        val doomed = post(assistantA)
+        val survivor = post(assistantA)
+        repo.setLike(assistantB, doomed, true, SpaceCausalDepth.USER_INITIATED)
+        repo.setLike(assistantB, survivor, true, SpaceCausalDepth.USER_INITIATED)
+        repo.createComment(assistantB, doomed, "on the doomed one", SpaceCausalDepth.USER_INITIATED)
+        repo.createComment(assistantB, survivor, "on the survivor", SpaceCausalDepth.USER_INITIATED)
+
+        repo.deletePost(assistantA, doomed)
+
+        assertEquals(1, repo.likeCount(survivor))
+        assertEquals(1, repo.commentCount(survivor))
+        // The survivor keeps its own like and comment notifications; the doomed post's are gone.
+        assertEquals(2, repo.listNotifications(assistantA, 10).size)
+    }
+
+    // ── Comment pagination ───────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `comment pages cover every row exactly once even within one millisecond`() = runBlocking {
+        val postId = post(assistantA)
+        // A frozen clock: every comment shares a timestamp, so a time-only cursor would loop or
+        // skip here.
+        repeat(5) { repo.createComment(assistantB, postId, "c$it", SpaceCausalDepth.USER_INITIATED) }
+
+        val first = repo.listComments(postId, limit = 2)
+        val second = repo.listCommentsAfter(postId, cursorOf(first.last()), limit = 2)
+        val third = repo.listCommentsAfter(postId, cursorOf(second.last()), limit = 2)
+        val fourth = repo.listCommentsAfter(postId, cursorOf(third.last()), limit = 2)
+
+        val seen = (first + second + third + fourth).map { it.commentId }
+        assertEquals(5, seen.size)
+        assertEquals("a page boundary must not repeat or skip a comment", 5, seen.toSet().size)
+        assertTrue(fourth.isEmpty())
+    }
+
+    @Test
+    fun `comment pages keep the thread's own oldest-first order`() = runBlocking {
+        val postId = post(assistantA)
+        clock = 1_000L
+        repo.createComment(assistantB, postId, "first", SpaceCausalDepth.USER_INITIATED)
+        clock = 2_000L
+        repo.createComment(assistantB, postId, "second", SpaceCausalDepth.USER_INITIATED)
+        clock = 3_000L
+        repo.createComment(assistantB, postId, "third", SpaceCausalDepth.USER_INITIATED)
+
+        val head = repo.listComments(postId, 1)
+        val tail = repo.listCommentsAfter(postId, cursorOf(head.last()), 10)
+
+        assertEquals(listOf("first"), head.map { it.content })
+        assertEquals(listOf("second", "third"), tail.map { it.content })
+    }
+
+    @Test
+    fun `comment pages never leak across posts`() = runBlocking {
+        val postId = post(assistantA)
+        val otherPost = post(assistantA)
+        repo.createComment(assistantB, postId, "mine", SpaceCausalDepth.USER_INITIATED)
+        repo.createComment(assistantB, otherPost, "theirs", SpaceCausalDepth.USER_INITIATED)
+
+        // An empty cursor walks the thread from its start; the other post's comments must not
+        // appear, and neither must an unrelated thread be reachable through this post's cursor.
+        val page = repo.listComments(postId, 10)
+        assertEquals(listOf("mine"), page.map { it.content })
+        assertTrue(repo.listComments(otherPost, 10).map { it.content } == listOf("theirs"))
+    }
+
+    // ── Pending (unconsumed) notifications ───────────────────────────────────────────────────
+
+    @Test
+    fun `pending notifications are the unconsumed ones, oldest first`() = runBlocking {
+        val postId = post(assistantA)
+        clock = 1_000L
+        repo.setLike(assistantB, postId, true, SpaceCausalDepth.USER_INITIATED)
+        clock = 2_000L
+        repo.createComment(assistantB, postId, "hi", SpaceCausalDepth.USER_INITIATED)
+
+        val pending = repo.listPendingNotifications(assistantA, sinceMs = 0L, limit = 10)
+        assertEquals(2, pending.size)
+        assertEquals(listOf(1_000L, 2_000L), pending.map { it.createdAtMs })
+
+        repo.claimNotificationForConsumption(pending.first().notificationId)
+        val afterClaim = repo.listPendingNotifications(assistantA, sinceMs = 0L, limit = 10)
+        assertEquals(listOf(2_000L), afterClaim.map { it.createdAtMs })
+    }
+
+    @Test
+    fun `pending notifications are scoped to one recipient and one window`() = runBlocking {
+        val assistantPost = post(assistantA)
+        val userPost = post(SpaceActor.USER)
+        clock = 1_000L
+        repo.setLike(assistantB, assistantPost, true, SpaceCausalDepth.USER_INITIATED)
+        clock = 2_000L
+        repo.setLike(assistantB, userPost, true, SpaceCausalDepth.USER_INITIATED)
+
+        assertEquals(1, repo.listPendingNotifications(assistantA, sinceMs = 0L, limit = 10).size)
+        assertEquals(1, repo.listPendingNotifications(SpaceActor.USER, sinceMs = 0L, limit = 10).size)
+        // A window that starts after both rows sees neither, which is what bounds a replay.
+        assertTrue(repo.listPendingNotifications(assistantA, sinceMs = 5_000L, limit = 10).isEmpty())
+    }
+
+    private fun cursorOf(comment: SpaceCommentEntity) =
+        SpaceCursor(comment.createdAtMs, comment.commentId)
 
     private suspend fun post(author: SpaceActor): String =
         (repo.createPost(author, "content", originDepth = 0) as SpaceWriteOutcome.Created).id

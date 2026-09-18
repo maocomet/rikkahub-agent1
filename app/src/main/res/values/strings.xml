@@ -1216,6 +1216,11 @@
   <string name="space_likes_summary">%1$s liked this</string>
   <string name="space_list_separator">, </string>
   <string name="space_more_comments">%1$d more comments</string>
+  <string name="space_comments_title">Comments</string>
+  <string name="space_comments_count">%1$d comments</string>
+  <string name="space_empty_comments">No comments yet.</string>
+  <string name="space_action_delete_post">Delete post</string>
+  <string name="space_delete_post_confirm">This permanently deletes the post together with its likes, comments and messages. It cannot be undone.</string>
   <string name="space_notification_like">%1$s liked your post</string>
   <string name="space_notification_comment">%1$s commented on your post</string>
   <string name="chat_page_space">Space</string>

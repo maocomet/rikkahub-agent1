@@ -59,6 +59,46 @@ class SpaceRepository(
     suspend fun listPostsByAuthor(actor: SpaceActor, limit: Int): List<SpacePostEntity> =
         dao.listPostsByAuthor(actor.kindValue, actor.id, limit.coerceIn(1, MAX_PAGE_SIZE))
 
+    suspend fun listPostsByAuthorBefore(
+        actor: SpaceActor,
+        before: SpaceCursor,
+        limit: Int,
+    ): List<SpacePostEntity> = dao.listPostsByAuthorBefore(
+        actor.kindValue,
+        actor.id,
+        before.createdAtMs,
+        before.id,
+        limit.coerceIn(1, MAX_PAGE_SIZE),
+    )
+
+    /**
+     * Removes a post the acting identity published, or refuses.
+     *
+     * Ownership is decided by comparing the stored author against the [actor] the RUNTIME supplied
+     * — never against anything read out of the request. There is no parameter anywhere above this
+     * that names an author, so an assistant can no more delete the user's post than it can publish
+     * as them: the only way to delete as an identity is to already be that identity.
+     *
+     * Refusals are distinct codes on purpose. `POST_NOT_FOUND` and `NOT_POST_OWNER` are different
+     * facts, and collapsing them into one "no" would make an ownership failure indistinguishable
+     * from a stale id.
+     *
+     * Likes, comments and notifications on the post are removed by the `ON DELETE CASCADE` foreign
+     * keys already declared in the schema, so this stays a single statement.
+     */
+    suspend fun deletePost(actor: SpaceActor, postId: String): SpaceWriteOutcome {
+        val post = dao.getPost(postId)
+            ?: return SpaceWriteOutcome.Rejected("POST_NOT_FOUND", "No post with that id.")
+        if (post.authorKind != actor.kindValue || post.authorId != actor.id) {
+            return SpaceWriteOutcome.Rejected(
+                "NOT_POST_OWNER",
+                "Only the identity that published a post may delete it.",
+            )
+        }
+        dao.deletePost(postId)
+        return SpaceWriteOutcome.Created(postId)
+    }
+
     // ── Likes ────────────────────────────────────────────────────────────────────────────────
 
     /**
@@ -150,8 +190,25 @@ class SpaceRepository(
         return SpaceWriteOutcome.Created(id)
     }
 
+    suspend fun getComment(commentId: String): SpaceCommentEntity? = dao.getComment(commentId)
+
     suspend fun listComments(postId: String, limit: Int): List<SpaceCommentEntity> =
         dao.listComments(postId, limit.coerceIn(1, MAX_PAGE_SIZE))
+
+    /**
+     * The page of a comment thread that follows [after], in the same oldest-first order the thread
+     * reads in. The cursor is `(created_at_ms, comment_id)` — see [SpaceCursor].
+     */
+    suspend fun listCommentsAfter(
+        postId: String,
+        after: SpaceCursor,
+        limit: Int,
+    ): List<SpaceCommentEntity> = dao.listCommentsAfter(
+        postId,
+        after.createdAtMs,
+        after.id,
+        limit.coerceIn(1, MAX_PAGE_SIZE),
+    )
 
     suspend fun commentCount(postId: String): Int = dao.commentCount(postId)
 
@@ -192,6 +249,24 @@ class SpaceRepository(
     suspend fun getNotification(notificationId: String): SpaceNotificationEntity? =
         dao.getNotification(notificationId)
 
+    /**
+     * Unconsumed notifications addressed to [recipient], oldest first.
+     *
+     * This is what a consumer reads back after binding, so a notification created while the process
+     * was dead — or while no trigger family was registered — is still delivered when one returns.
+     * The row, not the in-process signal, is the source of truth.
+     */
+    suspend fun listPendingNotifications(
+        recipient: SpaceActor,
+        sinceMs: Long,
+        limit: Int,
+    ): List<SpaceNotificationEntity> = dao.listPendingNotifications(
+        recipient.kindValue,
+        recipient.id,
+        sinceMs,
+        limit.coerceIn(1, MAX_PAGE_SIZE),
+    )
+
     // ── Notification emission ────────────────────────────────────────────────────────────────
 
     /**
@@ -204,9 +279,14 @@ class SpaceRepository(
      * action (re-liking after unliking) collapses onto the existing row instead of producing a
      * fresh notification to trigger on.
      *
-     * [originDepth] records how far this was from a user action: 0 when the user started it, and
-     * parent + 1 when an automation run produced it. Consumers refuse to wake a workflow for
-     * depth >= 1, which is what bounds assistant-to-assistant recursion.
+     * [originDepth] is the depth of the action that produced this notification, stored verbatim —
+     * see [SpaceCausalDepth] for the contract. It is deliberately NOT incremented here: the
+     * notification is the record of the acting write, not a further hop beyond it, so a like by the
+     * person yields a depth-0 notification exactly like the like row itself. Only a write performed
+     * by an automation run carries depth >= 1, and only its producer can raise that.
+     *
+     * A consumer refuses to wake a workflow for depth >= 1, which is what bounds
+     * assistant-to-assistant recursion.
      */
     private suspend fun notify(
         recipient: SpaceActor?,
@@ -231,7 +311,7 @@ class SpaceRepository(
             postId = postId,
             commentId = commentId,
             createdAtMs = nowMs(),
-            originDepth = (originDepth + 1).coerceAtLeast(0),
+            originDepth = originDepth.coerceAtLeast(0),
         )
         val inserted = dao.insertNotification(entity)
         // Announce only a row that was actually created: a repeat of the same action collapses

@@ -146,6 +146,7 @@ jobs:
             --tests "me.rerere.rikkahub.space.SpaceToolSurfaceTest" \
             --tests "me.rerere.rikkahub.ui.pages.space.CatGardenVMTest" \
             --tests "me.rerere.rikkahub.workflow.trigger.SpaceNotificationTriggerGuardTest" \
+            --tests "me.rerere.rikkahub.workflow.trigger.SpaceNotificationEndToEndTest" \
             --tests "me.rerere.rikkahub.workflow.model.SpaceNotificationTriggerJsonTest"
 
       # The allowlist above pins explicit --tests patterns, and Gradle only fails when the

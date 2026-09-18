@@ -53,6 +53,39 @@ class FakeSpaceDao : SpaceDao {
         .sortedWith(POST_ORDER)
         .take(limit)
 
+    override suspend fun listPostsByAuthorBefore(
+        authorKind: String,
+        authorId: String,
+        beforeCreatedAtMs: Long,
+        beforePostId: String,
+        limit: Int,
+    ): List<SpacePostEntity> = posts.values
+        .filter { it.authorKind == authorKind && it.authorId == authorId }
+        .filter {
+            it.createdAtMs < beforeCreatedAtMs ||
+                (it.createdAtMs == beforeCreatedAtMs && it.postId < beforePostId)
+        }
+        .sortedWith(POST_ORDER)
+        .take(limit)
+
+    /**
+     * Mirrors the `ON DELETE CASCADE` foreign keys in the real schema.
+     *
+     * A bare map removal would let the repository pass a unit test while leaving orphaned likes,
+     * comments and notifications behind on a real device — the exact class of bug a fake that
+     * mirrors only the happy path hides. Room enforces these constraints on every connection it
+     * opens, and `SpacePostDeletionCascadeTest` proves it against a real database; this reproduces
+     * the same contract where the JVM tests can see it.
+     */
+    override suspend fun deletePost(postId: String): Int {
+        if (posts.remove(postId) == null) return 0
+        likes.keys.removeAll { it.first == postId }
+        comments.values.removeAll { it.postId == postId }
+        notifications.values.removeAll { it.postId == postId }
+        unreadSignals.value = notifications.values.count { it.readAtMs == null }
+        return 1
+    }
+
     override suspend fun insertLike(entity: SpaceLikeEntity): Long {
         val key = Triple(entity.postId, entity.actorKind, entity.actorId)
         if (likes.containsKey(key)) return -1L
@@ -83,8 +116,22 @@ class FakeSpaceDao : SpaceDao {
 
     override suspend fun listComments(postId: String, limit: Int): List<SpaceCommentEntity> =
         comments.values.filter { it.postId == postId }
-            .sortedWith(compareBy<SpaceCommentEntity> { it.createdAtMs }.thenBy { it.commentId })
+            .sortedWith(COMMENT_ORDER)
             .take(limit)
+
+    override suspend fun listCommentsAfter(
+        postId: String,
+        afterCreatedAtMs: Long,
+        afterCommentId: String,
+        limit: Int,
+    ): List<SpaceCommentEntity> = comments.values
+        .filter { it.postId == postId }
+        .filter {
+            it.createdAtMs > afterCreatedAtMs ||
+                (it.createdAtMs == afterCreatedAtMs && it.commentId > afterCommentId)
+        }
+        .sortedWith(COMMENT_ORDER)
+        .take(limit)
 
     override suspend fun commentCount(postId: String): Int =
         comments.values.count { it.postId == postId }
@@ -158,9 +205,22 @@ class FakeSpaceDao : SpaceDao {
     override suspend fun getNotification(notificationId: String): SpaceNotificationEntity? =
         notifications[notificationId]
 
+    override suspend fun listPendingNotifications(
+        recipientKind: String,
+        recipientId: String,
+        sinceMs: Long,
+        limit: Int,
+    ): List<SpaceNotificationEntity> = notifications.values
+        .filter { it.recipientKind == recipientKind && it.recipientId == recipientId }
+        .filter { it.consumedAtMs == null && it.createdAtMs >= sinceMs }
+        .sortedWith(compareBy<SpaceNotificationEntity> { it.createdAtMs }.thenBy { it.notificationId })
+        .take(limit)
+
     private companion object {
         val POST_ORDER =
             compareByDescending<SpacePostEntity> { it.createdAtMs }.thenByDescending { it.postId }
+        val COMMENT_ORDER =
+            compareBy<SpaceCommentEntity> { it.createdAtMs }.thenBy { it.commentId }
         val NOTIFICATION_ORDER =
             compareByDescending<SpaceNotificationEntity> { it.createdAtMs }
                 .thenByDescending { it.notificationId }
