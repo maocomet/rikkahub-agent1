@@ -21,10 +21,10 @@ class ImportedDatabaseReconcilerContractTest {
             "d458d247adbdc36f591599a301ac092f",
             ImportedDatabaseReconciler.FINAL_V50_IDENTITY_HASH,
         )
-        // EXPECTED_IDENTITY_HASH is intentionally NOT pinned to a literal yet. The v51 value is an
-        // output of the compiler and does not exist until a build has run, so a hand-written copy
-        // here would only be a second guess. AppDatabaseSchemaIdentityContractTest is the stronger
-        // check anyway: it compares the constant against the export Room actually generated.
+        assertEquals(
+            "f5f091510499424dbdb5642cc3f5291f",
+            ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
+        )
         assertEquals(
             "967f2a908998f5bac733c1ae71bee5bb",
             ImportedDatabaseReconciler.FINAL_V49_IDENTITY_HASH,

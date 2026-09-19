@@ -93,21 +93,16 @@ object ImportedDatabaseReconciler {
     internal const val EXPECTED_VERSION = 51
 
     /**
-     * NOT YET SET — this is a deliberate sentinel, not a hash.
+     * Copied verbatim from the `identityHash` KSP writes into `AppDatabase/51.json`.
      *
-     * Room's identity hash is computed by the compiler from the schema and is only knowable from
-     * the export KSP writes at build time (`app/schemas/.../AppDatabase/51.json`). It cannot be
-     * derived by hand, and guessing one would produce a value that fails closed at cold restore
-     * with no visible symptom until a restore is attempted.
-     *
-     * The sentinel is deliberately not 32 hex characters so it can never be mistaken for a real
-     * value, and `AppDatabaseSchemaIdentityContractTest` — which is pinned in CI — fails with
-     * `expected: <this sentinel> but was: <the real hash>` until it is replaced with the exported
-     * value. Nothing else in this file needs to change when it is: every other use reads the
-     * constant.
+     * Room computes this from the schema, so it cannot be derived by hand and must never be
+     * guessed: a wrong value fails closed at cold restore with no symptom until somebody tries to
+     * restore a backup. `AppDatabaseSchemaIdentityContractTest` is what keeps this copy honest, by
+     * comparing it against the export the compiler produced during the same build.
      */
-    internal const val PENDING_V51_IDENTITY_HASH = "PENDING_V51_IDENTITY_HASH_FROM_KSP_EXPORT"
-    internal const val EXPECTED_IDENTITY_HASH = PENDING_V51_IDENTITY_HASH
+    internal const val EXPECTED_IDENTITY_HASH = "f5f091510499424dbdb5642cc3f5291f"
+
+    /** v50 is now a frozen predecessor; its hash is the value this constant held until v51. */
     internal const val FINAL_V50_IDENTITY_HASH = "d458d247adbdc36f591599a301ac092f"
     internal const val FINAL_V49_IDENTITY_HASH = "967f2a908998f5bac733c1ae71bee5bb"
     internal const val FINAL_V48_IDENTITY_HASH = "74be67f9e9e32264c091b1d6c4a32b17"
