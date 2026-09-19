@@ -112,11 +112,16 @@ sealed class TriggerSpec {
     /**
      * Fires when a Cat Garden notification is created for this workflow's authoring assistant.
      *
-     * Only user-originated notifications reach a workflow. A notification produced by an
-     * assistant's own run carries `origin_depth >= 1` and is dropped by the trigger family, which
-     * is what bounds assistant-to-assistant recursion (A comments B, B is woken, B comments A,
-     * A is woken, ...). Each notification is additionally claimed exactly once, so a redelivered
-     * event cannot fire a workflow twice.
+     * Only notifications addressed to THIS workflow's authoring assistant reach it, and only
+     * user-originated ones. A notification produced by an assistant's own run carries
+     * `origin_depth >= 1` and is dropped by the trigger family, which is what bounds
+     * assistant-to-assistant recursion (A comments B, B is woken, B comments A, A is woken, ...).
+     * Each notification is additionally claimed exactly once, so a redelivered event — or the same
+     * row replayed after a restart — cannot fire a workflow twice.
+     *
+     * Ownership is what keeps trigger cooperativeness honest: several assistants can arm the same
+     * notice type, and without it one comment would run all of their workflows. A workflow with no
+     * authoring assistant has no inbox to match and never fires.
      *
      * The trigger carries no payload a model could author. The notification id exists only in
      * runtime-owned context; a woken run reads the content back through `space_list_notifications`

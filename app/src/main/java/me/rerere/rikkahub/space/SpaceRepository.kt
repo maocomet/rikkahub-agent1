@@ -21,11 +21,22 @@ class SpaceRepository(
     private val dao: SpaceDao,
     private val nowMs: () -> Long = { System.currentTimeMillis() },
     private val newId: () -> String = { Uuid.random().toString() },
+    /**
+     * Runs [block] as one atomic unit.
+     *
+     * A seam rather than a direct `RoomDatabase.withTransaction` call so this class keeps taking
+     * only its DAO. Production wiring passes the database's own transaction; the JVM tests pass
+     * nothing, which runs the block directly. Exactly one entry point needs it,
+     * [deleteAssistantFootprint], and it is the one place where a half-applied sweep would leave
+     * behind the very orphaned footprint it exists to erase.
+     */
+    private val inTransaction: suspend (suspend () -> Unit) -> Unit = { block -> block() },
 ) {
 
     // ── Posts ────────────────────────────────────────────────────────────────────────────────
 
     suspend fun createPost(actor: SpaceActor, content: String, originDepth: Int): SpaceWriteOutcome {
+        if (!SpaceCausalDepth.isValid(originDepth)) return invalidOriginDepth(originDepth)
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return SpaceWriteOutcome.Rejected("EMPTY_CONTENT", "Post content is empty.")
         if (trimmed.length > MAX_POST_CHARS) {
@@ -42,7 +53,7 @@ class SpaceRepository(
                 authorId = actor.id,
                 content = trimmed,
                 createdAtMs = nowMs(),
-                originDepth = originDepth.coerceAtLeast(0),
+                originDepth = originDepth,
             ),
         )
         return SpaceWriteOutcome.Created(id)
@@ -50,14 +61,108 @@ class SpaceRepository(
 
     suspend fun getPost(postId: String): SpacePostEntity? = dao.getPost(postId)
 
-    suspend fun listPosts(limit: Int): List<SpacePostEntity> =
-        dao.listPosts(limit.coerceIn(1, MAX_PAGE_SIZE))
+    /** The timeline page preceding [before], or the first page when [before] is null. */
+    suspend fun listPostsPage(before: SpaceCursor?, limit: Int): SpacePage<SpacePostEntity> =
+        pageOf(limit) { probe ->
+            if (before == null) {
+                dao.listPosts(probe)
+            } else {
+                dao.listPostsBefore(before.createdAtMs, before.id, probe)
+            }
+        }
 
-    suspend fun listPostsBefore(before: SpaceCursor, limit: Int): List<SpacePostEntity> =
-        dao.listPostsBefore(before.createdAtMs, before.id, limit.coerceIn(1, MAX_PAGE_SIZE))
+    /** The same page shape, narrowed to one author's posts — what the "Mine" tab reads. */
+    suspend fun listPostsByAuthorPage(
+        actor: SpaceActor,
+        before: SpaceCursor?,
+        limit: Int,
+    ): SpacePage<SpacePostEntity> = pageOf(limit) { probe ->
+        if (before == null) {
+            dao.listPostsByAuthor(actor.kindValue, actor.id, probe)
+        } else {
+            dao.listPostsByAuthorBefore(actor.kindValue, actor.id, before.createdAtMs, before.id, probe)
+        }
+    }
 
-    suspend fun listPostsByAuthor(actor: SpaceActor, limit: Int): List<SpacePostEntity> =
-        dao.listPostsByAuthor(actor.kindValue, actor.id, limit.coerceIn(1, MAX_PAGE_SIZE))
+    /**
+     * Removes a post the acting identity is entitled to delete, or refuses.
+     *
+     * The entitlement is decided by [SpacePostDeletionPolicy] against the [actor] the RUNTIME
+     * supplied — never against anything read out of the request. There is no parameter anywhere
+     * above this that names an author, so an assistant can no more delete the user's post than it
+     * can publish as them: the only way to delete as an identity is to already be that identity.
+     *
+     * Two authorities reach this line, and they are different facts. An assistant must be the
+     * stored author. The local user is the space's moderator and may delete any post, including
+     * another identity's. Neither is a relaxation of the other: the assistant branch compares
+     * `(kind, id)` exactly as strictly as before, and the moderator branch is reachable only by the
+     * local user sentinel.
+     *
+     * Refusals are distinct codes on purpose. `POST_NOT_FOUND` and `NOT_POST_OWNER` are different
+     * facts, and collapsing them into one "no" would make an ownership failure indistinguishable
+     * from a stale id.
+     *
+     * Likes, comments and notifications on the post are removed by the `ON DELETE CASCADE` foreign
+     * keys already declared in the schema, so this stays a single statement.
+     */
+    suspend fun deletePost(actor: SpaceActor, postId: String): SpaceWriteOutcome {
+        val post = dao.getPost(postId)
+            ?: return SpaceWriteOutcome.Rejected("POST_NOT_FOUND", "No post with that id.")
+        SpacePostDeletionPolicy.authorityFor(actor, post)
+            ?: return SpaceWriteOutcome.Rejected(
+                "NOT_POST_OWNER",
+                "Only the identity that published a post may delete it.",
+            )
+        dao.deletePost(postId)
+        return SpaceWriteOutcome.Created(postId)
+    }
+
+    // ── Removing an assistant's footprint ────────────────────────────────────────────────────
+
+    /**
+     * Erases every Cat Garden row an assistant left behind, in one transaction.
+     *
+     * This is what keeps a deleted assistant from becoming a ghost author. The stored
+     * `author_kind`/`author_id` columns are deliberately NOT foreign keys to the assistant table —
+     * posts survive an assistant on purpose, so that other identities' comments and likes on them
+     * are not destroyed as a side effect of deleting an unrelated assistant. That means nothing
+     * removes them automatically, and this is the explicit counterpart: when the assistant itself
+     * is gone, its footprint goes with it.
+     *
+     * Four writes, largest first so the rest only mop up what it could not reach:
+     *  - **Its posts.** Their likes, comments and notifications are already declared to cascade, so
+     *    this removes every thread the assistant itself hosted in one statement.
+     *  - **Its comments.** A comment on somebody ELSE's post does not go with the assistant's own
+     *    posts, so it has to be swept in its own right.
+     *  - **Its likes.** Same reason, same sweep.
+     *  - **Its notifications.** Both directions. As ACTOR, this covers every notification an
+     *    assistant's vanished comment or like produced on another identity's post — which is also
+     *    what keeps `comment_id` from dangling on a row that is still readable. As RECIPIENT, it is
+     *    usually already empty, because a notification's recipient is the post's author and those
+     *    posts have just gone; it is swept anyway so the guarantee does not depend on that
+     *    invariant holding forever.
+     *
+     * The kind is pinned to [SpaceActorKind.ASSISTANT] here rather than taken from a caller. There
+     * is no argument that can point this at the local user's rows.
+     *
+     * A blank id writes nothing: the pinned kind plus a blank id can only ever match nothing, and
+     * returning without touching the database keeps "no identity supplied" from being reported as
+     * a successful, empty sweep.
+     */
+    suspend fun deleteAssistantFootprint(assistantId: String): SpaceFootprintRemoval {
+        if (assistantId.isBlank()) return SpaceFootprintRemoval.NONE
+
+        val kind = SpaceActorKind.ASSISTANT.name
+        var removal = SpaceFootprintRemoval.NONE
+        inTransaction {
+            val posts = dao.deletePostsByAuthor(kind, assistantId)
+            val comments = dao.deleteCommentsByAuthor(kind, assistantId)
+            val likes = dao.deleteLikesByActor(kind, assistantId)
+            val notifications = dao.deleteNotificationsInvolving(kind, assistantId)
+            removal = SpaceFootprintRemoval(posts, comments, likes, notifications)
+        }
+        return removal
+    }
 
     // ── Likes ────────────────────────────────────────────────────────────────────────────────
 
@@ -71,6 +176,10 @@ class SpaceRepository(
         liked: Boolean,
         originDepth: Int,
     ): SpaceWriteOutcome {
+        // Validated on BOTH like branches, including the unlike one that emits no notification: a
+        // negative depth is an out-of-contract argument, and accepting it here but refusing it one
+        // branch over is the kind of asymmetry that later reads as an oversight.
+        if (!SpaceCausalDepth.isValid(originDepth)) return invalidOriginDepth(originDepth)
         val post = dao.getPost(postId)
             ?: return SpaceWriteOutcome.Rejected("POST_NOT_FOUND", "No post with that id.")
 
@@ -116,6 +225,7 @@ class SpaceRepository(
         content: String,
         originDepth: Int,
     ): SpaceWriteOutcome {
+        if (!SpaceCausalDepth.isValid(originDepth)) return invalidOriginDepth(originDepth)
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return SpaceWriteOutcome.Rejected("EMPTY_CONTENT", "Comment content is empty.")
         if (trimmed.length > MAX_COMMENT_CHARS) {
@@ -136,7 +246,7 @@ class SpaceRepository(
                 authorId = actor.id,
                 content = trimmed,
                 createdAtMs = nowMs(),
-                originDepth = originDepth.coerceAtLeast(0),
+                originDepth = originDepth,
             ),
         )
         notify(
@@ -150,27 +260,47 @@ class SpaceRepository(
         return SpaceWriteOutcome.Created(id)
     }
 
-    suspend fun listComments(postId: String, limit: Int): List<SpaceCommentEntity> =
-        dao.listComments(postId, limit.coerceIn(1, MAX_PAGE_SIZE))
+    suspend fun getComment(commentId: String): SpaceCommentEntity? = dao.getComment(commentId)
+
+    /**
+     * The page of a comment thread that follows [after], in the same oldest-first order the thread
+     * reads in. The cursor is `(created_at_ms, comment_id)` — see [SpaceCursor]. A null [after]
+     * starts at the oldest comment.
+     */
+    suspend fun listCommentsPage(
+        postId: String,
+        after: SpaceCursor?,
+        limit: Int,
+    ): SpacePage<SpaceCommentEntity> = pageOf(limit) { probe ->
+        if (after == null) {
+            dao.listComments(postId, probe)
+        } else {
+            dao.listCommentsAfter(postId, after.createdAtMs, after.id, probe)
+        }
+    }
 
     suspend fun commentCount(postId: String): Int = dao.commentCount(postId)
 
     // ── Notifications ────────────────────────────────────────────────────────────────────────
 
-    suspend fun listNotifications(actor: SpaceActor, limit: Int): List<SpaceNotificationEntity> =
-        dao.listNotifications(actor.kindValue, actor.id, limit.coerceIn(1, MAX_PAGE_SIZE))
-
-    suspend fun listNotificationsBefore(
+    /** The notification page preceding [before], newest first, or the first page when null. */
+    suspend fun listNotificationsPage(
         actor: SpaceActor,
-        before: SpaceCursor,
+        before: SpaceCursor?,
         limit: Int,
-    ): List<SpaceNotificationEntity> = dao.listNotificationsBefore(
-        actor.kindValue,
-        actor.id,
-        before.createdAtMs,
-        before.id,
-        limit.coerceIn(1, MAX_PAGE_SIZE),
-    )
+    ): SpacePage<SpaceNotificationEntity> = pageOf(limit) { probe ->
+        if (before == null) {
+            dao.listNotifications(actor.kindValue, actor.id, probe)
+        } else {
+            dao.listNotificationsBefore(
+                actor.kindValue,
+                actor.id,
+                before.createdAtMs,
+                before.id,
+                probe,
+            )
+        }
+    }
 
     fun observeUnreadCount(actor: SpaceActor): Flow<Int> =
         dao.observeUnreadCount(actor.kindValue, actor.id)
@@ -192,6 +322,24 @@ class SpaceRepository(
     suspend fun getNotification(notificationId: String): SpaceNotificationEntity? =
         dao.getNotification(notificationId)
 
+    /**
+     * Unconsumed notifications addressed to [recipient], oldest first.
+     *
+     * This is what a consumer reads back after binding, so a notification created while the process
+     * was dead — or while no trigger family was registered — is still delivered when one returns.
+     * The row, not the in-process signal, is the source of truth.
+     */
+    suspend fun listPendingNotifications(
+        recipient: SpaceActor,
+        sinceMs: Long,
+        limit: Int,
+    ): List<SpaceNotificationEntity> = dao.listPendingNotifications(
+        recipient.kindValue,
+        recipient.id,
+        sinceMs,
+        limit.coerceIn(1, MAX_PAGE_SIZE),
+    )
+
     // ── Notification emission ────────────────────────────────────────────────────────────────
 
     /**
@@ -204,9 +352,20 @@ class SpaceRepository(
      * action (re-liking after unliking) collapses onto the existing row instead of producing a
      * fresh notification to trigger on.
      *
-     * [originDepth] records how far this was from a user action: 0 when the user started it, and
-     * parent + 1 when an automation run produced it. Consumers refuse to wake a workflow for
-     * depth >= 1, which is what bounds assistant-to-assistant recursion.
+     * [originDepth] is the depth of the action that produced this notification, stored verbatim —
+     * see [SpaceCausalDepth] for the contract. It is deliberately NOT incremented here: the
+     * notification is the record of the acting write, not a further hop beyond it, so a like by the
+     * person yields a depth-0 notification exactly like the like row itself. Only a write performed
+     * by an automation run carries depth >= 1, and only its producer can raise that.
+     *
+     * A consumer refuses to wake a workflow for anything but depth 0, which is what bounds
+     * assistant-to-assistant recursion.
+     *
+     * An out-of-contract depth writes NO ROW rather than being clamped. This is the boundary that
+     * matters most: this method is the only writer of the table the trigger reads, so a negative
+     * depth repaired into 0 here would hand the trigger a wake-capable row that no legitimate
+     * producer could have created. The public entry points already refuse such a depth, so reaching
+     * this line means a caller bypassed them — and the answer to that is to write nothing.
      */
     private suspend fun notify(
         recipient: SpaceActor?,
@@ -218,6 +377,7 @@ class SpaceRepository(
     ) {
         if (recipient == null) return
         if (recipient.kind == actor.kind && recipient.id == actor.id) return
+        if (!SpaceCausalDepth.isValid(originDepth)) return
 
         val stableKey = listOf(type.name, postId, commentId.orEmpty(), actor.kindValue, actor.id)
             .joinToString("|")
@@ -231,7 +391,7 @@ class SpaceRepository(
             postId = postId,
             commentId = commentId,
             createdAtMs = nowMs(),
-            originDepth = (originDepth + 1).coerceAtLeast(0),
+            originDepth = originDepth,
         )
         val inserted = dao.insertNotification(entity)
         // Announce only a row that was actually created: a repeat of the same action collapses
@@ -241,10 +401,47 @@ class SpaceRepository(
         }
     }
 
+    /**
+     * Reads one row more than [limit] and trims it back.
+     *
+     * The extra row is the ONLY sound way to answer "is there another page?" here, and it is never
+     * returned. The two tempting shortcuts are both wrong:
+     *  - `items.size == limit` reports another page whenever a read ends exactly on a boundary, so
+     *    a 20-post feed offers a Load More that yields nothing;
+     *  - `items.size < total` compares a page against a table-wide count and ignores how far the
+     *    cursor has already travelled, so it keeps answering "more" on the last page of any
+     *    multi-page thread.
+     *
+     * A caller builds its next cursor from `items.last()`, never from the probe row: the probe is
+     * the FIRST row of the next page, so treating it as the last of this one would skip it.
+     */
+    private suspend fun <T> pageOf(
+        limit: Int,
+        fetch: suspend (probeSize: Int) -> List<T>,
+    ): SpacePage<T> {
+        val size = limit.coerceIn(1, MAX_PAGE_SIZE)
+        val rows = fetch(size + 1)
+        return SpacePage(items = rows.take(size), hasMore = rows.size > size)
+    }
+
     companion object {
         const val MAX_PAGE_SIZE: Int = 50
         const val MAX_POST_CHARS: Int = 4000
         const val MAX_COMMENT_CHARS: Int = 1000
+
+        /**
+         * An out-of-contract `origin_depth`, refused rather than repaired.
+         *
+         * The depth is quoted back so a caller can see what it sent, and the message names the
+         * contract rather than only the symptom — the tempting "fix" for this rejection is to clamp
+         * the value at the call site, which is the very thing the contract forbids.
+         */
+        fun invalidOriginDepth(depth: Int): SpaceWriteOutcome.Rejected = SpaceWriteOutcome.Rejected(
+            "INVALID_ORIGIN_DEPTH",
+            "origin_depth $depth is out of contract: it must be " +
+                "${SpaceCausalDepth.USER_INITIATED} for the person's own action or >= " +
+                "${SpaceCausalDepth.AUTOMATION_DRIVEN} for an automation run. It is never clamped.",
+        )
     }
 }
 
@@ -258,3 +455,41 @@ data class SpaceCursor(
     val createdAtMs: Long,
     val id: String,
 )
+
+/**
+ * One cursor-bounded page, plus a verdict on whether another page exists that is PROVEN rather
+ * than inferred.
+ *
+ * [hasMore] comes from a lookahead read — see `pageOf`. Every paged read in this repository returns
+ * this type, so there is exactly one place where "is there more?" is decided and exactly one shape
+ * a caller can consume. A raw `List` return would leave each caller to invent its own answer, which
+ * is how the `size == limit` bug was able to appear in four separate surfaces at once.
+ *
+ * [items] is at most the requested limit, and its last element is the one a next-page cursor must
+ * be built from.
+ */
+data class SpacePage<T>(
+    val items: List<T>,
+    val hasMore: Boolean,
+)
+
+/**
+ * What one [SpaceRepository.deleteAssistantFootprint] sweep removed, per table.
+ *
+ * Counted honestly rather than as a total: [posts] is the rows the sweep deleted directly, and the
+ * likes, comments and notifications that hung off those posts went with them through the schema's
+ * `ON DELETE CASCADE` — so they are NOT included in the three child counts. Those count only what
+ * the sweep deleted in its own right: the assistant's comments and likes on other identities'
+ * posts, and the notifications naming it as actor or recipient.
+ */
+data class SpaceFootprintRemoval(
+    val posts: Int = 0,
+    val comments: Int = 0,
+    val likes: Int = 0,
+    val notifications: Int = 0,
+) {
+    companion object {
+        /** The result of a sweep that ran and matched nothing — and of one that never ran. */
+        val NONE = SpaceFootprintRemoval()
+    }
+}

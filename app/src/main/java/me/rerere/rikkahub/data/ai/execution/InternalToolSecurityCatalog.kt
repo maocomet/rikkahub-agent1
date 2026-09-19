@@ -45,8 +45,14 @@ object InternalToolSecurityCatalog {
         // Cat Garden reads. Listed here (like the conversation-history tools) because they are
         // application-owned tools deliberately outside CapabilityCatalog; without an entry the
         // runtime rejects them as tool_security_descriptor_missing before they ever execute.
+        //
+        // That sentence is not hypothetical: `space_list_comments` was missing from this set while
+        // `space_list_posts` was present, so the model was shown a schema it could never execute.
+        // Every name in `SPACE_TOOL_NAMES` must appear in exactly one of these two sets, and
+        // SpaceToolRuntimeRegistrationTest is what holds that true.
         "space_list_posts",
         "space_get_post",
+        "space_list_comments",
         "space_list_notifications",
     )
 
@@ -83,9 +89,16 @@ object InternalToolSecurityCatalog {
         "secret_vault_set_binding",
         // Cat Garden writes. PERSISTENT_STATE and therefore serial, which is what the policy
         // resolver assigns to every MUTATING entry.
+        //
+        // `space_delete_post` belongs here for the same reason as its siblings, and its absence was
+        // a real defect rather than a tightening: the tool was in the model-visible surface but had
+        // no descriptor, so `DefaultToolRuntime.assess` rejected every call as
+        // tool_security_descriptor_missing before the body ran. Publishing worked, deleting did
+        // not, and no JVM test could see it because they all invoke `Tool.execute` directly.
         "space_create_post",
         "space_set_like",
         "space_create_comment",
+        "space_delete_post",
         "space_mark_notifications_read",
     ) + OwnerToolFamily.entries.mapTo(linkedSetOf()) { it.toolName }
 

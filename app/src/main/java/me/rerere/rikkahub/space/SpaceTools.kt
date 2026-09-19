@@ -22,6 +22,8 @@ const val SPACE_LIST_POSTS_TOOL_NAME = "space_list_posts"
 const val SPACE_GET_POST_TOOL_NAME = "space_get_post"
 const val SPACE_SET_LIKE_TOOL_NAME = "space_set_like"
 const val SPACE_CREATE_COMMENT_TOOL_NAME = "space_create_comment"
+const val SPACE_LIST_COMMENTS_TOOL_NAME = "space_list_comments"
+const val SPACE_DELETE_POST_TOOL_NAME = "space_delete_post"
 const val SPACE_LIST_NOTIFICATIONS_TOOL_NAME = "space_list_notifications"
 const val SPACE_MARK_NOTIFICATIONS_READ_TOOL_NAME = "space_mark_notifications_read"
 
@@ -30,8 +32,10 @@ val SPACE_TOOL_NAMES: Set<String> = setOf(
     SPACE_CREATE_POST_TOOL_NAME,
     SPACE_LIST_POSTS_TOOL_NAME,
     SPACE_GET_POST_TOOL_NAME,
+    SPACE_LIST_COMMENTS_TOOL_NAME,
     SPACE_SET_LIKE_TOOL_NAME,
     SPACE_CREATE_COMMENT_TOOL_NAME,
+    SPACE_DELETE_POST_TOOL_NAME,
     SPACE_LIST_NOTIFICATIONS_TOOL_NAME,
     SPACE_MARK_NOTIFICATIONS_READ_TOOL_NAME,
 )
@@ -47,9 +51,15 @@ fun createSpaceTools(
     repository: SpaceRepository,
     invocationContext: ToolInvocationContext,
 ): List<Tool> {
-    // Depth 0 when a person is driving the turn; 1 when this is an automation run. The
-    // notification loop guard refuses to wake a workflow for depth >= 1.
-    val originDepth = if (invocationContext.isHeadless) 1 else 0
+    // The ONE causal-depth decision point for space writes — see [SpaceCausalDepth]. A person
+    // driving the turn is the origin, so their writes are depth 0; an automation run is by
+    // construction at least one hop away, so its writes are depth >= 1 and the notification they
+    // produce can never wake another run.
+    val originDepth = if (invocationContext.isHeadless) {
+        SpaceCausalDepth.AUTOMATION_DRIVEN
+    } else {
+        SpaceCausalDepth.USER_INITIATED
+    }
 
     fun actorOrNull(): SpaceActor? = SpaceActor.fromAssistant(invocationContext.callerAssistantId)
 
@@ -134,30 +144,37 @@ fun createSpaceTools(
 
                 // Both cursor halves are required together: a time-only cursor silently skips or
                 // repeats rows whenever several share a millisecond.
-                val posts = if (beforeCreatedAt != null && !beforeId.isNullOrBlank()) {
-                    repository.listPostsBefore(SpaceCursor(beforeCreatedAt, beforeId), limit)
-                } else {
-                    repository.listPosts(limit)
-                }
+                val page = repository.listPostsPage(cursorOrNull(beforeCreatedAt, beforeId), limit)
+                val posts = page.items
                 // Like/comment counts are suspend reads, so they are resolved before the JSON is
                 // assembled rather than inside the (non-suspend) builder lambda.
                 val encodedPosts = posts.map { spacePostJson(repository, it) }
                 spaceOk {
                     put("count", posts.size)
                     putJsonArray("posts") { encodedPosts.forEach { add(it) } }
-                    val last = posts.lastOrNull()
-                    if (last != null && posts.size == limit) {
+                    // The cursor is the last row actually returned. `has_more` is a lookahead
+                    // verdict, so it is true exactly when such a row exists.
+                    if (page.hasMore) {
+                        val last = posts.last()
                         put("next_before_created_at_ms", last.createdAtMs)
                         put("next_before_id", last.postId)
                     }
-                    put("has_more", posts.size == limit)
+                    put("has_more", page.hasMore)
                 }
             },
         ),
 
         Tool(
             name = SPACE_GET_POST_TOOL_NAME,
-            description = "Read one Cat Garden post together with its comments and like count.",
+            description = """
+                Read one Cat Garden post together with a first page of its comments and its like
+                count.
+
+                `comment_count` is the FULL number of comments on the post, and `comments_has_more`
+                says whether the returned page is shorter than that. When it is, read the rest with
+                `space_list_comments` using the `comments_next_after_*` values from this response —
+                never treat the returned list as the whole thread.
+            """.trimIndent(),
             parameters = {
                 InputSchema.Obj(
                     properties = buildJsonObject {
@@ -172,12 +189,98 @@ fun createSpaceTools(
                     ?: return@Tool spaceRejected(
                         SpaceWriteOutcome.Rejected("POST_NOT_FOUND", "No post with that id."),
                     )
-                val comments = repository.listComments(postId, DEFAULT_COMMENT_PAGE)
+                val page = repository.listCommentsPage(postId, after = null, limit = DEFAULT_COMMENT_PAGE)
+                val comments = page.items
                 val encodedPost = spacePostJson(repository, post)
+                // Like `spacePostJson`, the comment total is a suspend read, so it is resolved here
+                // rather than inside the (non-suspend) JSON builder below.
+                val commentCount = repository.commentCount(postId)
                 spaceOk {
                     put("post", encodedPost)
                     putJsonArray("comments") {
                         comments.forEach { comment -> add(spaceCommentJson(comment)) }
+                    }
+                    // A caller must never have to guess whether 50 comments was the whole thread.
+                    // `comment_count` is the exact total and `comments_has_more` comes from a
+                    // lookahead read rather than from comparing this page against that total.
+                    put("comment_count", commentCount)
+                    put("comments_has_more", page.hasMore)
+                    if (page.hasMore) {
+                        val last = comments.last()
+                        put("comments_next_after_created_at_ms", last.createdAtMs)
+                        put("comments_next_after_id", last.commentId)
+                    }
+                }
+            },
+        ),
+
+        Tool(
+            name = SPACE_LIST_COMMENTS_TOOL_NAME,
+            description = """
+                Read one page of a Cat Garden post's comments, oldest first.
+
+                Pass the `next_after_*` values from one page as the `after_*` arguments to read the
+                next. `has_more` tells you whether another page exists. `comment_count` is the total
+                on the post, so you can tell how far through the thread a page is.
+            """.trimIndent(),
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("post_id", buildJsonObject { put("type", "string") })
+                        put("limit", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "Page size, 1..${SpaceRepository.MAX_PAGE_SIZE}.")
+                        })
+                        put("after_created_at_ms", buildJsonObject {
+                            put("type", "integer")
+                            put("description", "Cursor from the previous page's next_after_created_at_ms.")
+                        })
+                        put("after_id", buildJsonObject {
+                            put("type", "string")
+                            put("description", "Cursor from the previous page's next_after_id.")
+                        })
+                    },
+                    required = listOf("post_id"),
+                )
+            },
+            execute = { input ->
+                val args = input.jsonObject
+                val postId = args["post_id"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (repository.getPost(postId) == null) {
+                    return@Tool spaceRejected(
+                        SpaceWriteOutcome.Rejected("POST_NOT_FOUND", "No post with that id."),
+                    )
+                }
+                val limit = (args["limit"]?.jsonPrimitive?.intOrNull ?: DEFAULT_PAGE_SIZE)
+                    .coerceIn(1, SpaceRepository.MAX_PAGE_SIZE)
+                val afterCreatedAt = args["after_created_at_ms"]?.jsonPrimitive?.longOrNull
+                val afterId = args["after_id"]?.jsonPrimitive?.contentOrNull
+
+                // Both cursor halves travel together: a time-only cursor silently skips or repeats
+                // comments whenever several share a millisecond.
+                val page = repository.listCommentsPage(
+                    postId = postId,
+                    after = cursorOrNull(afterCreatedAt, afterId),
+                    limit = limit,
+                )
+                val comments = page.items
+                // Resolved before the builder: `commentCount` is suspend and the builder lambda is
+                // not.
+                val commentCount = repository.commentCount(postId)
+                spaceOk {
+                    put("post_id", postId)
+                    put("count", comments.size)
+                    putJsonArray("comments") {
+                        comments.forEach { comment -> add(spaceCommentJson(comment)) }
+                    }
+                    put("comment_count", commentCount)
+                    // Proven by a lookahead read, not guessed from the page size or from how many
+                    // comments the whole post has — either guess misreports the last page.
+                    put("has_more", page.hasMore)
+                    if (page.hasMore) {
+                        val last = comments.last()
+                        put("next_after_created_at_ms", last.createdAtMs)
+                        put("next_after_id", last.commentId)
                     }
                 }
             },
@@ -280,6 +383,39 @@ fun createSpaceTools(
         ),
 
         Tool(
+            name = SPACE_DELETE_POST_TOOL_NAME,
+            description = """
+                Delete a Cat Garden post YOU published, together with its likes, comments and
+                notifications.
+
+                You can only delete your own posts. Ownership is decided from the running session,
+                not from any argument — `post_id` is the only thing this tool accepts, and asking
+                to delete someone else's post is refused rather than silently ignored. Deleting is
+                permanent: there is no undo and no draft.
+            """.trimIndent(),
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("post_id", buildJsonObject {
+                            put("type", "string")
+                            put("description", "The id of a post you published.")
+                        })
+                    },
+                    required = listOf("post_id"),
+                )
+            },
+            execute = { input ->
+                val actor = actorOrNull() ?: return@Tool spaceIdentityUnavailable()
+                val postId = input.jsonObject["post_id"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                when (val outcome = repository.deletePost(actor, postId)) {
+                    is SpaceWriteOutcome.Created -> spaceOk { put("post_id", outcome.id) }
+                    is SpaceWriteOutcome.AlreadyApplied -> spaceOk { put("post_id", outcome.id) }
+                    is SpaceWriteOutcome.Rejected -> spaceRejected(outcome)
+                }
+            },
+        ),
+
+        Tool(
             name = SPACE_LIST_NOTIFICATIONS_TOOL_NAME,
             description = """
                 Read YOUR Cat Garden notifications — likes and comments other identities left on
@@ -308,15 +444,12 @@ fun createSpaceTools(
                 val beforeCreatedAt = args["before_created_at_ms"]?.jsonPrimitive?.longOrNull
                 val beforeId = args["before_id"]?.jsonPrimitive?.contentOrNull
 
-                val notifications = if (beforeCreatedAt != null && !beforeId.isNullOrBlank()) {
-                    repository.listNotificationsBefore(
-                        actor,
-                        SpaceCursor(beforeCreatedAt, beforeId),
-                        limit,
-                    )
-                } else {
-                    repository.listNotifications(actor, limit)
-                }
+                val page = repository.listNotificationsPage(
+                    actor = actor,
+                    before = cursorOrNull(beforeCreatedAt, beforeId),
+                    limit = limit,
+                )
+                val notifications = page.items
                 spaceOk {
                     put("count", notifications.size)
                     putJsonArray("notifications") {
@@ -333,12 +466,12 @@ fun createSpaceTools(
                             })
                         }
                     }
-                    val last = notifications.lastOrNull()
-                    if (last != null && notifications.size == limit) {
+                    if (page.hasMore) {
+                        val last = notifications.last()
                         put("next_before_created_at_ms", last.createdAtMs)
                         put("next_before_id", last.notificationId)
                     }
-                    put("has_more", notifications.size == limit)
+                    put("has_more", page.hasMore)
                 }
             },
         ),
@@ -379,6 +512,17 @@ fun createSpaceTools(
 
 private const val DEFAULT_PAGE_SIZE = 20
 private const val DEFAULT_COMMENT_PAGE = 50
+
+/**
+ * A cursor only when BOTH halves were supplied.
+ *
+ * A time-only cursor silently skips or repeats rows whenever several share a millisecond, so a
+ * half-supplied cursor is read as "no cursor" — the first page — rather than as a cursor that
+ * happens to be missing its tiebreak. Returning the first page again is a visible, harmless
+ * mistake; a half cursor is an invisible one that loses rows.
+ */
+private fun cursorOrNull(createdAtMs: Long?, id: String?): SpaceCursor? =
+    if (createdAtMs != null && !id.isNullOrBlank()) SpaceCursor(createdAtMs, id) else null
 
 private fun spaceOk(build: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit): List<UIMessagePart> =
     listOf(

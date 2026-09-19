@@ -12,10 +12,12 @@ import kotlinx.coroutines.launch
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.space.SpaceActor
+import me.rerere.rikkahub.space.SpaceCausalDepth
 import me.rerere.rikkahub.space.SpaceCommentEntity
 import me.rerere.rikkahub.space.SpaceCursor
 import me.rerere.rikkahub.space.SpaceIdentitySource
 import me.rerere.rikkahub.space.SpaceNotificationEntity
+import me.rerere.rikkahub.space.SpacePostDeletionPolicy
 import me.rerere.rikkahub.space.SpacePostEntity
 import me.rerere.rikkahub.space.SpaceProfile
 import me.rerere.rikkahub.space.SpaceRepository
@@ -34,7 +36,27 @@ data class SpaceFeedItem(
     val commentCount: Int,
     val likedByViewer: Boolean,
     val likerNames: List<String>,
+    /**
+     * A short preview only — [commentCount] is the real total. The rest of the thread is read on
+     * demand through [CatGardenVM.openComments], deliberately not by growing this list.
+     */
     val comments: List<SpaceCommentView>,
+)
+
+/**
+ * One post's full comment thread, paged.
+ *
+ * Separate from [SpaceFeedItem] because it has a different job: the card shows a teaser for the
+ * timeline, this holds the whole conversation for one post and grows by explicit request.
+ */
+data class SpaceCommentThread(
+    val post: SpacePostEntity,
+    val author: SpaceProfile,
+    /** The real number of comments on the post, not the number loaded so far. */
+    val totalCount: Int,
+    val comments: List<SpaceCommentView>,
+    val hasMore: Boolean,
+    val loadingMore: Boolean = false,
 )
 
 data class SpaceNotificationView(
@@ -42,6 +64,19 @@ data class SpaceNotificationView(
     val actor: SpaceProfile,
     val postPreview: String?,
 )
+
+/**
+ * Whether the screen offers a delete entry for [post].
+ *
+ * Every post, including one an assistant published: this screen acts as the local user, who is Cat
+ * Garden's moderator and may delete any post. The rule is asked of [SpacePostDeletionPolicy]
+ * rather than answered here, so what the screen offers and what the repository enforces stay the
+ * same rule — and asking it is still only a decision about what to SHOW. The repository decides
+ * again from the runtime actor before anything is deleted, so a wrong answer here could offer a
+ * control that is then refused, never authorise one.
+ */
+fun localUserMayDelete(post: SpacePostEntity): Boolean =
+    SpacePostDeletionPolicy.authorityFor(SpaceActor.USER, post) != null
 
 /**
  * Cat Garden's read model.
@@ -83,6 +118,20 @@ class CatGardenVM(
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
+    /**
+     * Whether another page exists. The screen reads this instead of guessing from list size, so it
+     * never offers a "load more" that would return nothing.
+     */
+    private val _feedHasMore = MutableStateFlow(false)
+    val feedHasMore: StateFlow<Boolean> = _feedHasMore.asStateFlow()
+
+    private val _mineHasMore = MutableStateFlow(false)
+    val mineHasMore: StateFlow<Boolean> = _mineHasMore.asStateFlow()
+
+    /** The open comment thread, or null when the full view is closed. */
+    private val _commentThread = MutableStateFlow<SpaceCommentThread?>(null)
+    val commentThread: StateFlow<SpaceCommentThread?> = _commentThread.asStateFlow()
+
     /** The person's own display identity, so their posts and likes render like anyone else's. */
     val userNickname: StateFlow<String> = identitySource.nickname
         .stateIn(workScope, SharingStarted.Eagerly, "")
@@ -90,8 +139,12 @@ class CatGardenVM(
     val userAvatar: StateFlow<Avatar> = identitySource.avatar
         .stateIn(workScope, SharingStarted.Eagerly, Avatar.Dummy)
 
+    // Feed and mine keep separate cursors and separate exhausted flags. Sharing one would make the
+    // Mine tab silently skip the person's older posts as soon as the Feed had been scrolled.
     private var feedCursor: SpaceCursor? = null
     private var feedExhausted = false
+    private var mineCursor: SpaceCursor? = null
+    private var mineExhausted = false
 
     init {
         workScope.launch {
@@ -108,7 +161,37 @@ class CatGardenVM(
         }
     }
 
+    /**
+     * Whether [refreshOnResume] has been called at all yet.
+     *
+     * [init] loads the read model, and the screen's first resume lands moments later in the same
+     * composition pass. Without this, every open would run the whole read model twice.
+     */
+    private var hasResumedOnce = false
+
+    /**
+     * Re-reads every surface when the screen returns to the foreground.
+     *
+     * The three tabs read snapshots rather than observing Room, so a post an Assistant deleted
+     * while the person was over in the chat is still on screen when they come back — which reads
+     * as "the delete did not work". This is the one place that closes that gap.
+     *
+     * It is bound to the screen's lifecycle rather than to composition on purpose: a recomposition
+     * is not new data, and refreshing on one would turn scrolling into a query storm. The first
+     * resume is skipped (see [hasResumedOnce]), so opening the screen still costs exactly the one
+     * load [init] already performs.
+     */
+    fun refreshOnResume() {
+        if (!hasResumedOnce) {
+            hasResumedOnce = true
+            return
+        }
+        refreshAll()
+    }
+
     fun loadMoreFeed() = workScope.launch { appendFeedPage() }
+
+    fun loadMoreMine() = workScope.launch { appendMinePage() }
 
     // ── Feed / mine ──────────────────────────────────────────────────────────────────────────
 
@@ -122,26 +205,44 @@ class CatGardenVM(
     private suspend fun appendFeedPage() {
         if (feedExhausted) return
         val assistants = currentAssistants()
-        val page = feedCursor
-            ?.let { spaceRepository.listPostsBefore(it, PAGE_SIZE) }
-            ?: spaceRepository.listPosts(PAGE_SIZE)
-        if (page.size < PAGE_SIZE) feedExhausted = true
-        if (page.isEmpty()) return
+        val page = spaceRepository.listPostsPage(feedCursor, PAGE_SIZE)
+        // `hasMore` is a lookahead verdict from the repository, not an inference from the page
+        // length: a timeline that ends exactly on a page boundary reports "no more" here rather
+        // than offering a Load More that would return nothing.
+        feedExhausted = !page.hasMore
+        _feedHasMore.value = page.hasMore
+        if (page.items.isEmpty()) return
 
-        feedCursor = page.last().let { SpaceCursor(it.createdAtMs, it.postId) }
-        val items = page.map { toFeedItem(it, assistants) }
+        // The cursor is the last RENDERED post. The lookahead row that produced `hasMore` is the
+        // first post of the next page; using it here would skip that post entirely.
+        feedCursor = page.items.last().let { SpaceCursor(it.createdAtMs, it.postId) }
+        val items = page.items.map { toFeedItem(it, assistants) }
         _feed.value = _feed.value + items
     }
 
     private suspend fun reloadMine() {
+        mineCursor = null
+        mineExhausted = false
+        _mine.value = emptyList()
+        appendMinePage()
+    }
+
+    private suspend fun appendMinePage() {
+        if (mineExhausted) return
         val assistants = currentAssistants()
-        val page = spaceRepository.listPostsByAuthor(viewer, PAGE_SIZE)
-        _mine.value = page.map { toFeedItem(it, assistants) }
+        val page = spaceRepository.listPostsByAuthorPage(viewer, mineCursor, PAGE_SIZE)
+        mineExhausted = !page.hasMore
+        _mineHasMore.value = page.hasMore
+        if (page.items.isEmpty()) return
+
+        mineCursor = page.items.last().let { SpaceCursor(it.createdAtMs, it.postId) }
+        val items = page.items.map { toFeedItem(it, assistants) }
+        _mine.value = _mine.value + items
     }
 
     private suspend fun reloadNotifications() {
         val assistants = currentAssistants()
-        val page = spaceRepository.listNotifications(viewer, PAGE_SIZE)
+        val page = spaceRepository.listNotificationsPage(viewer, before = null, limit = PAGE_SIZE).items
         _notifications.value = page.map { notification ->
             SpaceNotificationView(
                 notification = notification,
@@ -160,11 +261,10 @@ class CatGardenVM(
             .mapNotNull { like -> SpaceActor.fromStored(like.actorKind, like.actorId) }
             .map { actor -> resolveSpaceProfile(actor, assistants).displayName }
             .filter { it.isNotBlank() }
-        val comments = spaceRepository.listComments(post.postId, COMMENT_PREVIEW).map { comment ->
-            val commenter = SpaceActor.fromStored(comment.authorKind, comment.authorId)
-                ?: SpaceActor.USER
-            SpaceCommentView(comment = comment, author = resolveSpaceProfile(commenter, assistants))
-        }
+        val comments = spaceRepository
+            .listCommentsPage(post.postId, after = null, limit = COMMENT_PREVIEW)
+            .items
+            .map { toCommentView(it, assistants) }
         return SpaceFeedItem(
             post = post,
             author = resolveSpaceProfile(authorActor, assistants),
@@ -176,19 +276,135 @@ class CatGardenVM(
         )
     }
 
+    private fun toCommentView(
+        comment: SpaceCommentEntity,
+        assistants: List<Assistant>,
+    ): SpaceCommentView {
+        val commenter = SpaceActor.fromStored(comment.authorKind, comment.authorId) ?: SpaceActor.USER
+        return SpaceCommentView(comment = comment, author = resolveSpaceProfile(commenter, assistants))
+    }
+
     private suspend fun currentAssistants(): List<Assistant> = identitySource.assistants()
+
+    // ── Comment thread ───────────────────────────────────────────────────────────────────────
+
+    /**
+     * Opens the full comment view for [postId] and loads its first page.
+     *
+     * This is what the feed card's comment count and its "N more comments" line both lead to, so
+     * there is exactly one answer to "where do I read the rest?".
+     */
+    fun openComments(postId: String) = workScope.launch {
+        val assistants = currentAssistants()
+        val post = spaceRepository.getPost(postId) ?: return@launch
+        val page = spaceRepository.listCommentsPage(postId, after = null, limit = COMMENT_PAGE_SIZE)
+        _commentThread.value = SpaceCommentThread(
+            post = post,
+            author = resolveSpaceProfile(
+                SpaceActor.fromStored(post.authorKind, post.authorId) ?: viewer,
+                assistants,
+            ),
+            totalCount = spaceRepository.commentCount(postId),
+            comments = page.items.map { toCommentView(it, assistants) },
+            hasMore = page.hasMore,
+        )
+    }
+
+    fun closeComments() {
+        _commentThread.value = null
+    }
+
+    /** Appends the next page of the open thread; a no-op when there is nothing left to read. */
+    fun loadMoreComments() = workScope.launch {
+        val thread = _commentThread.value ?: return@launch
+        if (!thread.hasMore || thread.loadingMore) return@launch
+        // The cursor is built from the last comment already on screen, so a page boundary can never
+        // replay a comment the reader has seen or skip one they have not.
+        val last = thread.comments.lastOrNull()?.comment ?: return@launch
+        _commentThread.value = thread.copy(loadingMore = true)
+
+        val assistants = currentAssistants()
+        val page = spaceRepository.listCommentsPage(
+            postId = thread.post.postId,
+            after = SpaceCursor(last.createdAtMs, last.commentId),
+            limit = COMMENT_PAGE_SIZE,
+        )
+        // Re-read the thread before writing: a close or a delete may have landed while this page was
+        // loading, and writing the snapshot back would resurrect a view the reader already
+        // dismissed. Merging onto `current` rather than onto `thread` also keeps anything that
+        // arrived in the meantime.
+        val current = _commentThread.value ?: return@launch
+        if (current.post.postId != thread.post.postId) return@launch
+        val known = current.comments.mapTo(mutableSetOf()) { it.comment.commentId }
+        val merged = current.comments + page.items
+            .filter { it.commentId !in known }
+            .map { toCommentView(it, assistants) }
+        _commentThread.value = current.copy(
+            comments = merged,
+            totalCount = spaceRepository.commentCount(thread.post.postId),
+            // The page's own lookahead verdict, not `merged.size < totalCount`: the latter is the
+            // same cursor-blind guess that misreports the last page of a multi-page thread.
+            hasMore = page.hasMore,
+            loadingMore = false,
+        )
+    }
+
+    /**
+     * Brings the open thread in line with a comment that was just written.
+     *
+     * The loaded list is a cursor PREFIX of the thread's database order, and every page read
+     * resumes from its last row. That invariant is what makes appending the new comment unsafe
+     * whenever the prefix is incomplete: with c1..c20 on screen and c21..c25 unread, appending a
+     * brand-new c26 would move the prefix end to c26, and the next page would ask for everything
+     * after c26 — skipping c21..c25 permanently.
+     *
+     * So the two cases are genuinely different:
+     *  - **incomplete** ([SpaceCommentThread.hasMore]) — only the total is updated. The new comment
+     *    is past the prefix end, so the ordinary Load More reaches it in its proper place, in order,
+     *    with nothing skipped.
+     *  - **complete** — the loaded list IS the whole thread, so the new comment belongs at its tail
+     *    and appending keeps the prefix contiguous.
+     *
+     * `hasMore` is deliberately left untouched in both branches: incomplete stays incomplete,
+     * complete stays complete. It is never recomputed from `size < total`, which is the cursor-blind
+     * guess this whole change exists to remove.
+     */
+    private suspend fun refreshOpenThread(postId: String, newCommentId: String?) {
+        if (_commentThread.value?.post?.postId != postId) return
+        val total = spaceRepository.commentCount(postId)
+        val added = newCommentId?.let { spaceRepository.getComment(it) }
+
+        // Re-read before deciding, and decide from THIS state: the thread may have been closed,
+        // reopened, or paged while the reads above were in flight, and only the list actually on
+        // screen has a prefix whose end is a valid cursor.
+        val current = _commentThread.value ?: return
+        if (current.post.postId != postId) return
+        val view = if (current.hasMore || added == null) {
+            null
+        } else {
+            toCommentView(added, currentAssistants())
+        }
+        val comments = if (view != null &&
+            current.comments.none { it.comment.commentId == view.comment.commentId }
+        ) {
+            current.comments + view
+        } else {
+            current.comments
+        }
+        _commentThread.value = current.copy(comments = comments, totalCount = total)
+    }
 
     // ── Mutations (all as the local user) ────────────────────────────────────────────────────
 
     fun toggleLike(postId: String, liked: Boolean) = workScope.launch {
-        spaceRepository.setLike(viewer, postId, liked, originDepth = 0)
+        spaceRepository.setLike(viewer, postId, liked, SpaceCausalDepth.USER_INITIATED)
         reloadFeed()
         reloadMine()
     }
 
     fun createPost(content: String, onResult: (Boolean) -> Unit = {}) = workScope.launch {
         _busy.value = true
-        val outcome = spaceRepository.createPost(viewer, content, originDepth = 0)
+        val outcome = spaceRepository.createPost(viewer, content, SpaceCausalDepth.USER_INITIATED)
         _busy.value = false
         reloadFeed()
         reloadMine()
@@ -197,10 +413,40 @@ class CatGardenVM(
 
     fun createComment(postId: String, content: String) = workScope.launch {
         _busy.value = true
-        spaceRepository.createComment(viewer, postId, content, originDepth = 0)
+        val outcome = spaceRepository.createComment(
+            viewer,
+            postId,
+            content,
+            SpaceCausalDepth.USER_INITIATED,
+        )
         _busy.value = false
+        refreshOpenThread(postId, (outcome as? SpaceWriteOutcome.Created)?.id)
         reloadFeed()
         reloadMine()
+    }
+
+    /**
+     * Deletes a post as the local user, then refreshes every surface that could have shown it.
+     *
+     * Any post, including an assistant's: the local user moderates Cat Garden. That is a
+     * moderator's power rather than an ownership claim, and it is the repository's to grant — this
+     * method asks as [viewer] and reports whatever comes back, exactly like every other write here.
+     *
+     * The confirmation lives in the UI, not here: this is the action, and it is deliberately
+     * unconditional about being called.
+     *
+     * Notifications are refreshed too, because the delete cascades them away and the unread badge
+     * would otherwise keep counting a post that no longer exists. An open comment thread on the
+     * post is closed for the same reason — it cannot outlive what it was reading.
+     */
+    fun deletePost(postId: String) = workScope.launch {
+        _busy.value = true
+        spaceRepository.deletePost(viewer, postId)
+        _busy.value = false
+        if (_commentThread.value?.post?.postId == postId) _commentThread.value = null
+        reloadFeed()
+        reloadMine()
+        reloadNotifications()
     }
 
     fun markNotificationsRead(ids: List<String>) = workScope.launch {
@@ -220,7 +466,12 @@ class CatGardenVM(
     private companion object {
         const val PAGE_SIZE = 20
         const val LIKER_PREVIEW = 3
+
+        /** How many comments a timeline card teases before the full view takes over. */
         const val COMMENT_PREVIEW = 2
+
+        /** How many comments the full view reads at a time. */
+        const val COMMENT_PAGE_SIZE = 20
     }
 }
 

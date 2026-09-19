@@ -38,6 +38,9 @@ val repositoryModule = module {
             conversations = get(),
             filesManager = get(),
             authority = get(),
+            // Removing an assistant has to take its Cat Garden footprint with it, or its posts
+            // stay in the timeline as a ghost author. See SpaceRepository.deleteAssistantFootprint.
+            spaceRepository = get(),
         )
     }
 
