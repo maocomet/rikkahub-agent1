@@ -29,6 +29,13 @@ class StickerFileStoreTest {
     private val filesDir: File get() = temporaryFolder.root
     private val store: StickerFileStore get() = StickerFileStore(filesDir)
 
+    /**
+     * [StickerFileStore.resolve] answers "is this path the store's", not "is the image there" — it
+     * has to, or the delete path could not name the file it has just removed. This asks the second
+     * question, which is the one these tests actually care about.
+     */
+    private fun exists(relativePath: String): Boolean = store.resolve(relativePath)?.isFile == true
+
     @Test
     fun `staging copies the bytes into the app-private staging directory`() {
         val bytes = StickerFixtures.png(tag = 1)
@@ -116,7 +123,7 @@ class StickerFileStoreTest {
 
         assertTrue(store.delete(relativePath))
 
-        assertNull(store.resolve(relativePath))
+        assertFalse(exists(relativePath))
         assertFalse(store.delete(relativePath))
     }
 
@@ -160,8 +167,8 @@ class StickerFileStoreTest {
         val removed = store.sweepOrphans(setOf(kept))
 
         assertEquals(1, removed)
-        assertNotNull("a named image must survive the sweep", store.resolve(kept))
-        assertNull("an un-row'd image must be reclaimed", store.resolve(orphan))
+        assertTrue("a named image must survive the sweep", exists(kept))
+        assertFalse("an un-row'd image must be reclaimed", exists(orphan))
     }
 
     @Test

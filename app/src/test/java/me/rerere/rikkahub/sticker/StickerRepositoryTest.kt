@@ -186,7 +186,10 @@ class StickerRepositoryTest {
         assertTrue(deleted)
         assertNull(repository.getSticker("s1"))
         assertTrue(repository.observeLibrary().first().isEmpty())
-        assertNull("the row is gone, so its image must be too", fileStore.resolve(relativePath))
+        assertFalse(
+            "the row is gone, so its image must be too",
+            fileStore.resolve(relativePath)?.isFile == true,
+        )
     }
 
     @Test
@@ -288,5 +291,23 @@ class StickerRepositoryTest {
             File(temporaryFolder.root, "stickers").canonicalPath,
             file.parentFile?.canonicalPath,
         )
+    }
+
+    @Test
+    fun `a row whose image is gone resolves to nothing rather than to a dead path`() = runBlocking {
+        insert(id = "s1")
+        val relativePath = repository.getSticker("s1")!!.relativePath
+        fileStore.delete(relativePath)
+
+        // What a restore in this phase produces: the row comes back, the file does not. Returning
+        // the path anyway would hand Coil and the vision client a file that is not there, and the
+        // grid would draw a blank cell instead of saying the image is missing.
+        assertNull(repository.absolutePathOf(relativePath))
+    }
+
+    @Test
+    fun `a path outside the library resolves to nothing`() = runBlocking {
+        assertNull(repository.absolutePathOf("upload/abc.png"))
+        assertNull(repository.absolutePathOf("stickers/../escape.png"))
     }
 }

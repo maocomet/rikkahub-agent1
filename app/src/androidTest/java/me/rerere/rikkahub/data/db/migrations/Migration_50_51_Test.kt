@@ -4,6 +4,7 @@ import androidx.room.testing.MigrationTestHelper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.ImportedDatabaseReconciler
 import me.rerere.rikkahub.data.db.createAppSQLiteOpenHelperFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -139,6 +140,36 @@ class Migration_50_51_Test {
             duplicate != null,
         )
         db.close()
+    }
+
+    /**
+     * The reconciler's pinned identity is a hand-copied constant and nothing else in the build
+     * connects it to the schema. A mismatch is silent at runtime — cold restore and backup import
+     * simply start refusing databases — which is the kind of failure discovered long after the
+     * commit that caused it. So it is asserted here, against the identity the v51 schema actually
+     * carries.
+     *
+     * This duplicates the JVM contract test on purpose. That one compares the constant against the
+     * export on the host, where this repo's Gradle configuration prints a failing test's name but
+     * not its message, so a mismatch there is visible only as "some assertion failed". Here the
+     * instrumentation reporter prints the message, which is what makes the value recoverable.
+     */
+    @Test
+    fun migrate50To51_pinnedReconcilerIdentityMatchesTheExportedSchema() {
+        val db = helper.createDatabase(DB_NAME, 51)
+        val actual = db.query(
+            "SELECT identity_hash FROM room_master_table WHERE id = 42",
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+        db.close()
+
+        assertEquals(
+            "ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH does not match AppDatabase/51.json " +
+                "— cold restore and backup import would fail closed",
+            ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
+            actual,
+        )
     }
 
     private companion object {

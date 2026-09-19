@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.sticker
 
+import java.io.File
 import java.io.InputStream
 import kotlin.uuid.Uuid
 import kotlinx.coroutines.flow.Flow
@@ -159,7 +160,20 @@ class StickerRepository(
     /** Removes a committed image by its stored path. Used to undo a commit whose row insert failed. */
     suspend fun deleteFileFor(relativePath: String): Boolean = fileStore.delete(relativePath)
 
-    fun absolutePathOf(relativePath: String) = fileStore.absolutize(relativePath)
+    /**
+     * The stored image as a file, or null when the row points at nothing.
+     *
+     * Existence is part of the contract rather than an afterthought, and [StickerFileStore.resolve]
+     * deliberately does not check it: path resolution and "is the image actually here" are
+     * different questions, and conflating them would make the delete path unable to name a file it
+     * has just removed.
+     *
+     * Every caller needs the second question answered. The grid has to tell a missing image from a
+     * present one so it can say so instead of drawing a blank cell, and the vision client must not
+     * be handed a path that resolves to nothing.
+     */
+    fun absolutePathOf(relativePath: String): File? =
+        fileStore.resolve(relativePath)?.takeIf { it.isFile }
 
     /**
      * Reclaims images no row points at. Runs when the library opens; see the class comment for why
