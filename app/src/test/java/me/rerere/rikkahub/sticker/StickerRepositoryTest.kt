@@ -19,16 +19,23 @@ class StickerRepositoryTest {
     val temporaryFolder = TemporaryFolder()
 
     private val dao = FakeStickerDao()
-    private val fileStore = StickerFileStore(temporaryFolder.root)
     private var clock = 1_000L
     private var ids = 0
 
-    private val repository = StickerRepository(
-        dao = dao,
-        fileStore = fileStore,
-        nowMs = { clock },
-        newId = { "sticker-${ids++}" },
-    )
+    // `by lazy`, not a plain initialiser: a JUnit rule has not created the temporary folder when
+    // the test class is constructed, so reading `temporaryFolder.root` from a field initialiser
+    // throws "the temporary folder has not yet been created" before the first test even runs.
+    // First access happens inside a test method, by which point the rule has run.
+    private val fileStore by lazy { StickerFileStore(temporaryFolder.root) }
+
+    private val repository by lazy {
+        StickerRepository(
+            dao = dao,
+            fileStore = fileStore,
+            nowMs = { clock },
+            newId = { "sticker-${ids++}" },
+        )
+    }
 
     private fun stageAndCommit(tag: Int, id: String, extension: String = "png"): String =
         fileStore.commit(

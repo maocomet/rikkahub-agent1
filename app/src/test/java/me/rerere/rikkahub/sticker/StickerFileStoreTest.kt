@@ -23,8 +23,11 @@ class StickerFileStoreTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
 
+    // Read lazily rather than at construction: a JUnit rule creates the temporary folder after
+    // the test class is constructed, so touching `temporaryFolder.root` in a field initialiser
+    // throws before the first test runs.
     private val filesDir: File get() = temporaryFolder.root
-    private val store get() = StickerFileStore(filesDir)
+    private val store: StickerFileStore get() = StickerFileStore(filesDir)
 
     @Test
     fun `staging copies the bytes into the app-private staging directory`() {

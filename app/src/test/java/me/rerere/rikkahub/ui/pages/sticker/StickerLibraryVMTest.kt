@@ -39,21 +39,32 @@ class StickerLibraryVMTest {
     val temporaryFolder = TemporaryFolder()
 
     private val dao = FakeStickerDao()
-    private val fileStore = StickerFileStore(temporaryFolder.root)
     private var ids = 0
-    private val repository = StickerRepository(
-        dao = dao,
-        fileStore = fileStore,
-        nowMs = { 1_000L },
-        newId = { "sticker-${ids++}" },
-    )
     private val vision = FakeVisionClient(FakeVisionClient.success())
-    private val coordinator = StickerImportCoordinator(
-        repository = repository,
-        visionClient = vision,
-        dimensionReader = FakeDimensionReader(),
-        newId = { "sticker-${ids++}" },
-    )
+
+    // `by lazy`, not plain initialisers: a JUnit rule has not created the temporary folder when
+    // the test class is constructed, so reading `temporaryFolder.root` from a field initialiser
+    // throws "the temporary folder has not yet been created" before the first test even runs.
+    // First access happens inside a test method, by which point the rule has run.
+    private val fileStore by lazy { StickerFileStore(temporaryFolder.root) }
+
+    private val repository by lazy {
+        StickerRepository(
+            dao = dao,
+            fileStore = fileStore,
+            nowMs = { 1_000L },
+            newId = { "sticker-${ids++}" },
+        )
+    }
+
+    private val coordinator by lazy {
+        StickerImportCoordinator(
+            repository = repository,
+            visionClient = vision,
+            dimensionReader = FakeDimensionReader(),
+            newId = { "sticker-${ids++}" },
+        )
+    }
 
     private fun viewModel() = StickerLibraryVM(
         repository = repository,
