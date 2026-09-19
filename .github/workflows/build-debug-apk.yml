@@ -144,6 +144,10 @@ jobs:
             --tests "me.rerere.rikkahub.data.db.ImportedDatabaseReconcilerContractTest" \
             --tests "me.rerere.rikkahub.space.SpaceRepositoryTest" \
             --tests "me.rerere.rikkahub.space.SpaceToolSurfaceTest" \
+            --tests "me.rerere.rikkahub.space.SpaceAssistantFootprintTest" \
+            --tests "me.rerere.rikkahub.data.ai.execution.SpaceToolRuntimeRegistrationTest" \
+            --tests "me.rerere.rikkahub.data.repository.AssistantRemovalServiceTest" \
+            --tests "me.rerere.rikkahub.data.repository.AssistantRemovalServiceWiringTest" \
             --tests "me.rerere.rikkahub.ui.pages.space.CatGardenVMTest" \
             --tests "me.rerere.rikkahub.workflow.trigger.SpaceNotificationTriggerGuardTest" \
             --tests "me.rerere.rikkahub.workflow.trigger.SpaceNotificationEndToEndTest" \
