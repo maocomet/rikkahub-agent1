@@ -60,6 +60,30 @@ class StickerRepository(
     suspend fun findDuplicate(checksum: String): Sticker? =
         dao.findByChecksum(checksum)?.toSticker()
 
+    /**
+     * Retrieves candidates for a natural-language query, best first.
+     *
+     * The candidate set is narrowed by two conditions that cannot live in the same place. `enabled`
+     * is filtered in SQL, because the database can answer it. Whether the image is *there* is a
+     * filesystem question the database cannot, and it is answered here for every candidate before
+     * ranking rather than after: a sticker whose file is gone must not occupy a slot that a usable
+     * one could have had, and handing the model an id it cannot send is worse than a shorter list.
+     *
+     * Nothing here is model-mediated. Retrieval costs no API call and gives the same answer offline.
+     */
+    suspend fun search(
+        query: String,
+        limit: Int = StickerSearch.DEFAULT_LIMIT,
+    ): List<Sticker> {
+        val tokens = StickerSearch.tokenize(query)
+        if (tokens.isEmpty()) return emptyList()
+        val usable = dao.listEnabled()
+            .map { it.toSticker() }
+            .filter { absolutePathOf(it.relativePath) != null }
+        return StickerSearch.rank(candidates = usable, tokens = tokens, limit = limit)
+            .map { it.sticker }
+    }
+
     // ── Library writes ───────────────────────────────────────────────────────────────────────
 
     /**

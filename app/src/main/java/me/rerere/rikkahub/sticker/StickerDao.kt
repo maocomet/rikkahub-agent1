@@ -41,6 +41,18 @@ interface StickerDao {
     @Query("SELECT relative_path FROM stickers")
     suspend fun listRelativePaths(): List<String>
 
+    /**
+     * Every sticker the library currently offers — the candidate set for retrieval.
+     *
+     * `enabled = 1` is filtered in SQL rather than in Kotlin because it is the one condition the
+     * database can answer. Whether each candidate's *file* still exists cannot be, so that half of
+     * the filter lives in the repository; see [me.rerere.rikkahub.sticker.StickerRepository.search].
+     *
+     * Ordered the same way as [observeAll] so an unranked read of this list is still deterministic.
+     */
+    @Query("SELECT * FROM stickers WHERE enabled = 1 ORDER BY created_at_ms DESC, sticker_id DESC")
+    suspend fun listEnabled(): List<StickerEntity>
+
     /** Replaces both the metadata and the recognition outcome in one statement. */
     @Query(
         "UPDATE stickers SET description = :description, tags_json = :tagsJson, " +

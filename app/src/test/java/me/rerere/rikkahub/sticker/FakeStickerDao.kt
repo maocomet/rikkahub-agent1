@@ -50,6 +50,11 @@ class FakeStickerDao : StickerDao {
 
     override suspend fun listRelativePaths(): List<String> = rows.values.map { it.relativePath }
 
+    override suspend fun listEnabled(): List<StickerEntity> =
+        rows.values.filter { it.enabled }.sortedWith(
+            compareByDescending<StickerEntity> { it.createdAtMs }.thenByDescending { it.stickerId },
+        )
+
     override suspend fun updateMetadata(
         stickerId: String,
         description: String,
