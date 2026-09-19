@@ -1,5 +1,9 @@
 package me.rerere.rikkahub.ui.pages.space
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -12,7 +16,10 @@ import me.rerere.rikkahub.space.FakeSpaceDao
 import me.rerere.rikkahub.space.SpaceActor
 import me.rerere.rikkahub.space.SpaceActorKind
 import me.rerere.rikkahub.space.SpaceCursor
+import me.rerere.rikkahub.space.SpaceDao
 import me.rerere.rikkahub.space.SpaceIdentitySource
+import me.rerere.rikkahub.space.SpaceNotificationEntity
+import me.rerere.rikkahub.space.SpacePostEntity
 import me.rerere.rikkahub.space.SpaceRepository
 import me.rerere.rikkahub.space.SpaceWriteOutcome
 import org.junit.Assert.assertEquals
@@ -640,6 +647,138 @@ class CatGardenVMTest {
 
         assertTrue("the badge cannot keep counting a post that is gone", vm.notifications.value.isEmpty())
         assertEquals(0, vm.unreadCount.value)
+    }
+
+    // ── Coming back to the screen ────────────────────────────────────────────────────────────
+
+    /**
+     * Counts page reads, so "did this re-read?" is an assertion rather than an inference from
+     * state that a re-read would leave identical. An interface delegation, so only the three
+     * listing methods the screen actually pages with are overridden.
+     */
+    private class CountingSpaceDao(private val delegate: SpaceDao) : SpaceDao by delegate {
+        var feedPageReads = 0
+        var minePageReads = 0
+        var notificationReads = 0
+
+        override suspend fun listPosts(limit: Int): List<SpacePostEntity> {
+            feedPageReads++
+            return delegate.listPosts(limit)
+        }
+
+        override suspend fun listPostsByAuthor(
+            authorKind: String,
+            authorId: String,
+            limit: Int,
+        ): List<SpacePostEntity> {
+            minePageReads++
+            return delegate.listPostsByAuthor(authorKind, authorId, limit)
+        }
+
+        override suspend fun listNotifications(
+            recipientKind: String,
+            recipientId: String,
+            limit: Int,
+        ): List<SpaceNotificationEntity> {
+            notificationReads++
+            return delegate.listNotifications(recipientKind, recipientId, limit)
+        }
+    }
+
+    private suspend fun vmOver(counting: CountingSpaceDao, repo: SpaceRepository): CatGardenVM =
+        CatGardenVM(
+            spaceRepository = repo,
+            identitySource = FakeIdentitySource(listOf(assistant), "Owner", Avatar.Dummy),
+            injectedScope = CoroutineScope(Dispatchers.Unconfined),
+        )
+
+    @Test
+    fun `the opening resume does not repeat the load init already did, a later one does`() =
+        runBlocking {
+            val counting = CountingSpaceDao(FakeSpaceDao())
+            var tick = 1_000L
+            val repo = SpaceRepository(
+                dao = counting,
+                nowMs = { tick++ },
+                newId = { "resume-${++idSeq}" },
+            )
+            repo.createPost(SpaceActor.USER, "first", originDepth = 0)
+
+            val vm = vmOver(counting, repo)
+            assertEquals("init reads one feed page", 1, counting.feedPageReads)
+            assertEquals(1, counting.minePageReads)
+            assertEquals(1, counting.notificationReads)
+
+            // The first resume lands in the same composition pass as that load. Counting the reads
+            // is the only way to see this: a second load would leave the lists identical.
+            vm.refreshOnResume()
+            assertEquals("the opening resume must not re-read", 1, counting.feedPageReads)
+            assertEquals(1, counting.minePageReads)
+            assertEquals(1, counting.notificationReads)
+
+            // A genuine return re-reads every tab the screen shows.
+            vm.refreshOnResume()
+            assertEquals(2, counting.feedPageReads)
+            assertEquals(2, counting.minePageReads)
+            assertEquals(2, counting.notificationReads)
+        }
+
+    @Test
+    fun `a post an assistant deleted while the person was away goes on the next resume`() =
+        runBlocking {
+            val assistantPost = repository.createPost(assistantActor, "doomed", originDepth = 0).let {
+                (it as SpaceWriteOutcome.Created).id
+            }
+            repository.createPost(SpaceActor.USER, "mine", originDepth = 0)
+
+            val vm = viewModel()
+            assertEquals(2, vm.feed.value.size)
+            vm.refreshOnResume() // the opening resume, already accounted for
+
+            // The person leaves for the chat and the Assistant deletes its post there. Nothing
+            // tells this screen — it reads snapshots, so it keeps showing the post.
+            repository.deletePost(assistantActor, assistantPost)
+            assertEquals(
+                "the staleness is real, and is what the resume refresh exists to clear",
+                2,
+                vm.feed.value.size,
+            )
+
+            vm.refreshOnResume()
+
+            assertEquals(listOf("mine"), vm.feed.value.map { it.post.content })
+        }
+
+    @Test
+    fun `the screen binds the refresh to the lifecycle, not to composition`() {
+        // The half a JVM test cannot reach: this repo has no Compose or Robolectric test harness,
+        // so whether the refresh fires on a resume or on every recomposition is a property of the
+        // source. A `LaunchedEffect` or a call in the composable body would re-query on scrolling.
+        val page = Files.readString(
+            locateProjectRoot().resolve(
+                "app/src/main/java/me/rerere/rikkahub/ui/pages/space/CatGardenPage.kt",
+            ),
+            StandardCharsets.UTF_8,
+        )
+
+        assertTrue(
+            "the refresh must be bound to the screen's resume",
+            page.contains("LifecycleEventEffect(Lifecycle.Event.ON_RESUME)"),
+        )
+        assertTrue(page.contains("vm.refreshOnResume()"))
+        assertTrue(
+            "the composable body must not call refreshAll directly -- that would run per recomposition",
+            !page.contains("vm.refreshAll("),
+        )
+    }
+
+    private fun locateProjectRoot(): Path {
+        var cursor = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize()
+        repeat(6) {
+            if (Files.isDirectory(cursor.resolve("app/src/main/java"))) return cursor
+            cursor = cursor.parent ?: return@repeat
+        }
+        error("Unable to locate project root")
     }
 
     private class FakeIdentitySource(

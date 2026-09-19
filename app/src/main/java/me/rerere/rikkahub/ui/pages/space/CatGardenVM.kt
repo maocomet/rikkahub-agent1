@@ -161,6 +161,34 @@ class CatGardenVM(
         }
     }
 
+    /**
+     * Whether [refreshOnResume] has been called at all yet.
+     *
+     * [init] loads the read model, and the screen's first resume lands moments later in the same
+     * composition pass. Without this, every open would run the whole read model twice.
+     */
+    private var hasResumedOnce = false
+
+    /**
+     * Re-reads every surface when the screen returns to the foreground.
+     *
+     * The three tabs read snapshots rather than observing Room, so a post an Assistant deleted
+     * while the person was over in the chat is still on screen when they come back — which reads
+     * as "the delete did not work". This is the one place that closes that gap.
+     *
+     * It is bound to the screen's lifecycle rather than to composition on purpose: a recomposition
+     * is not new data, and refreshing on one would turn scrolling into a query storm. The first
+     * resume is skipped (see [hasResumedOnce]), so opening the screen still costs exactly the one
+     * load [init] already performs.
+     */
+    fun refreshOnResume() {
+        if (!hasResumedOnce) {
+            hasResumedOnce = true
+            return
+        }
+        refreshAll()
+    }
+
     fun loadMoreFeed() = workScope.launch { appendFeedPage() }
 
     fun loadMoreMine() = workScope.launch { appendMinePage() }

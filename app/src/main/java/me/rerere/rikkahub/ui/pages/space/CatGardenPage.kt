@@ -44,6 +44,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import me.rerere.hugeicons.HugeIcons
@@ -81,6 +83,17 @@ fun CatGardenPage(vm: CatGardenVM = koinViewModel()) {
     val commentThread by vm.commentThread.collectAsStateWithLifecycle()
     val nickname by vm.userNickname.collectAsStateWithLifecycle()
     val userAvatar by vm.userAvatar.collectAsStateWithLifecycle()
+
+    // Re-read every tab whenever the screen comes back to the foreground. The person can hand a
+    // delete to an Assistant from the chat and return here, and Cat Garden reads snapshots rather
+    // than observing Room, so it would otherwise still be showing the post that just went.
+    //
+    // Deliberately the lifecycle event rather than a LaunchedEffect or a call in the composable
+    // body: a recomposition is not new data, and refreshing on one would turn scrolling into a
+    // query storm. The ViewModel skips the first resume, so opening the screen is still one load.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        vm.refreshOnResume()
+    }
 
     val tabs = CatGardenTab.entries
     val pagerState = rememberPagerState(pageCount = { tabs.size })
