@@ -52,7 +52,10 @@ class StickerLibraryVMTest {
         StickerRepository(
             dao = dao,
             fileStore = fileStore,
-            nowMs = { 1_000L },
+            // A real clock, unlike the repository tests: the staging sweep compares file
+            // modification times against `now - grace`, and a fixed 1970-era `now` makes that
+            // cutoff negative, so no file can ever look old enough to reclaim.
+            nowMs = { System.currentTimeMillis() },
             newId = { "sticker-${ids++}" },
         )
     }
@@ -323,6 +326,11 @@ class StickerLibraryVMTest {
             vm.save()
             val saved = vm.stickers.value.single().sticker
             vision.respondWith(FakeVisionClient.failure(StickerVisionFailure.REQUEST_FAILED))
+
+            // Saving reported its own success, and messages queue in the order they are raised.
+            // Draining it here is what makes the next assertion about the re-run rather than
+            // about the save.
+            assertEquals(StickerMessage.SAVED, vm.messages.first())
 
             vm.retryRecognition(saved.id)
 
