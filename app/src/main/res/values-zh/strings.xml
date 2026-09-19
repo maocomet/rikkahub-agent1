@@ -338,6 +338,9 @@
   <string name="assistant_page_cat_garden_section">Cat Garden</string>
   <string name="assistant_page_cat_garden_title">Cat Garden</string>
   <string name="assistant_page_cat_garden_desc">允许该助手在 Cat Garden 中发帖、评论和点赞。默认关闭：关闭时不会向模型发送任何空间工具。</string>
+  <string name="assistant_page_sticker_tools_section">共享表情包</string>
+  <string name="assistant_page_sticker_tools_title">允许使用表情包</string>
+  <string name="assistant_page_sticker_tools_desc">允许该助手从共享表情包库中搜索并发送表情包。关闭后，该助手完全看不到搜索或发送表情包的工具。仅在本地聊天中生效；不影响你管理表情包库。</string>
   <string name="assistant_page_local_tools_section_existing">内置工具</string>
   <string name="assistant_page_local_tools_section_files">文件管理器</string>
   <string name="assistant_page_local_tools_section_hardware">硬件控制</string>
@@ -638,6 +641,8 @@
   <string name="chat_message_tool_deny_dialog_title">拒绝工具执行</string>
   <string name="chat_message_tool_edit_memory">更新了记忆</string>
   <string name="chat_message_tool_get_time">获取时间信息</string>
+  <string name="chat_message_tool_sticker_search">搜索表情包</string>
+  <string name="chat_message_tool_sticker_send">发送表情包</string>
   <string name="chat_message_tool_schedule_job_warning">⏰ 定时任务自主运行，无需逐个工具授权。批准此项后，任务在每次触发时都能以完整工具访问权限运行。被 HARDLINE 拦截的命令仍然无法运行。</string>
   <string name="chat_message_tool_scrape_prefix">抓取网站：%1$s</string>
   <string name="chat_message_tool_scrape_web">抓取网页</string>

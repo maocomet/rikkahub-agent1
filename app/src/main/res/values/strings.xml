@@ -256,6 +256,8 @@
   <string name="chat_message_tool_deny_dialog_title">Deny Tool Execution</string>
   <string name="chat_message_tool_edit_memory">Updated memory</string>
   <string name="chat_message_tool_get_time">Get time info</string>
+  <string name="chat_message_tool_sticker_search">Search stickers</string>
+  <string name="chat_message_tool_sticker_send">Send a sticker</string>
   <string name="chat_message_tool_scrape_prefix">Scrape website: %1$s</string>
   <string name="chat_message_tool_scrape_web">Scrape web page</string>
   <string name="chat_message_tool_search_prefix">Search: %1$s</string>
@@ -1265,6 +1267,9 @@
   <string name="assistant_page_cat_garden_section">Cat Garden</string>
   <string name="assistant_page_cat_garden_title">Cat Garden</string>
   <string name="assistant_page_cat_garden_desc">Let this assistant post, comment and like in Cat Garden. Off by default: while disabled, no space tools are sent to the model at all.</string>
+  <string name="assistant_page_sticker_tools_section">Shared stickers</string>
+  <string name="assistant_page_sticker_tools_title">Allow using stickers</string>
+  <string name="assistant_page_sticker_tools_desc">Let this assistant search the shared sticker library and send stickers. While disabled, no sticker search or send tools are sent to the model at all. Local chat only; this does not affect your own management of the library.</string>
   <string name="assistant_page_local_tools_section_existing">Built-in tools</string>
   <string name="assistant_page_local_tools_section_hardware">Hardware control</string>
   <string name="assistant_page_local_tools_section_media">Media</string>

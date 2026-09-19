@@ -547,6 +547,11 @@ private val outputTransformers by lazy {
         ThinkTagTransformer,
         Base64ImageToLocalFileTransformer,
         RegexOutputTransformer,
+        // Lifts a sent sticker out of its tool output and into the message, so the person sees a
+        // sticker rather than a tool step that returned a picture. Runs on the same hook as the
+        // base64 transformer above, and for the same reason: parts have to be settled before the
+        // message is persisted.
+        me.rerere.rikkahub.sticker.StickerSendToMessagePartTransformer,
     )
 }
 
@@ -598,6 +603,8 @@ class ChatService(
     private val providerManager: ProviderManager,
     private val localTools: LocalTools,
     private val spaceRepository: me.rerere.rikkahub.space.SpaceRepository,
+    private val stickerRepository: me.rerere.rikkahub.sticker.StickerRepository,
+    private val stickerDelivery: me.rerere.rikkahub.sticker.StickerDelivery,
     val mcpManager: McpManager,
     private val filesManager: FilesManager,
     private val skillManager: SkillManager,
@@ -3691,6 +3698,21 @@ class ChatService(
                                 repository = spaceRepository,
                                 invocationContext = invocationCtx,
                                 assistantEnabled = assistant.catGardenEnabled,
+                            )
+                        )
+                    }
+                    // Shared sticker library. Same shape as the Cat Garden block above and gated
+                    // the same way — opt-in per assistant, and an origin allowlist inside the
+                    // surface — but narrower on both counts: the surface admits LocalChat only, and
+                    // a disabled assistant is sent no sticker schema rather than a tool that
+                    // refuses later.
+                    if (!privilegeContext.isPrivileged) {
+                        addAll(
+                            me.rerere.rikkahub.sticker.StickerToolSurface.build(
+                                delivery = stickerDelivery,
+                                repository = stickerRepository,
+                                invocationContext = invocationCtx,
+                                assistantEnabled = assistant.stickerToolsEnabled,
                             )
                         )
                     }

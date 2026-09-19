@@ -723,6 +723,12 @@ val dataSourceModule = module {
         )
     }
     single {
+        me.rerere.rikkahub.sticker.StickerDelivery(
+            repository = get(),
+            filesManager = get(),
+        )
+    }
+    single {
         me.rerere.rikkahub.diagnostics.ToolCatalogDiagnostics(
             experiences = get(),
             shortcuts = get(),

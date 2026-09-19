@@ -326,6 +326,34 @@ private fun AssistantLocalToolContent(
             )
         }
 
+        // Shared sticker library. Same reasoning as the Cat Garden field above — a defaulted field
+        // on Assistant, off by default, and off means no sticker schema is sent at all. Also
+        // limited to local chat, so switching this on never grants a remote or automation origin
+        // the ability to read and send from the person's library.
+        Text(
+            text = stringResource(R.string.assistant_page_sticker_tools_section),
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(start = 16.dp, top = 8.dp)
+        )
+        CardGroup {
+            item(
+                headlineContent = {
+                    Text(stringResource(R.string.assistant_page_sticker_tools_title))
+                },
+                supportingContent = {
+                    Text(stringResource(R.string.assistant_page_sticker_tools_desc))
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.stickerToolsEnabled,
+                        onCheckedChange = { enabled ->
+                            onUpdateAssistant { it.copy(stickerToolsEnabled = enabled) }
+                        }
+                    )
+                }
+            )
+        }
+
         // Built-in tools section
         Text(
             text = stringResource(R.string.assistant_page_local_tools_section_existing),

@@ -152,6 +152,22 @@ data class Assistant(
      * a Room migration, and keeps old settings and exported backups readable.
      */
     val catGardenEnabled: Boolean = false,
+    /**
+     * Explicit opt-in for this assistant to search and send from the shared sticker library.
+     *
+     * Default off, and the surface is built only when this is true AND the call came from an
+     * allowed origin, so an assistant that has not opted in carries no `sticker_*` schema at all
+     * rather than a tool that refuses at call time.
+     *
+     * Named for the *tools*, not for stickers in general: the library's own rows have an `enabled`
+     * column meaning something else entirely (whether the sticker may be offered at all), and one
+     * word covering both would be read wrong at least once.
+     *
+     * A defaulted field on Assistant, like [catGardenEnabled], rather than a `LocalToolOption`:
+     * adding an option would widen `SecondUserToolAllowlist.PRIVILEGED_IMPLEMENTED`, and a
+     * defaulted field avoids both that and a Room migration.
+     */
+    val stickerToolsEnabled: Boolean = false,
     /** Optional P1 pet sidecar settings. Defaults keep existing assistants and exports unchanged. */
     val petEnabled: Boolean = false,
     val petPackageId: String? = null,

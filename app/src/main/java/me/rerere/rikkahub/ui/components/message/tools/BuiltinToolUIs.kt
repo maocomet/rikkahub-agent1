@@ -39,9 +39,13 @@ import me.rerere.hugeicons.stroke.Clipboard
 import me.rerere.hugeicons.stroke.Clock02
 import me.rerere.hugeicons.stroke.Eraser
 import me.rerere.hugeicons.stroke.GlobalSearch
+import me.rerere.hugeicons.stroke.Image03
 import me.rerere.hugeicons.stroke.MagicWand01
 import me.rerere.hugeicons.stroke.Message02
 import me.rerere.hugeicons.stroke.Pin
+import me.rerere.hugeicons.stroke.Search01
+import me.rerere.rikkahub.sticker.STICKER_SEARCH_TOOL_NAME
+import me.rerere.rikkahub.sticker.STICKER_SEND_TOOL_NAME
 import me.rerere.hugeicons.stroke.QuillWrite01
 import me.rerere.hugeicons.stroke.Refresh01
 import me.rerere.hugeicons.stroke.Search01
@@ -558,4 +562,40 @@ object ShowLocationOnMapToolUI : ToolUIRenderer {
         val q = context.arguments.getStringContent("query").orEmpty()
         return if (q.isNotBlank()) "Map: $q" else "Open map"
     }
+}
+
+/**
+ * Shared sticker library: a search, whose title is the query that was searched for.
+ *
+ * The query is the useful thing to show — "searched for 委屈 撒娇" says what the assistant was
+ * after, where the tool name alone would only say that it looked.
+ */
+object StickerSearchToolUI : ToolUIRenderer {
+    override val toolName: String = STICKER_SEARCH_TOOL_NAME
+
+    override fun icon(context: ToolUIContext): ImageVector = HugeIcons.Search01
+
+    @Composable
+    override fun title(context: ToolUIContext): String {
+        val query = context.arguments.getStringContent("query").orEmpty()
+        val base = stringResource(R.string.chat_message_tool_sticker_search)
+        return if (query.isBlank()) base else "$base: $query"
+    }
+}
+
+/**
+ * Shared sticker library: a send.
+ *
+ * Deliberately shows no image: [me.rerere.rikkahub.sticker.StickerSendToMessagePartTransformer]
+ * lifts the picture into the message itself, so the sticker appears once, where it was sent. This
+ * step is the record that it was sent, not a second place to display it.
+ */
+object StickerSendToolUI : ToolUIRenderer {
+    override val toolName: String = STICKER_SEND_TOOL_NAME
+
+    override fun icon(context: ToolUIContext): ImageVector = HugeIcons.Image03
+
+    @Composable
+    override fun title(context: ToolUIContext): String =
+        stringResource(R.string.chat_message_tool_sticker_send)
 }

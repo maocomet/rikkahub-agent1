@@ -228,6 +228,10 @@ class OwnerSettingsOperationHandler(
             privilegedConversationId = null,
             secondUserPolicyConfirmed = false,
             allowConversationHistoryRead = false,
+            // A capability, not a preference: silently carrying "this assistant may send from the
+            // person's sticker library" into a new assistant is access nobody granted. Same
+            // reasoning as allowConversationHistoryRead above.
+            stickerToolsEnabled = false,
             petEnabled = false,
             petBootRestoreEnabled = false,
         )

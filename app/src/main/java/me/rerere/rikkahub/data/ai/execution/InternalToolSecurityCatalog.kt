@@ -54,6 +54,10 @@ object InternalToolSecurityCatalog {
         "space_get_post",
         "space_list_comments",
         "space_list_notifications",
+        // Shared sticker library. Same rule as above: application-owned, deliberately outside
+        // CapabilityCatalog, and therefore absent from the model-visible surface's ability to
+        // execute unless it is named here. StickerToolRuntimeRegistrationTest holds that true.
+        "sticker_search",
     )
 
     val MUTATING: Set<String> = setOf(
@@ -100,6 +104,10 @@ object InternalToolSecurityCatalog {
         "space_create_comment",
         "space_delete_post",
         "space_mark_notifications_read",
+        // Sending a sticker writes a conversation-scoped copy of a library file, so it is a
+        // persistent write and therefore serial — the same classification as the space writes
+        // above, reached for a different reason.
+        "sticker_send",
     ) + OwnerToolFamily.entries.mapTo(linkedSetOf()) { it.toolName }
 
     val ARGUMENT_DEPENDENT: Set<String> = setOf("memory_tool")
