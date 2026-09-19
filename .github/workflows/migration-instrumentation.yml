@@ -159,4 +159,9 @@ jobs:
           path: |
             app/build/outputs/androidTest-results/**
             app/build/reports/androidTests/**
+            # KSP writes the exported Room schema here during the build. It is the only place the
+            # generated identity hash exists, and androidTest assets are merged before KSP runs, so
+            # a newly added schema version is invisible to the instrumentation tests until its file
+            # has been committed. Uploading it is what makes that value recoverable.
+            app/schemas/**
           if-no-files-found: warn
