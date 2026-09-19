@@ -51,4 +51,6 @@ object SpacePostDeletionPolicy {
  * user and gets no moderator power.
  */
 val SpaceActor.isLocalUser: Boolean
-    get() = kind == SpaceActorKind.USER && id == LOCAL_USER_ID
+    // Qualified, not bare: this extension lives outside the class body, so the companion's
+    // members are not in scope here.
+    get() = kind == SpaceActorKind.USER && id == SpaceActor.LOCAL_USER_ID
