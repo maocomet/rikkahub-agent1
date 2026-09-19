@@ -153,6 +153,15 @@ class SettingsStore(
         val SUGGESTION_PROMPT = stringPreferencesKey("suggestion_prompt")
         val OCR_MODEL = stringPreferencesKey("ocr_model")
         val OCR_PROMPT = stringPreferencesKey("ocr_prompt")
+
+        /**
+         * The shared sticker library's recognition model. Deliberately separate from [OCR_MODEL]:
+         * reading text out of a screenshot and describing what a sticker expresses are different
+         * jobs that want different models, and a shared key would make tuning one silently change
+         * the other. Absent means "no recognition", which is a supported state — the library
+         * saves stickers either way.
+         */
+        val STICKER_VISION_MODEL = stringPreferencesKey("sticker_vision_model")
         val COMPRESS_MODEL = stringPreferencesKey("compress_model")
         val COMPRESS_PROMPT = stringPreferencesKey("compress_prompt")
         val FINAL_ANSWER_REMINDER_PROMPT = stringPreferencesKey("final_answer_reminder_prompt")
@@ -264,6 +273,7 @@ class SettingsStore(
                 suggestionPrompt = preferences[SUGGESTION_PROMPT] ?: DEFAULT_SUGGESTION_PROMPT,
                 ocrModelId = preferences[OCR_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
                 ocrPrompt = preferences[OCR_PROMPT] ?: DEFAULT_OCR_PROMPT,
+                stickerVisionModelId = preferences[STICKER_VISION_MODEL]?.let { Uuid.parse(it) },
                 compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
                 compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
                 finalAnswerReminderPrompt = resolveFinalAnswerReminderPrompt(
@@ -573,6 +583,9 @@ class SettingsStore(
             preferences[SUGGESTION_PROMPT] = settings.suggestionPrompt
             preferences[OCR_MODEL] = settings.ocrModelId.toString()
             preferences[OCR_PROMPT] = settings.ocrPrompt
+            settings.stickerVisionModelId?.let {
+                preferences[STICKER_VISION_MODEL] = it.toString()
+            } ?: preferences.remove(STICKER_VISION_MODEL)
             preferences[COMPRESS_MODEL] = settings.compressModelId.toString()
             preferences[COMPRESS_PROMPT] = settings.compressPrompt
             preferences[FINAL_ANSWER_REMINDER_PROMPT] = settings.finalAnswerReminderPrompt
@@ -845,6 +858,16 @@ data class Settings(
     val suggestionPrompt: String = DEFAULT_SUGGESTION_PROMPT,
     val ocrModelId: Uuid = Uuid.random(),
     val ocrPrompt: String = DEFAULT_OCR_PROMPT,
+
+    /**
+     * The model that describes imported stickers, or null when the feature is off.
+     *
+     * Nullable where [ocrModelId] is not, because "not configured" is a real, supported state here
+     * rather than an unset id that looks configured — the sticker library works with no vision
+     * model at all, and the person can fill descriptions in by hand. `null` lets the UI say so
+     * instead of offering a model the person never chose.
+     */
+    val stickerVisionModelId: Uuid? = null,
     val compressModelId: Uuid = Uuid.random(),
     val compressPrompt: String = DEFAULT_COMPRESS_PROMPT,
     val finalAnswerReminderPrompt: String = DEFAULT_FINAL_ANSWER_REMINDER_PROMPT,

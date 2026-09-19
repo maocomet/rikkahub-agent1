@@ -1788,6 +1788,8 @@
   <string name="setting_model_page_fast_model_desc">用于快速或后台任务的模型，当未设置时也用作标题和建议模型的后备</string>
   <string name="setting_model_page_ocr_model">OCR 模型</string>
   <string name="setting_model_page_ocr_model_desc">用于图像光学字符识别的模型</string>
+  <string name="setting_model_page_sticker_vision_model">表情包识图模型</string>
+  <string name="setting_model_page_sticker_vision_model_desc">自动识别导入的表情包，生成描述和标签。与 OCR 模型分开设置，因为两者需要的模型不同。不设置也可以导入表情包，只是需要手动填写。</string>
   <string name="setting_model_page_ocr_prompt_vars">变量：图像数据：{images}</string>
   <string name="setting_model_page_prompt">提示词</string>
   <string name="setting_model_page_prompt_compress">上下文压缩</string>

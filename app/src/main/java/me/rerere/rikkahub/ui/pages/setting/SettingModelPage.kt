@@ -31,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderSetting
@@ -159,6 +160,21 @@ private fun ModelSettingsPage(settings: Settings, vm: SettingVM, contentPadding:
             )
         }
         item {
+            // Filtered to IMAGE-capable models, and nullable, because "not configured" is a
+            // supported state: the sticker library stores and edits stickers with no vision model
+            // at all. Offering a text-only model here would let the person pick one and only find
+            // out when an import silently came back with no description.
+            ModelSettingItem(
+                title = stringResource(R.string.setting_model_page_sticker_vision_model),
+                description = stringResource(R.string.setting_model_page_sticker_vision_model_desc),
+                modelId = settings.stickerVisionModelId,
+                providers = settings.providers,
+                inputModality = Modality.IMAGE,
+                onSelect = { vm.updateSettings(settings.copy(stickerVisionModelId = it.id)) },
+                onClear = { vm.updateSettings(settings.copy(stickerVisionModelId = null)) },
+            )
+        }
+        item {
             ModelSettingItem(
                 title = stringResource(R.string.setting_model_page_compress_model),
                 description = stringResource(R.string.setting_model_page_compress_model_desc),
@@ -250,11 +266,17 @@ private fun ModelSettingItem(
     providers: List<ProviderSetting>,
     onSelect: (Model) -> Unit,
     onClear: (() -> Unit)? = null,
+    /**
+     * Restricts the picker to models declaring this input modality. Null keeps the type-only
+     * filtering every existing row relies on.
+     */
+    inputModality: Modality? = null,
 ) {
     val state = rememberModelListState(
         modelId = modelId,
         providers = providers,
         type = ModelType.CHAT,
+        inputModality = inputModality,
     )
 
     Column {

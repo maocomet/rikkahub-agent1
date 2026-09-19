@@ -93,10 +93,26 @@ import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import kotlin.uuid.Uuid
 
+/**
+ * Whether a model may be offered by a picker.
+ *
+ * [ModelType] and [Modality] answer different questions and both matter. `type` is what the model
+ * is *for* (`CHAT` / `IMAGE` / `EMBEDDING`); `inputModalities` is what it can *accept*. A picker
+ * that filters on type alone will happily offer a text-only chat model to a feature that is about
+ * to hand it a photograph — which fails at call time, after the person has already chosen, and in
+ * a feature they were not editing.
+ *
+ * When [inputModality] is null this is exactly the old type-only behaviour, which is why every
+ * pre-existing call site is unaffected.
+ */
+private fun Model.matchesPickerFilter(type: ModelType, inputModality: Modality?): Boolean =
+    this.type == type && (inputModality == null || inputModality in inputModalities)
+
 class ModelListState internal constructor(
     modelId: Uuid?,
     providers: List<ProviderSetting>,
     type: ModelType,
+    inputModality: Modality? = null,
 ) {
     var modelId by mutableStateOf(modelId)
         private set
@@ -107,6 +123,9 @@ class ModelListState internal constructor(
     var type by mutableStateOf(type)
         private set
 
+    var inputModality by mutableStateOf(inputModality)
+        private set
+
     var visible by mutableStateOf(false)
         private set
 
@@ -115,7 +134,9 @@ class ModelListState internal constructor(
 
     val filteredProviders: List<ProviderSetting>
         get() = providers.fastFilter { provider ->
-            provider.enabled && provider.models.fastAny { model -> model.type == type }
+            provider.enabled && provider.models.fastAny { model ->
+                model.matchesPickerFilter(type, inputModality)
+            }
         }
 
     fun open() {
@@ -130,10 +151,12 @@ class ModelListState internal constructor(
         modelId: Uuid?,
         providers: List<ProviderSetting>,
         type: ModelType,
+        inputModality: Modality?,
     ) {
         this.modelId = modelId
         this.providers = providers
         this.type = type
+        this.inputModality = inputModality
     }
 }
 
@@ -142,18 +165,25 @@ fun rememberModelListState(
     modelId: Uuid?,
     providers: List<ProviderSetting>,
     type: ModelType,
+    /**
+     * Restricts the picker to models that declare this input modality. Null keeps the pre-existing
+     * type-only filtering, so existing callers behave exactly as before.
+     */
+    inputModality: Modality? = null,
 ): ModelListState {
     return remember {
         ModelListState(
             modelId = modelId,
             providers = providers,
             type = type,
+            inputModality = inputModality,
         )
     }.also {
         it.update(
             modelId = modelId,
             providers = providers,
             type = type,
+            inputModality = inputModality,
         )
     }
 }
@@ -166,12 +196,14 @@ fun ModelSelector(
     modifier: Modifier = Modifier,
     onlyIcon: Boolean = false,
     allowClear: Boolean = false,
+    inputModality: Modality? = null,
     onSelect: (Model) -> Unit
 ) {
     val state = rememberModelListState(
         modelId = modelId,
         providers = providers,
         type = type,
+        inputModality = inputModality,
     )
     val model = state.currentModel
 
@@ -278,6 +310,7 @@ fun ModelListSheet(
                 currentModel = state.modelId,
                 providers = state.filteredProviders,
                 modelType = state.type,
+                inputModality = state.inputModality,
                 onSelect = {
                     onSelect(it)
                     dismiss()
@@ -295,6 +328,7 @@ private fun ColumnScope.ModelList(
     currentModel: Uuid? = null,
     providers: List<ProviderSetting>,
     modelType: ModelType,
+    inputModality: Modality? = null,
     onSelect: (Model) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -305,23 +339,26 @@ private fun ColumnScope.ModelList(
 
     val favoriteModels = settings.value.favoriteModels.mapNotNull { modelId ->
         val model = settings.value.providers.findModelById(modelId) ?: return@mapNotNull null
-        if (model.type != modelType) return@mapNotNull null
+        if (!model.matchesPickerFilter(modelType, inputModality)) return@mapNotNull null
         val provider = model.findProvider(providers = settings.value.providers, checkOverwrite = false) ?: return@mapNotNull null
         model to provider
     }
 
     var searchKeywords by remember { mutableStateOf("") }
 
-    val typeFilteredModelsByProvider = remember(providers, modelType) {
+    val typeFilteredModelsByProvider = remember(providers, modelType, inputModality) {
         providers.associate { provider ->
-            provider.id to provider.models.fastFilter { it.type == modelType }
+            provider.id to provider.models.fastFilter {
+                it.matchesPickerFilter(modelType, inputModality)
+            }
         }
     }
 
-    val searchFilteredModelsByProvider = remember(providers, modelType, searchKeywords) {
+    val searchFilteredModelsByProvider = remember(providers, modelType, inputModality, searchKeywords) {
         providers.associate { provider ->
             provider.id to provider.models.fastFilter {
-                it.type == modelType && it.displayName.contains(searchKeywords, true)
+                it.matchesPickerFilter(modelType, inputModality) &&
+                    it.displayName.contains(searchKeywords, true)
             }
         }
     }

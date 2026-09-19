@@ -712,6 +712,16 @@ val dataSourceModule = module {
             inTransaction = { block -> database.withTransaction { block() } },
         )
     }
+    single<me.rerere.rikkahub.sticker.StickerDimensionReader> {
+        me.rerere.rikkahub.sticker.BitmapStickerDimensionReader()
+    }
+    single {
+        me.rerere.rikkahub.sticker.StickerImportCoordinator(
+            repository = get(),
+            visionClient = get(),
+            dimensionReader = get(),
+        )
+    }
     single {
         me.rerere.rikkahub.diagnostics.ToolCatalogDiagnostics(
             experiences = get(),

@@ -908,6 +908,7 @@ class OwnerSettingsOperationHandler(
 private fun Settings.referencesAnyModel(ids: Set<Uuid>): Boolean =
     chatModelId in ids || fastModelId in ids || ids.containsNullable(memoryExtractionModelId) || ids.containsNullable(titleModelId) ||
         imageGenerationModelId in ids || ids.containsNullable(suggestionModelId) || ocrModelId in ids || compressModelId in ids ||
+        ids.containsNullable(stickerVisionModelId) ||
         translateModeId in ids || assistants.any { assistant ->
             ids.containsNullable(assistant.chatModelId) || ids.containsNullable(assistant.subAgentModelId)
         }
@@ -917,6 +918,7 @@ internal fun Settings.ownerReferencedModelTypes(ids: Set<Uuid>): Set<ModelType> 
     if (
         chatModelId in ids || fastModelId in ids || ids.containsNullable(memoryExtractionModelId) ||
         ids.containsNullable(titleModelId) || ids.containsNullable(suggestionModelId) || ocrModelId in ids ||
+        ids.containsNullable(stickerVisionModelId) ||
         compressModelId in ids || translateModeId in ids || assistants.any { assistant ->
             ids.containsNullable(assistant.chatModelId) || ids.containsNullable(assistant.subAgentModelId)
         }
@@ -933,6 +935,12 @@ internal fun Settings.ownerReplaceModelReferences(ids: Set<Uuid>, replacement: U
     imageGenerationModelId = imageGenerationModelId.takeUnless(ids::contains) ?: replacement,
     suggestionModelId = suggestionModelId.replaceIfIn(ids, replacement),
     ocrModelId = ocrModelId.takeUnless(ids::contains) ?: replacement,
+    // Cleared rather than repointed, unlike every other id above. The others must name *a* model
+    // to stay usable; this one has a valid "off" state, and swapping in an arbitrary replacement
+    // would aim sticker recognition at a model that may not accept images at all — turning a
+    // cleanly disabled feature into one that fails on every import. Null here means the library
+    // says 未识别 and the person picks again.
+    stickerVisionModelId = stickerVisionModelId?.takeUnless { it in ids },
     compressModelId = compressModelId.takeUnless(ids::contains) ?: replacement,
     translateModeId = translateModeId.takeUnless(ids::contains) ?: replacement,
     favoriteModels = favoriteModels.filterNot(ids::contains),

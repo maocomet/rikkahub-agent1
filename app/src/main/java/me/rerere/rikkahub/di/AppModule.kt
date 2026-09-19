@@ -818,6 +818,11 @@ val appModule = module {
     single<me.rerere.rikkahub.context.VisionDescriptionClient> {
         me.rerere.rikkahub.context.ProviderVisionDescriptionClient(get(), get())
     }
+    // Sticker recognition. A separate client from the one above because it reads a different
+    // setting and answers a different question — see StickerVisionClient.
+    single<me.rerere.rikkahub.sticker.StickerVisionClient> {
+        me.rerere.rikkahub.sticker.ProviderStickerVisionClient(get(), get())
+    }
     single { me.rerere.rikkahub.context.ContextDiagnosticsStore() }
     single<me.rerere.rikkahub.context.ContextBroker> {
         val accessibilityReader = me.rerere.rikkahub.context.AndroidAccessibilityContextReader(get())
