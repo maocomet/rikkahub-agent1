@@ -71,6 +71,11 @@ jobs:
           # Built as one variable rather than a backslash-continued argument: a line continuation
           # after `class=` would splice the next line's indentation into the value.
           CLASSES="me.rerere.rikkahub.data.db.migrations.Migration_49_50_Test"
+          # v51 is additive, so the interesting half is that it validates against the live
+          # @Entity definitions AND that the two UNIQUE indices really are unique — a name-only
+          # check would pass a migration that created them non-unique, which is the difference
+          # between "one copy per picture" being an invariant and being a hope.
+          CLASSES="$CLASSES,me.rerere.rikkahub.data.db.migrations.Migration_50_51_Test"
           CLASSES="$CLASSES,me.rerere.rikkahub.data.db.migrations.AppDatabaseEveryAdjacentMigrationTest"
           CLASSES="$CLASSES,me.rerere.rikkahub.data.db.AppDatabaseV50BackupRestoreRoundTripTest"
           CLASSES="$CLASSES,me.rerere.rikkahub.data.db.ImportedDatabaseReconcilerGrantRestoreTest"

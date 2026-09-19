@@ -72,7 +72,6 @@ val viewModelModule = module {
         StickerLibraryVM(
             repository = get(),
             importCoordinator = get(),
-            context = get(),
         )
     }
     viewModelOf(::AssistantVM)

@@ -83,7 +83,9 @@ fun StickerLibraryPage(vm: StickerLibraryVM = koinViewModel()) {
     val pickImageLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        uri?.let(vm::startImport)
+        if (uri != null) {
+            vm.startImport { context.contentResolver.openInputStream(uri) }
+        }
     }
 
     LaunchedEffect(Unit) {

@@ -2,9 +2,10 @@ package me.rerere.rikkahub.sticker
 
 import android.graphics.BitmapFactory
 import java.io.File
-import java.io.InputStream
 import java.io.IOException
+import java.io.InputStream
 import kotlin.uuid.Uuid
+import kotlinx.coroutines.CancellationException
 import me.rerere.rikkahub.data.files.ImageFormat
 import me.rerere.rikkahub.data.files.ImageFormatDetector
 
@@ -205,9 +206,27 @@ class StickerImportCoordinator(
         )
     }
 
-    /** Recognises a staged import. Never throws; a failure comes back as a [StickerRecognition]. */
+    /**
+     * Recognises a staged import. Never throws; a failure comes back as a [StickerRecognition].
+     *
+     * [StickerVisionClient] documents that implementations must not throw, and
+     * [ProviderStickerVisionClient] honours that. This still guards the call, because the contract
+     * is worth *enforcing* rather than trusting: the cost of a client that breaks it is the
+     * person's import, and the whole point of this phase is that recognition cannot take an import
+     * down. A throwing client degrades to the same outcome as a failed request.
+     */
     suspend fun recognize(start: StickerImportStart.Staged): StickerRecognition =
-        StickerRecognition.from(visionClient.describe(start.staged.file))
+        StickerRecognition.from(describeSafely(start.staged.file))
+
+    private suspend fun describeSafely(file: File): StickerVisionOutcome = try {
+        visionClient.describe(file)
+    } catch (cancellation: CancellationException) {
+        // Cancellation is not a recognition failure. Swallowing it would leave a cancelled scope
+        // running, which is a worse bug than the one this guard exists to prevent.
+        throw cancellation
+    } catch (_: Throwable) {
+        StickerVisionOutcome.Failure(StickerVisionFailure.REQUEST_FAILED)
+    }
 
     /**
      * Saves the sticker: places the image under its final name, then writes the row.

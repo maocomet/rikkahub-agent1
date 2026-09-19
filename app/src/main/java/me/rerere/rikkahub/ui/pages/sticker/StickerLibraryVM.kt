@@ -1,9 +1,8 @@
 package me.rerere.rikkahub.ui.pages.sticker
 
-import android.content.Context
-import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import java.io.InputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -101,7 +100,6 @@ enum class StickerMessage {
 class StickerLibraryVM(
     private val repository: StickerRepository,
     private val importCoordinator: StickerImportCoordinator,
-    private val context: Context,
     /**
      * Injectable so the read model can be exercised on the JVM. Defaults to the ViewModel's own
      * scope; tests pass an unconfined scope, which also keeps `viewModelScope` (and therefore
@@ -141,15 +139,19 @@ class StickerLibraryVM(
     /**
      * Starts an import from a picked image.
      *
-     * The stream is opened here and closed by the file store. Nothing is written to Room on this
-     * path — at the end of it the person is looking at an editor, and the only durable artefact so
-     * far is a file in staging that cancelling will delete.
+     * [openSource] rather than a `Uri` so this class holds no Android type and the whole import
+     * state machine — preparing, editing, duplicate, rejected — is drivable on the JVM. The page
+     * supplies the resolver call; returning null from it is how "the picker handed us something
+     * unreadable" reaches [StickerImportRejection.UNREADABLE].
+     *
+     * Nothing is written to Room on this path: at the end of it the person is looking at an
+     * editor, and the only durable artefact so far is a file in staging that cancelling deletes.
      */
-    fun startImport(uri: Uri) {
+    fun startImport(openSource: () -> InputStream?) {
         if (_import.value is StickerImportUiState.Preparing) return
         _import.value = StickerImportUiState.Preparing
         workScope.launch {
-            val stream = runCatching { context.contentResolver.openInputStream(uri) }.getOrNull()
+            val stream = runCatching { openSource() }.getOrNull()
             if (stream == null) {
                 _import.value = StickerImportUiState.Rejected(StickerImportRejection.UNREADABLE)
                 return@launch
