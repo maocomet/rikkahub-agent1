@@ -133,7 +133,7 @@ class SpaceAssistantFootprintTest {
         // The person's like on A's post was on a post that no longer exists, so it went with it —
         // and that is the ONLY thing of the person's this sweep may take.
         assertEquals(0, repo.likeCount(aPost))
-        assertEquals(1, repo.mine().size)
+        assertEquals(1, mine().size)
         assertTrue(notificationsOf(assistantB).none { it.actorId == assistantA.id })
     }
 
