@@ -118,6 +118,19 @@ object StickerTags {
     private val serializer = ListSerializer(String.serializer())
 
     /**
+     * What separates tags in a single-string form.
+     *
+     * One definition, used by both the editor field and [StickerVisionParser], so a model that
+     * answers `"委屈,生气"` and a person who types `委屈、生气` are understood the same way. Chinese
+     * and ASCII punctuation are both accepted because the prompt is Chinese and either can come
+     * back.
+     */
+    val DELIMITERS: CharArray = charArrayOf(',', '，', '、', ';', '；')
+
+    /** Splits a delimited tag string and normalises the parts. */
+    fun splitDelimited(text: String): List<String> = normalize(text.split(*DELIMITERS))
+
+    /**
      * Trims, drops blanks, de-duplicates and caps.
      *
      * Order is preserved rather than sorted: the model's own ordering usually puts the most

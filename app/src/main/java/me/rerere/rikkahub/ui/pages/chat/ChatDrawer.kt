@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -140,9 +142,6 @@ fun ChatDrawerContent(
     var showMoveToAssistantSheet by remember { mutableStateOf(false) }
     var conversationToMove by remember { mutableStateOf<Conversation?>(null) }
     val bottomSheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden)
-
-    // Menu popup 状态
-    var showMenuPopup by remember { mutableStateOf(false) }
 
     ModalDrawerSheet(
         modifier = Modifier.width(300.dp)
@@ -308,52 +307,48 @@ fun ChatDrawerContent(
                     },
                 )
 
-                Box {
-                    DrawerAction(
-                        icon = {
-                            Icon(HugeIcons.Sparkles, "Menu")
-                        },
-                        label = {
-                            Text(stringResource(R.string.menu))
-                        },
-                        onClick = {
-                            showMenuPopup = true
-                        },
+                DrawerActionMenu(
+                    icon = { Icon(HugeIcons.Sparkles, "Menu") },
+                    label = { Text(stringResource(R.string.menu)) },
+                ) { dismiss ->
+                    DrawerMenuItem(
+                        text = stringResource(R.string.chat_page_menu_ai_translator),
+                        icon = HugeIcons.LanguageCircle,
+                        onClick = { navController.navigate(Screen.Translator) },
+                        dismiss = dismiss,
                     )
-                    DropdownMenu(
-                        expanded = showMenuPopup,
-                        onDismissRequest = { showMenuPopup = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.chat_page_menu_ai_translator)) },
-                            leadingIcon = { Icon(HugeIcons.LanguageCircle, null) },
-                            onClick = {
-                                showMenuPopup = false
-                                navController.navigate(Screen.Translator)
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.chat_page_menu_image_generation)) },
-                            leadingIcon = { Icon(HugeIcons.Image02, null) },
-                            onClick = {
-                                showMenuPopup = false
-                                navController.navigate(Screen.ImageGen)
-                            }
-                        )
-                    }
+                    DrawerMenuItem(
+                        text = stringResource(R.string.chat_page_menu_image_generation),
+                        icon = HugeIcons.Image02,
+                        onClick = { navController.navigate(Screen.ImageGen) },
+                        dismiss = dismiss,
+                    )
                 }
 
-                DrawerAction(
+                // The favourite button carries two destinations now, so it opens the same menu
+                // component as the button beside it rather than navigating outright. 收藏 keeps
+                // its original behaviour as the first item; 表情包 opens the shared sticker
+                // library. Reusing the component — rather than copying its markup — is what keeps
+                // the two buttons the same control with different contents.
+                DrawerActionMenu(
                     icon = {
                         Icon(HugeIcons.InLove, stringResource(R.string.favorite_page_title))
                     },
-                    label = {
-                        Text(stringResource(R.string.favorite_page_title))
-                    },
-                    onClick = {
-                        navController.navigate(Screen.Favorite)
-                    },
-                )
+                    label = { Text(stringResource(R.string.favorite_page_title)) },
+                ) { dismiss ->
+                    DrawerMenuItem(
+                        text = stringResource(R.string.favorite_page_title),
+                        icon = HugeIcons.InLove,
+                        onClick = { navController.navigate(Screen.Favorite) },
+                        dismiss = dismiss,
+                    )
+                    DrawerMenuItem(
+                        text = stringResource(R.string.chat_drawer_sticker_library),
+                        icon = HugeIcons.Image03,
+                        onClick = { navController.navigate(Screen.StickerLibrary) },
+                        dismiss = dismiss,
+                    )
+                }
 
                 DrawerAction(
                     icon = {
@@ -561,6 +556,57 @@ private fun DrawerActions(navController: Navigator) {
             }
         }
     }
+}
+
+/**
+ * A [DrawerAction] that opens a [DropdownMenu] instead of acting immediately.
+ *
+ * The anchor, container, dismissal and animation are exactly what this file already used for the
+ * AI menu; hoisting them here means the buttons that need a menu share one definition rather than
+ * accumulating copies that drift apart. [menuContent] receives a `dismiss` callback so an item can
+ * close the menu before navigating.
+ */
+@Composable
+private fun DrawerActionMenu(
+    icon: @Composable () -> Unit,
+    label: @Composable () -> Unit,
+    menuContent: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val dismiss = { expanded = false }
+
+    Box {
+        DrawerAction(
+            icon = icon,
+            label = label,
+            onClick = { expanded = true },
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = dismiss,
+        ) {
+            menuContent(dismiss)
+        }
+    }
+}
+
+@Composable
+private fun DrawerMenuItem(
+    text: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    dismiss: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text(text) },
+        leadingIcon = { Icon(icon, null) },
+        onClick = {
+            // Closed first, matching the order the menu always used: navigating with the popup
+            // still expanded leaves it hanging over the destination for a frame.
+            dismiss()
+            onClick()
+        },
+    )
 }
 
 @Composable

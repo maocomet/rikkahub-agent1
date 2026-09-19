@@ -79,7 +79,7 @@ object StickerVisionParser {
             is JsonArray -> value.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
             is JsonPrimitive -> value.takeIf { it.isString }
                 ?.content
-                ?.split(',', '，', '、', ';', '；')
+                ?.let(StickerTags::splitDelimited)
                 .orEmpty()
             else -> emptyList()
         }

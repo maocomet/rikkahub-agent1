@@ -33,6 +33,7 @@ import me.rerere.rikkahub.ui.pages.learning.LearningCenterVM
 import me.rerere.rikkahub.ui.pages.learning.curator.CuratorReviewVM
 import me.rerere.rikkahub.ui.pages.learning.workflow.WorkflowReviewVM
 import me.rerere.rikkahub.ui.pages.space.CatGardenVM
+import me.rerere.rikkahub.ui.pages.sticker.StickerLibraryVM
 import me.rerere.rikkahub.workflow.ui.WorkflowsViewModel
 import org.koin.core.module.dsl.viewModel
 import org.koin.core.module.dsl.viewModelOf
@@ -65,6 +66,13 @@ val viewModelModule = module {
         CatGardenVM(
             spaceRepository = get(),
             identitySource = get(),
+        )
+    }
+    viewModel<StickerLibraryVM> {
+        StickerLibraryVM(
+            repository = get(),
+            importCoordinator = get(),
+            context = get(),
         )
     }
     viewModelOf(::AssistantVM)
