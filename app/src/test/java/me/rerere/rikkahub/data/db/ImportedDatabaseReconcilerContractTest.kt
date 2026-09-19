@@ -12,12 +12,19 @@ class ImportedDatabaseReconcilerContractTest {
     val temporaryFolder = TemporaryFolder()
 
     @Test
-    fun `reconciler pins the exported v50 identity and exact v49 predecessor`() {
-        assertEquals(50, ImportedDatabaseReconciler.EXPECTED_VERSION)
+    fun `reconciler pins the exported v51 identity and exact v50 predecessor`() {
+        assertEquals(51, ImportedDatabaseReconciler.EXPECTED_VERSION)
+        // v50 is now a frozen predecessor, and its hash is a real known value, so it is pinned
+        // literally: a careless edit to the staged chain would otherwise strand every v50 backup
+        // with no symptom until someone tried to restore one.
         assertEquals(
             "d458d247adbdc36f591599a301ac092f",
-            ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
+            ImportedDatabaseReconciler.FINAL_V50_IDENTITY_HASH,
         )
+        // EXPECTED_IDENTITY_HASH is intentionally NOT pinned to a literal yet. The v51 value is an
+        // output of the compiler and does not exist until a build has run, so a hand-written copy
+        // here would only be a second guess. AppDatabaseSchemaIdentityContractTest is the stronger
+        // check anyway: it compares the constant against the export Room actually generated.
         assertEquals(
             "967f2a908998f5bac733c1ae71bee5bb",
             ImportedDatabaseReconciler.FINAL_V49_IDENTITY_HASH,
@@ -75,7 +82,7 @@ class ImportedDatabaseReconcilerContractTest {
 
     @Test
     fun `unknown current schema is refused and never compatibility stamped`() {
-        listOf(46, 47, 48, 49).forEach { version ->
+        listOf(46, 47, 48, 49, 50).forEach { version ->
             listOf(null, "", "unknown", ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH)
                 .forEach { identity ->
                     val isExactCurrent = version == ImportedDatabaseReconciler.EXPECTED_VERSION &&
@@ -179,7 +186,7 @@ class ImportedDatabaseReconcilerContractTest {
     @Test
     fun `cold staged restore accepts only exact frozen v46 and v47 identities`() {
         assertEquals(
-            listOf(46 to 47, 47 to 48, 48 to 49, 49 to 50),
+            listOf(46 to 47, 47 to 48, 48 to 49, 49 to 50, 50 to 51),
             ImportedDatabaseReconciler.STAGED_COLD_RESTORE_MIGRATIONS.map {
                 it.startVersion to it.endVersion
             },

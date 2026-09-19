@@ -526,6 +526,16 @@ object FileFolders {
     const val TOOL_OUTPUTS = "tool_outputs"
     const val PET_PACKAGES = "pet_packages"
     const val BACKUPS = "backups"
+
+    /**
+     * The shared sticker library's images — see [me.rerere.rikkahub.sticker.StickerFileStore].
+     *
+     * Note for anyone extending backup: `BackupArchiveService.collectManagedFileSources` enumerates
+     * folder by folder, so this one is NOT part of a backup archive. That is a known, deliberate
+     * first-phase limit, not an oversight — the metadata is in Room and the images are here, so a
+     * restore today brings back rows whose files are missing.
+     */
+    const val STICKERS = "stickers"
 }
 
 suspend fun FilesManager.saveUploadFromUri(

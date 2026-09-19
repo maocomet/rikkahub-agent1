@@ -46,6 +46,7 @@ class AppDatabaseSchemaIdentityContractTest {
         // The reconciler accepts these older identities verbatim, so each must still correspond
         // to a checked-in export. A typo here would silently strand every backup at that version.
         val pinned = mapOf(
+            50 to ImportedDatabaseReconciler.FINAL_V50_IDENTITY_HASH,
             49 to ImportedDatabaseReconciler.FINAL_V49_IDENTITY_HASH,
             48 to ImportedDatabaseReconciler.FINAL_V48_IDENTITY_HASH,
             47 to ImportedDatabaseReconciler.FINAL_V47_IDENTITY_HASH,
@@ -84,6 +85,19 @@ class AppDatabaseSchemaIdentityContractTest {
         SPACE_TABLES.forEach { table ->
             assertTrue("AppDatabase export is missing $table", table in exported)
         }
+    }
+
+    @Test
+    fun `the exported schema declares the sticker library table`() {
+        val exported = readDatabase(ImportedDatabaseReconciler.EXPECTED_VERSION)
+            .getValue("entities")
+            .jsonArray
+            .map { it.jsonObject.getValue("tableName").jsonPrimitive.content }
+            .toSet()
+        assertTrue(
+            "AppDatabase export is missing stickers",
+            "stickers" in exported,
+        )
     }
 
     private fun readDatabase(version: Int) =

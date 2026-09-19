@@ -109,6 +109,8 @@ import me.rerere.rikkahub.space.SpaceDao
 import me.rerere.rikkahub.space.SpaceLikeEntity
 import me.rerere.rikkahub.space.SpaceNotificationEntity
 import me.rerere.rikkahub.space.SpacePostEntity
+import me.rerere.rikkahub.sticker.StickerDao
+import me.rerere.rikkahub.sticker.StickerEntity
 
 @Database(
     entities = [
@@ -172,10 +174,12 @@ import me.rerere.rikkahub.space.SpacePostEntity
         SpaceLikeEntity::class,
         SpaceCommentEntity::class,
         SpaceNotificationEntity::class,
+        StickerEntity::class,
     ],
-    // v50 adds the Cat Garden Space tables. Purely additive: every prior table, column and index
-    // is unchanged, so an upgrade keeps all existing chats, settings and messages.
-    version = 50,
+    // v50 added the Cat Garden Space tables; v51 adds the shared sticker library table. Both are
+    // purely additive: every prior table, column and index is unchanged, so an upgrade keeps all
+    // existing chats, settings and messages.
+    version = 51,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -273,6 +277,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun rewardFeedbackAuthorityDao(): RewardFeedbackAuthorityDao
 
     abstract fun spaceDao(): SpaceDao
+
+    abstract fun stickerDao(): StickerDao
 }
 
 object TokenUsageConverter {
