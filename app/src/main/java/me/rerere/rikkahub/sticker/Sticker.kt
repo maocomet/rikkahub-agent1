@@ -125,7 +125,7 @@ object StickerTags {
      * and ASCII punctuation are both accepted because the prompt is Chinese and either can come
      * back.
      */
-    val DELIMITERS: CharArray = charArrayOf(',', '，', '、', ';', '；')
+    private val DELIMITERS: CharArray = charArrayOf(',', '，', '、', ';', '；')
 
     /** Splits a delimited tag string and normalises the parts. */
     fun splitDelimited(text: String): List<String> = normalize(text.split(*DELIMITERS))

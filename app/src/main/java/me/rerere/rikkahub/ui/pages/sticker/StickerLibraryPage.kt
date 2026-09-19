@@ -393,7 +393,10 @@ private fun StickerImportSheet(
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 OutlinedButton(onClick = onRecognizeAgain, enabled = !draft.recognizing) {
                     Text(stringResource(R.string.sticker_action_recognize_again))
                 }

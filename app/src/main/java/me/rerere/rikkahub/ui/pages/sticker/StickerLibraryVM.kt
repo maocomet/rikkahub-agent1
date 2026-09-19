@@ -184,6 +184,10 @@ class StickerLibraryVM(
                     // while it runs. The person can start typing a description without waiting for
                     // a provider round trip, and never has to watch a blank page.
                     val result = importCoordinator.recognize(start)
+                    // A provider call takes seconds, and the person is free to cancel or pick
+                    // another image while it runs. Both replace `staged`, and applying this result
+                    // anyway would type one picture's description into another's editor.
+                    if (staged?.stickerId != start.stickerId) return@launch
                     recognition = result
                     updateDraft { draft ->
                         draft.copy(
@@ -218,6 +222,7 @@ class StickerLibraryVM(
         updateDraft { it.copy(recognizing = true) }
         workScope.launch {
             val result = importCoordinator.recognize(start)
+            if (staged?.stickerId != start.stickerId) return@launch
             recognition = result
             updateDraft { draft ->
                 draft.copy(
@@ -247,9 +252,14 @@ class StickerLibraryVM(
                 enabled = current.draft.enabled,
                 recognition = recognition,
             )
-            staged = null
-            recognition = EMPTY_RECOGNITION
-            _import.value = StickerImportUiState.Idle
+            // Only this save's own editor is closed. A cancel or a fresh pick during the write
+            // has already replaced it, and clearing the state unconditionally would close an
+            // editor the person is currently looking at.
+            if (staged?.stickerId == start.stickerId) {
+                staged = null
+                recognition = EMPTY_RECOGNITION
+                _import.value = StickerImportUiState.Idle
+            }
             if (outcome.isSuccess) {
                 messageChannel.trySend(StickerMessage.SAVED)
             } else {

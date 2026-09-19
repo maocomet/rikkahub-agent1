@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.sticker
 
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 
 /**
  * Byte fixtures that satisfy [me.rerere.rikkahub.data.files.ImageFormatDetector].
@@ -66,6 +67,12 @@ class FakeVisionClient(
      */
     var throwOnDescribe: Throwable? = null
 
+    /**
+     * When set, the call parks here until the test completes it — the seam for exercising what
+     * happens while a provider round trip is still in flight.
+     */
+    var gate: CompletableDeferred<Unit>? = null
+
     /** Set the outcome the next call should return. */
     fun respondWith(next: StickerVisionOutcome) {
         outcome = next
@@ -77,6 +84,7 @@ class FakeVisionClient(
             throwOnDescribe = null
             throw it
         }
+        gate?.await()
         return outcome
     }
 

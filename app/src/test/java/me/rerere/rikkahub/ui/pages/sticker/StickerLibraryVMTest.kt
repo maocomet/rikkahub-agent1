@@ -3,6 +3,7 @@ package me.rerere.rikkahub.ui.pages.sticker
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -87,6 +88,51 @@ class StickerLibraryVMTest {
         assertFalse("recognition must not still be reported as running", draft.recognizing)
         assertTrue(draft.enabled)
     }
+
+    @Test
+    fun `a recognition that lands after a cancel does not reopen the editor`() = runBlocking {
+        val vm = viewModel()
+        val gate = CompletableDeferred<Unit>()
+        vision.gate = gate
+        // Parks inside the provider call, which is exactly where a real one spends its seconds.
+        vm.startImport { ByteArrayInputStream(StickerFixtures.png(tag = 1)) }
+        assertTrue(vm.import.value is StickerImportUiState.Editing)
+
+        vm.cancelImport()
+        gate.complete(Unit)
+
+        assertEquals(
+            "a result for an abandoned import must not resurrect its editor",
+            StickerImportUiState.Idle,
+            vm.import.value,
+        )
+        assertEquals(emptyList<File>(), stagedFiles())
+    }
+
+    @Test
+    fun `a recognition that lands after a newer pick does not overwrite the newer draft`() =
+        runBlocking {
+            val vm = viewModel()
+            val gate = CompletableDeferred<Unit>()
+            vision.gate = gate
+            vision.respondWith(FakeVisionClient.success(description = "第一张", tags = listOf("一")))
+            vm.startImport { ByteArrayInputStream(StickerFixtures.png(tag = 1)) }
+
+            // The person changes their mind and picks a different picture while the first is
+            // still being recognised.
+            vision.gate = null
+            vision.respondWith(FakeVisionClient.success(description = "第二张", tags = listOf("二")))
+            vm.cancelImport()
+            vm.importBytes(StickerFixtures.png(tag = 2))
+
+            gate.complete(Unit)
+
+            assertEquals(
+                "one picture's description must never be typed into another's editor",
+                "第二张",
+                (vm.import.value as StickerImportUiState.Editing).draft.description,
+            )
+        }
 
     @Test
     fun `a vision client that throws still leaves an editable import`() = runBlocking {
