@@ -35,7 +35,18 @@ object StickerSendToMessagePartTransformer : OutputMessageTransformer {
     override suspend fun onGenerationFinish(
         ctx: TransformerContext,
         messages: List<UIMessage>,
-    ): List<UIMessage> = messages.map { message ->
+    ): List<UIMessage> = liftSentStickers(messages)
+}
+
+/**
+ * The whole of the transformer's behaviour, as a pure function.
+ *
+ * Separated from the [OutputMessageTransformer] seam because that seam's context carries an Android
+ * `Context`, and this repo has no Robolectric harness — so the rule itself would otherwise be
+ * untestable. What is not covered by a test is the one-line delegation above.
+ */
+internal fun liftSentStickers(messages: List<UIMessage>): List<UIMessage> =
+    messages.map { message ->
         // Only assistant turns carry tool calls, and only they should gain the image.
         if (message.role != MessageRole.ASSISTANT) return@map message
 
@@ -60,4 +71,3 @@ object StickerSendToMessagePartTransformer : OutputMessageTransformer {
 
         if (lifted) message.copy(parts = parts) else message
     }
-}

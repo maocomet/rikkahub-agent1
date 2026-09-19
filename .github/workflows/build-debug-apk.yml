@@ -156,7 +156,12 @@ jobs:
             --tests "me.rerere.rikkahub.sticker.StickerRepositoryTest" \
             --tests "me.rerere.rikkahub.sticker.StickerVisionParserTest" \
             --tests "me.rerere.rikkahub.sticker.StickerImportCoordinatorTest" \
-            --tests "me.rerere.rikkahub.ui.pages.sticker.StickerLibraryVMTest"
+            --tests "me.rerere.rikkahub.ui.pages.sticker.StickerLibraryVMTest" \
+            --tests "me.rerere.rikkahub.sticker.StickerSearchTest" \
+            --tests "me.rerere.rikkahub.sticker.StickerToolSurfaceTest" \
+            --tests "me.rerere.rikkahub.sticker.StickerDeliveryTest" \
+            --tests "me.rerere.rikkahub.sticker.StickerSendToMessagePartTransformerTest" \
+            --tests "me.rerere.rikkahub.data.ai.execution.StickerToolRuntimeRegistrationTest"
 
       # The allowlist above pins explicit --tests patterns, and Gradle only fails when the
       # COMBINED filter matches nothing -- a single pattern that matches no class is silent.

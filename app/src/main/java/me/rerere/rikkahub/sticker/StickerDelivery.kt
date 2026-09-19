@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.sticker
 
 import androidx.core.net.toUri
+import java.io.File
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.ToolCallOrigin
 import me.rerere.rikkahub.data.files.FileFolders
@@ -75,9 +76,46 @@ sealed interface StickerSendOutcome {
  * It is checked again anyway: a tool that can be invoked is a tool whose guards should not depend
  * on the caller having honoured a gate it never had to prove it honoured.
  */
+/**
+ * Puts a library image into a conversation's own storage and returns the `file://` URL of the copy.
+ *
+ * A seam rather than `FilesManager` used directly, because the property that matters here — a
+ * conversation's copy is independent of the library file — is exactly the property a JVM test
+ * cannot observe through a concrete Android service. `null` means the copy was not made, and the
+ * send is refused rather than falling back to the library file.
+ */
+fun interface ConversationAttachmentStore {
+    suspend fun importForConversation(
+        source: File,
+        displayName: String,
+        mimeType: String,
+    ): String?
+}
+
+/** The production store: the managed `upload/` folder and its index. */
+class FilesManagerConversationAttachmentStore(
+    private val filesManager: FilesManager,
+) : ConversationAttachmentStore {
+    override suspend fun importForConversation(
+        source: File,
+        displayName: String,
+        mimeType: String,
+    ): String? = runCatching {
+        val entity = filesManager.saveManagedFromFile(
+            folder = FileFolders.UPLOAD,
+            source = source,
+            // Keeps the format extension, which the managed store derives the stored filename from.
+            // The library's own uuid name means nothing to the conversation.
+            displayName = displayName,
+            mimeType = mimeType,
+        )
+        filesManager.getFile(entity).toUri().toString()
+    }.getOrNull()
+}
+
 class StickerDelivery(
     private val repository: StickerRepository,
-    private val filesManager: FilesManager,
+    private val attachments: ConversationAttachmentStore,
 ) {
 
     suspend fun send(
@@ -103,22 +141,15 @@ class StickerDelivery(
         val source = repository.absolutePathOf(sticker.relativePath)
             ?: return StickerSendOutcome.Rejected(StickerToolError.STICKER_FILE_MISSING)
 
-        val entity = runCatching {
-            filesManager.saveManagedFromFile(
-                folder = FileFolders.UPLOAD,
-                source = source,
-                // Keeps the format extension, which the managed store derives the stored filename
-                // from. The library's own uuid name is not meaningful to the conversation.
-                displayName = source.name,
-                mimeType = sticker.mimeType,
-            )
-        }.getOrElse {
-            return StickerSendOutcome.Rejected(StickerToolError.STICKER_COPY_FAILED)
-        }
+        val url = attachments.importForConversation(
+            source = source,
+            displayName = source.name,
+            mimeType = sticker.mimeType,
+        ) ?: return StickerSendOutcome.Rejected(StickerToolError.STICKER_COPY_FAILED)
 
         return StickerSendOutcome.Sent(
             sticker = sticker,
-            image = UIMessagePart.Image(url = filesManager.getFile(entity).toUri().toString()),
+            image = UIMessagePart.Image(url = url),
         )
     }
 }

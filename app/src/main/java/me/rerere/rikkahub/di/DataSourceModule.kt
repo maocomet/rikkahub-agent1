@@ -722,10 +722,13 @@ val dataSourceModule = module {
             dimensionReader = get(),
         )
     }
+    single<me.rerere.rikkahub.sticker.ConversationAttachmentStore> {
+        me.rerere.rikkahub.sticker.FilesManagerConversationAttachmentStore(get())
+    }
     single {
         me.rerere.rikkahub.sticker.StickerDelivery(
             repository = get(),
-            filesManager = get(),
+            attachments = get(),
         )
     }
     single {

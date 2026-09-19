@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.sticker
 
 import java.io.File
+import kotlin.uuid.Uuid
 import kotlinx.coroutines.CompletableDeferred
 
 /**
@@ -99,5 +100,48 @@ class FakeVisionClient(
 
         fun failure(reason: StickerVisionFailure): StickerVisionOutcome =
             StickerVisionOutcome.Failure(reason)
+    }
+}
+
+/**
+ * A stand-in for a conversation's managed storage, backed by a directory of its own.
+ *
+ * Deliberately a *separate* directory from the library's. The property under test is that a sent
+ * sticker is independent of the library file it came from, and a fake that wrote into the library
+ * folder could not show that — it would pass whether or not the production code copied anything.
+ */
+class FakeConversationAttachmentStore(root: File) : ConversationAttachmentStore {
+
+    /** Stands in for `filesDir/upload`. */
+    val directory: File = File(root, "conversation-upload").apply { mkdirs() }
+
+    /** Every source the delivery asked to import, in order. */
+    val imported = mutableListOf<File>()
+
+    /** Set to make the next import fail, the way a full disk would. */
+    var failNextImport: Boolean = false
+
+    val copiedFiles: List<File>
+        get() = directory.listFiles()?.filter { it.isFile }.orEmpty()
+
+    override suspend fun importForConversation(
+        source: File,
+        displayName: String,
+        mimeType: String,
+    ): String? {
+        if (failNextImport) {
+            failNextImport = false
+            return null
+        }
+        imported += source
+        val extension = displayName.substringAfterLast('.', "bin")
+        val target = File(directory, "${Uuid.random()}.$extension")
+        source.copyTo(target, overwrite = true)
+        return "file://${target.absolutePath}"
+    }
+
+    /** What deleting the conversation does to the files it owns. */
+    fun deleteEverything() {
+        directory.listFiles()?.forEach { it.delete() }
     }
 }
