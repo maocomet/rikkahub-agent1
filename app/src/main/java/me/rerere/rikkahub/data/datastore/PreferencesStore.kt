@@ -273,7 +273,12 @@ class SettingsStore(
                 suggestionPrompt = preferences[SUGGESTION_PROMPT] ?: DEFAULT_SUGGESTION_PROMPT,
                 ocrModelId = preferences[OCR_MODEL]?.let { Uuid.parse(it) } ?: Uuid.random(),
                 ocrPrompt = preferences[OCR_PROMPT] ?: DEFAULT_OCR_PROMPT,
-                stickerVisionModelId = preferences[STICKER_VISION_MODEL]?.let { Uuid.parse(it) },
+                // Parsed defensively, unlike the model ids above it: this whole block is one map
+                // over the DataStore, so a malformed value here would fail every setting in the
+                // app rather than just this one. An unreadable id degrades to "not configured",
+                // which is a state the sticker library already supports.
+                stickerVisionModelId = preferences[STICKER_VISION_MODEL]
+                    ?.let { value -> runCatching { Uuid.parse(value) }.getOrNull() },
                 compressModelId = preferences[COMPRESS_MODEL]?.let { Uuid.parse(it) } ?: DEFAULT_AUTO_MODEL_ID,
                 compressPrompt = preferences[COMPRESS_PROMPT] ?: DEFAULT_COMPRESS_PROMPT,
                 finalAnswerReminderPrompt = resolveFinalAnswerReminderPrompt(
