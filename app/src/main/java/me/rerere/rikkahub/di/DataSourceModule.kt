@@ -2,6 +2,7 @@ package me.rerere.rikkahub.di
 
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
 import android.content.Context
 import io.ktor.client.HttpClient
@@ -681,7 +682,16 @@ val dataSourceModule = module {
     single { get<AppDatabase>().toolShortcutDao() }
     single { me.rerere.rikkahub.toolcatalog.ToolShortcutRepository(database = get(), dao = get()) }
     single { get<AppDatabase>().spaceDao() }
-    single { me.rerere.rikkahub.space.SpaceRepository(dao = get()) }
+    single {
+        // The database's own transaction, not a no-op: removing a deleted assistant's Cat Garden
+        // footprint spans four tables, and a sweep that stopped halfway would leave exactly the
+        // orphaned rows it exists to erase. See SpaceRepository.deleteAssistantFootprint.
+        val database = get<AppDatabase>()
+        me.rerere.rikkahub.space.SpaceRepository(
+            dao = get(),
+            inTransaction = { block -> database.withTransaction { block() } },
+        )
+    }
     single<me.rerere.rikkahub.space.SpaceIdentitySource> {
         me.rerere.rikkahub.space.SettingsSpaceIdentitySource(settingsStore = get())
     }

@@ -207,9 +207,9 @@ fun CatGardenPage(vm: CatGardenVM = koinViewModel()) {
         )
     }
 
-    // Deleting is permanent and cascades, so it is confirmed rather than undoable. The entry point
-    // is only rendered for the person's own posts; the repository refuses it for anyone else's
-    // regardless of what reached this dialog.
+    // Deleting is permanent and cascades, so it is confirmed rather than undoable. The dialog is
+    // shown for any post the person reaches, since they moderate the space; the repository still
+    // decides for itself, and refuses anything the runtime actor is not entitled to delete.
     pendingDelete?.let { item ->
         DeletePostDialog(
             preview = item.post.content,
@@ -560,9 +560,11 @@ private fun SpacePostCard(
                         color = MaterialTheme.colorScheme.outline,
                     )
                 }
-                // Only the person's own posts offer this, and only as an entry point: the
-                // repository re-checks ownership against the runtime actor before deleting.
-                if (isOwnedByLocalUser(item.post)) {
+                // Every post offers this, an assistant's included: the person reading this screen
+                // is Cat Garden's moderator. It is only an entry point — the repository decides
+                // again from the runtime actor, and refuses an assistant that asks for a post it
+                // did not publish.
+                if (localUserMayDelete(item.post)) {
                     IconButton(onClick = { onDelete(item) }) {
                         Icon(
                             imageVector = HugeIcons.Delete01,

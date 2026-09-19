@@ -243,6 +243,24 @@ class SpaceToolSurfaceTest {
     }
 
     @Test
+    fun `the delete tool refuses a post the person published`() = runBlocking {
+        val userPost = (repository.createPost(SpaceActor.USER, "the person's post", 0)
+            as SpaceWriteOutcome.Created).id
+
+        val payload = toolsFor(context())
+            .single { it.name == SPACE_DELETE_POST_TOOL_NAME }
+            .execute(buildJsonObject { put("post_id", userPost) })
+            .single().let { it as UIMessagePart.Text }.text
+
+        // The local user's moderator power is not transferable: an assistant asking for someone
+        // else's post is refused exactly as before, whatever the tool's description now says.
+        val json = Json.parseToJsonElement(payload).jsonObject
+        assertFalse(json.getValue("ok").jsonPrimitive.booleanOrNull ?: true)
+        assertEquals("NOT_POST_OWNER", json.getValue("code").jsonPrimitive.content)
+        assertNotNull(repository.getPost(userPost))
+    }
+
+    @Test
     fun `the delete tool removes the caller's own post`() = runBlocking {
         val mine = (repository.createPost(
             SpaceActor(SpaceActorKind.ASSISTANT, assistantId),

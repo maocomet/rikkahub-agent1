@@ -21,6 +21,16 @@ class SpaceRepository(
     private val dao: SpaceDao,
     private val nowMs: () -> Long = { System.currentTimeMillis() },
     private val newId: () -> String = { Uuid.random().toString() },
+    /**
+     * Runs [block] as one atomic unit.
+     *
+     * A seam rather than a direct `RoomDatabase.withTransaction` call so this class keeps taking
+     * only its DAO. Production wiring passes the database's own transaction; the JVM tests pass
+     * nothing, which runs the block directly. Exactly one entry point needs it,
+     * [deleteAssistantFootprint], and it is the one place where a half-applied sweep would leave
+     * behind the very orphaned footprint it exists to erase.
+     */
+    private val inTransaction: suspend (suspend () -> Unit) -> Unit = { block -> block() },
 ) {
 
     // ── Posts ────────────────────────────────────────────────────────────────────────────────
@@ -75,12 +85,18 @@ class SpaceRepository(
     }
 
     /**
-     * Removes a post the acting identity published, or refuses.
+     * Removes a post the acting identity is entitled to delete, or refuses.
      *
-     * Ownership is decided by comparing the stored author against the [actor] the RUNTIME supplied
-     * — never against anything read out of the request. There is no parameter anywhere above this
-     * that names an author, so an assistant can no more delete the user's post than it can publish
-     * as them: the only way to delete as an identity is to already be that identity.
+     * The entitlement is decided by [SpacePostDeletionPolicy] against the [actor] the RUNTIME
+     * supplied — never against anything read out of the request. There is no parameter anywhere
+     * above this that names an author, so an assistant can no more delete the user's post than it
+     * can publish as them: the only way to delete as an identity is to already be that identity.
+     *
+     * Two authorities reach this line, and they are different facts. An assistant must be the
+     * stored author. The local user is the space's moderator and may delete any post, including
+     * another identity's. Neither is a relaxation of the other: the assistant branch compares
+     * `(kind, id)` exactly as strictly as before, and the moderator branch is reachable only by the
+     * local user sentinel.
      *
      * Refusals are distinct codes on purpose. `POST_NOT_FOUND` and `NOT_POST_OWNER` are different
      * facts, and collapsing them into one "no" would make an ownership failure indistinguishable
@@ -92,14 +108,60 @@ class SpaceRepository(
     suspend fun deletePost(actor: SpaceActor, postId: String): SpaceWriteOutcome {
         val post = dao.getPost(postId)
             ?: return SpaceWriteOutcome.Rejected("POST_NOT_FOUND", "No post with that id.")
-        if (post.authorKind != actor.kindValue || post.authorId != actor.id) {
-            return SpaceWriteOutcome.Rejected(
+        SpacePostDeletionPolicy.authorityFor(actor, post)
+            ?: return SpaceWriteOutcome.Rejected(
                 "NOT_POST_OWNER",
                 "Only the identity that published a post may delete it.",
             )
-        }
         dao.deletePost(postId)
         return SpaceWriteOutcome.Created(postId)
+    }
+
+    // ── Removing an assistant's footprint ────────────────────────────────────────────────────
+
+    /**
+     * Erases every Cat Garden row an assistant left behind, in one transaction.
+     *
+     * This is what keeps a deleted assistant from becoming a ghost author. The stored
+     * `author_kind`/`author_id` columns are deliberately NOT foreign keys to the assistant table —
+     * posts survive an assistant on purpose, so that other identities' comments and likes on them
+     * are not destroyed as a side effect of deleting an unrelated assistant. That means nothing
+     * removes them automatically, and this is the explicit counterpart: when the assistant itself
+     * is gone, its footprint goes with it.
+     *
+     * Four writes, largest first so the rest only mop up what it could not reach:
+     *  - **Its posts.** Their likes, comments and notifications are already declared to cascade, so
+     *    this removes every thread the assistant itself hosted in one statement.
+     *  - **Its comments.** A comment on somebody ELSE's post does not go with the assistant's own
+     *    posts, so it has to be swept in its own right.
+     *  - **Its likes.** Same reason, same sweep.
+     *  - **Its notifications.** Both directions. As ACTOR, this covers every notification an
+     *    assistant's vanished comment or like produced on another identity's post — which is also
+     *    what keeps `comment_id` from dangling on a row that is still readable. As RECIPIENT, it is
+     *    usually already empty, because a notification's recipient is the post's author and those
+     *    posts have just gone; it is swept anyway so the guarantee does not depend on that
+     *    invariant holding forever.
+     *
+     * The kind is pinned to [SpaceActorKind.ASSISTANT] here rather than taken from a caller. There
+     * is no argument that can point this at the local user's rows.
+     *
+     * A blank id writes nothing: the pinned kind plus a blank id can only ever match nothing, and
+     * returning without touching the database keeps "no identity supplied" from being reported as
+     * a successful, empty sweep.
+     */
+    suspend fun deleteAssistantFootprint(assistantId: String): SpaceFootprintRemoval {
+        if (assistantId.isBlank()) return SpaceFootprintRemoval.NONE
+
+        val kind = SpaceActorKind.ASSISTANT.name
+        var removal = SpaceFootprintRemoval.NONE
+        inTransaction {
+            val posts = dao.deletePostsByAuthor(kind, assistantId)
+            val comments = dao.deleteCommentsByAuthor(kind, assistantId)
+            val likes = dao.deleteLikesByActor(kind, assistantId)
+            val notifications = dao.deleteNotificationsInvolving(kind, assistantId)
+            removal = SpaceFootprintRemoval(posts, comments, likes, notifications)
+        }
+        return removal
     }
 
     // ── Likes ────────────────────────────────────────────────────────────────────────────────
@@ -410,3 +472,24 @@ data class SpacePage<T>(
     val items: List<T>,
     val hasMore: Boolean,
 )
+
+/**
+ * What one [SpaceRepository.deleteAssistantFootprint] sweep removed, per table.
+ *
+ * Counted honestly rather than as a total: [posts] is the rows the sweep deleted directly, and the
+ * likes, comments and notifications that hung off those posts went with them through the schema's
+ * `ON DELETE CASCADE` — so they are NOT included in the three child counts. Those count only what
+ * the sweep deleted in its own right: the assistant's comments and likes on other identities'
+ * posts, and the notifications naming it as actor or recipient.
+ */
+data class SpaceFootprintRemoval(
+    val posts: Int = 0,
+    val comments: Int = 0,
+    val likes: Int = 0,
+    val notifications: Int = 0,
+) {
+    companion object {
+        /** The result of a sweep that ran and matched nothing — and of one that never ran. */
+        val NONE = SpaceFootprintRemoval()
+    }
+}

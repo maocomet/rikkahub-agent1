@@ -530,18 +530,83 @@ class CatGardenVMTest {
         assertTrue(vm.mineHasMore.value == false)
     }
 
+    // ── The person as Cat Garden's moderator ─────────────────────────────────────────────────
+
     @Test
-    fun `the viewer cannot delete an assistant's post`() = runBlocking {
+    fun `the person's screen offers a delete entry on an assistant's post`() = runBlocking {
         val assistantPost = repository.createPost(assistantActor, "not mine", originDepth = 0).let {
             (it as SpaceWriteOutcome.Created).id
         }
+        val ownPost = repository.createPost(SpaceActor.USER, "mine", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+
+        // The screen's entry point, asked directly. The person moderates the space, so neither
+        // post is excluded — the own/other distinction does not gate the control any more.
+        assertTrue(localUserMayDelete(requireNotNull(repository.getPost(assistantPost))))
+        assertTrue(localUserMayDelete(requireNotNull(repository.getPost(ownPost))))
+    }
+
+    @Test
+    fun `deleting an assistant's post drops it from the feed`() = runBlocking {
+        val assistantPost = repository.createPost(assistantActor, "not mine", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        repository.createPost(SpaceActor.USER, "mine", originDepth = 0)
 
         val vm = viewModel()
+        assertEquals(2, vm.feed.value.size)
+
         vm.deletePost(assistantPost)
 
-        // Refused by the repository's ownership check, so nothing disappears from the screen.
-        assertEquals(1, vm.feed.value.size)
-        assertTrue(repository.getPost(assistantPost) != null)
+        // Allowed as the local user's moderator power, so the post really goes and the feed is
+        // re-read rather than left showing a card whose post no longer exists.
+        assertEquals(listOf("mine"), vm.feed.value.map { it.post.content })
+        assertTrue(repository.getPost(assistantPost) == null)
+    }
+
+    @Test
+    fun `deleting an assistant's post closes its open thread and leaves the person's inbox alone`() =
+        runBlocking {
+            val assistantPost = repository.createPost(assistantActor, "doomed", originDepth = 0).let {
+                (it as SpaceWriteOutcome.Created).id
+            }
+            val ownPost = repository.createPost(SpaceActor.USER, "mine", originDepth = 0).let {
+                (it as SpaceWriteOutcome.Created).id
+            }
+            // The assistant likes the person's post, so the person has an inbox row that has nothing
+            // to do with the post being deleted.
+            repository.setLike(assistantActor, ownPost, liked = true, originDepth = 0)
+            repository.createComment(SpaceActor.USER, assistantPost, "a comment", originDepth = 0)
+
+            val vm = viewModel()
+            vm.openComments(assistantPost)
+            assertTrue(vm.commentThread.value != null)
+            assertEquals(1, vm.notifications.value.size)
+
+            vm.deletePost(assistantPost)
+
+            assertTrue("the thread cannot outlive the post it was reading", vm.commentThread.value == null)
+            assertEquals(listOf("mine"), vm.feed.value.map { it.post.content })
+            assertTrue(repository.getPost(assistantPost) == null)
+            // The person's inbox is about their own post and is untouched by this delete — the
+            // moderator path must not sweep anything beyond the post it was pointed at.
+            assertEquals(1, vm.notifications.value.size)
+            assertEquals(1, vm.unreadCount.value)
+        }
+
+    @Test
+    fun `deleting an assistant's post leaves another assistant's data alone`() = runBlocking {
+        val otherAssistant = SpaceActor(SpaceActorKind.ASSISTANT, "bbbbbbbb-0000-0000-0000-000000000002")
+        val doomed = repository.createPost(assistantActor, "doomed", originDepth = 0).let {
+            (it as SpaceWriteOutcome.Created).id
+        }
+        repository.createPost(otherAssistant, "survivor", originDepth = 0)
+
+        val vm = viewModel()
+        vm.deletePost(doomed)
+
+        assertEquals(listOf("survivor"), vm.feed.value.map { it.post.content })
     }
 
     @Test

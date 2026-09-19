@@ -403,22 +403,40 @@ class SpaceRepositoryTest {
     }
 
     @Test
-    fun `the user cannot delete an assistant's post and vice versa`() = runBlocking {
+    fun `the local user deletes an assistant's post`() = runBlocking {
         val assistantPost = post(assistantA)
+
+        // The local user moderates the space, so this is allowed — and it is allowed as a moderator,
+        // not by pretending the post is theirs.
+        assertTrue(repo.deletePost(SpaceActor.USER, assistantPost) is SpaceWriteOutcome.Created)
+        assertNull(repo.getPost(assistantPost))
+    }
+
+    @Test
+    fun `an assistant cannot delete the local user's post`() = runBlocking {
         val userPost = post(SpaceActor.USER)
 
-        // Identity is a (kind, id) pair: a USER actor is never "close enough" to an assistant, no
-        // matter what ids are involved.
-        assertEquals(
-            "NOT_POST_OWNER",
-            (repo.deletePost(SpaceActor.USER, assistantPost) as SpaceWriteOutcome.Rejected).code,
-        )
+        // The moderator power runs one way only. Widening the ownership check to "anyone may
+        // delete" would let an assistant erase the person's posts, which is exactly what this pins.
         assertEquals(
             "NOT_POST_OWNER",
             (repo.deletePost(assistantA, userPost) as SpaceWriteOutcome.Rejected).code,
         )
-        assertNotNull(repo.getPost(assistantPost))
         assertNotNull(repo.getPost(userPost))
+    }
+
+    @Test
+    fun `a user actor that is not the local user gets no moderator power`() = runBlocking {
+        val assistantPost = post(assistantA)
+        val impostor = SpaceActor(SpaceActorKind.USER, "not_the_local_user")
+
+        // The moderator branch is pinned to the local user SENTINEL, compared as a whole (kind, id)
+        // pair. A `USER` actor carrying any other id matches neither branch and fails closed.
+        assertEquals(
+            "NOT_POST_OWNER",
+            (repo.deletePost(impostor, assistantPost) as SpaceWriteOutcome.Rejected).code,
+        )
+        assertNotNull(repo.getPost(assistantPost))
     }
 
     @Test

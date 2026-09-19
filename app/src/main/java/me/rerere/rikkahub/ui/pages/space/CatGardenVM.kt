@@ -17,6 +17,7 @@ import me.rerere.rikkahub.space.SpaceCommentEntity
 import me.rerere.rikkahub.space.SpaceCursor
 import me.rerere.rikkahub.space.SpaceIdentitySource
 import me.rerere.rikkahub.space.SpaceNotificationEntity
+import me.rerere.rikkahub.space.SpacePostDeletionPolicy
 import me.rerere.rikkahub.space.SpacePostEntity
 import me.rerere.rikkahub.space.SpaceProfile
 import me.rerere.rikkahub.space.SpaceRepository
@@ -65,15 +66,17 @@ data class SpaceNotificationView(
 )
 
 /**
- * True when the local user published [post].
+ * Whether the screen offers a delete entry for [post].
  *
- * The UI asks this to decide whether to offer a delete, and the repository decides the same
- * question again from the runtime actor before performing one. The duplication is intentional and
- * one-directional: this only decides what to SHOW, and a stale answer here can offer a control
- * that the repository then refuses — never the other way round.
+ * Every post, including one an assistant published: this screen acts as the local user, who is Cat
+ * Garden's moderator and may delete any post. The rule is asked of [SpacePostDeletionPolicy]
+ * rather than answered here, so what the screen offers and what the repository enforces stay the
+ * same rule — and asking it is still only a decision about what to SHOW. The repository decides
+ * again from the runtime actor before anything is deleted, so a wrong answer here could offer a
+ * control that is then refused, never authorise one.
  */
-fun isOwnedByLocalUser(post: SpacePostEntity): Boolean =
-    post.authorKind == SpaceActor.USER.kindValue && post.authorId == SpaceActor.USER.id
+fun localUserMayDelete(post: SpacePostEntity): Boolean =
+    SpacePostDeletionPolicy.authorityFor(SpaceActor.USER, post) != null
 
 /**
  * Cat Garden's read model.
@@ -395,13 +398,18 @@ class CatGardenVM(
     }
 
     /**
-     * Deletes one of the person's own posts, then refreshes every surface that could have shown it.
+     * Deletes a post as the local user, then refreshes every surface that could have shown it.
+     *
+     * Any post, including an assistant's: the local user moderates Cat Garden. That is a
+     * moderator's power rather than an ownership claim, and it is the repository's to grant — this
+     * method asks as [viewer] and reports whatever comes back, exactly like every other write here.
      *
      * The confirmation lives in the UI, not here: this is the action, and it is deliberately
-     * unconditional about being called. Ownership is enforced in the repository against the
-     * runtime actor — this method cannot delete an assistant's post even if it were asked to.
+     * unconditional about being called.
+     *
      * Notifications are refreshed too, because the delete cascades them away and the unread badge
-     * would otherwise keep counting a post that no longer exists.
+     * would otherwise keep counting a post that no longer exists. An open comment thread on the
+     * post is closed for the same reason — it cannot outlive what it was reading.
      */
     fun deletePost(postId: String) = workScope.launch {
         _busy.value = true

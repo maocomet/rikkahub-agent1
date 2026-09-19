@@ -77,7 +77,23 @@ class FakeSpaceDao : SpaceDao {
      * opens, and `SpacePostDeletionCascadeTest` proves it against a real database; this reproduces
      * the same contract where the JVM tests can see it.
      */
-    override suspend fun deletePost(postId: String): Int {
+    override suspend fun deletePost(postId: String): Int = removePost(postId)
+
+    /**
+     * Mirrors a multi-row `DELETE FROM space_posts` in the real schema: the cascade fires per row
+     * for a bulk delete exactly as it does for a single-row one, so every doomed post takes its own
+     * likes, comments and notifications with it before any of the child sweeps below run. A fake
+     * that removed only the parent rows would let [SpaceRepository.deleteAssistantFootprint] pass
+     * here while leaving orphans on a real device.
+     */
+    override suspend fun deletePostsByAuthor(authorKind: String, authorId: String): Int {
+        val doomed = posts.values
+            .filter { it.authorKind == authorKind && it.authorId == authorId }
+            .map { it.postId }
+        return doomed.count { removePost(it) == 1 }
+    }
+
+    private fun removePost(postId: String): Int {
         if (posts.remove(postId) == null) return 0
         likes.keys.removeAll { it.first == postId }
         comments.values.removeAll { it.postId == postId }
@@ -95,6 +111,14 @@ class FakeSpaceDao : SpaceDao {
 
     override suspend fun deleteLike(postId: String, actorKind: String, actorId: String) {
         likes.remove(Triple(postId, actorKind, actorId))
+    }
+
+    override suspend fun deleteLikesByActor(actorKind: String, actorId: String): Int {
+        // Selected first, then removed: `removeAll` answers whether anything matched, and the
+        // repository's result type wants how many rows went.
+        val doomed = likes.keys.filter { it.second == actorKind && it.third == actorId }
+        doomed.forEach { likes.remove(it) }
+        return doomed.size
     }
 
     override suspend fun hasLike(postId: String, actorKind: String, actorId: String): Boolean =
@@ -135,6 +159,14 @@ class FakeSpaceDao : SpaceDao {
 
     override suspend fun commentCount(postId: String): Int =
         comments.values.count { it.postId == postId }
+
+    override suspend fun deleteCommentsByAuthor(authorKind: String, authorId: String): Int {
+        val doomed = comments.values
+            .filter { it.authorKind == authorKind && it.authorId == authorId }
+            .map { it.commentId }
+        doomed.forEach { comments.remove(it) }
+        return doomed.size
+    }
 
     override suspend fun insertNotification(entity: SpaceNotificationEntity): Long {
         if (notifications.containsKey(entity.notificationId)) return -1L
@@ -204,6 +236,18 @@ class FakeSpaceDao : SpaceDao {
 
     override suspend fun getNotification(notificationId: String): SpaceNotificationEntity? =
         notifications[notificationId]
+
+    override suspend fun deleteNotificationsInvolving(kind: String, id: String): Int {
+        val doomed = notifications.values
+            .filter { notification ->
+                (notification.recipientKind == kind && notification.recipientId == id) ||
+                    (notification.actorKind == kind && notification.actorId == id)
+            }
+            .map { it.notificationId }
+        doomed.forEach { notifications.remove(it) }
+        unreadSignals.value = notifications.values.count { it.readAtMs == null }
+        return doomed.size
+    }
 
     override suspend fun listPendingNotifications(
         recipientKind: String,

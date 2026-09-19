@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.data.db
 
 import androidx.room.Room
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
@@ -8,6 +9,7 @@ import me.rerere.rikkahub.space.SpaceActor
 import me.rerere.rikkahub.space.SpaceActorKind
 import me.rerere.rikkahub.space.SpaceCausalDepth
 import me.rerere.rikkahub.space.SpaceDao
+import me.rerere.rikkahub.space.SpaceFootprintRemoval
 import me.rerere.rikkahub.space.SpaceNotificationType
 import me.rerere.rikkahub.space.SpaceRepository
 import me.rerere.rikkahub.space.SpaceWriteOutcome
@@ -59,6 +61,10 @@ class SpacePostDeletionCascadeTest {
             dao = dao,
             nowMs = { clock++ },
             newId = { "id-${++idSeq}" },
+            // The production wiring shape, exercised here for real: the footprint sweep is the one
+            // entry point that depends on it, and a nested-transaction mistake would only ever show
+            // up against an actual Room database.
+            inTransaction = { block -> db.withTransaction { block() } },
         )
     }
 
@@ -120,6 +126,37 @@ class SpacePostDeletionCascadeTest {
         // The survivor's own like and comment notifications, and nothing from the doomed post.
         assertEquals(2, notificationsOf(author).size)
         assertEquals("on the survivor", commentsOf(survivor).single().content)
+    }
+
+    @Test
+    fun removingAnAssistantsFootprintGoesThroughTheRealCascade() = runBlocking {
+        val authorPost = post(author)
+        val survivorPost = post(commenter)
+
+        // The author's traces on a post that will survive, so the cascade cannot reach them.
+        repository.createComment(author, survivorPost, "in the author's own right", SpaceCausalDepth.USER_INITIATED)
+        repository.setLike(author, survivorPost, liked = true, SpaceCausalDepth.USER_INITIATED)
+        // Other identities' traces on the post about to be deleted, so the cascade must reach them.
+        repository.createComment(commenter, authorPost, "on the author's post", SpaceCausalDepth.USER_INITIATED)
+        repository.setLike(SpaceActor.USER, authorPost, liked = true, SpaceCausalDepth.USER_INITIATED)
+
+        val removal = repository.deleteAssistantFootprint(author.id)
+
+        assertEquals(SpaceFootprintRemoval(posts = 1, comments = 1, likes = 1, notifications = 2), removal)
+        // The cascade has to fire for a MULTI-row parent delete exactly as it does for the
+        // single-row one the tests above cover — the sweep is one statement over all of the
+        // assistant's posts, and an assumption that only the single-row form cascades would leave
+        // orphans on exactly the devices this test exists to catch.
+        assertNull(repository.getPost(authorPost))
+        assertEquals(0, repository.commentCount(authorPost))
+        assertEquals(0, repository.likeCount(authorPost))
+        assertTrue(notificationsOf(author).isEmpty())
+
+        // What the cascade could not reach is gone too, and nothing of the survivor's was taken.
+        assertTrue(repository.getPost(survivorPost) != null)
+        assertEquals(0, repository.commentCount(survivorPost))
+        assertEquals(0, repository.likeCount(survivorPost))
+        assertTrue("nothing may announce an author that no longer exists", notificationsOf(commenter).isEmpty())
     }
 
     @Test

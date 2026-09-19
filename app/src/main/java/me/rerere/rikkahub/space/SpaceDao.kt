@@ -80,6 +80,17 @@ interface SpaceDao {
     @Query("DELETE FROM space_posts WHERE post_id = :postId")
     suspend fun deletePost(postId: String): Int
 
+    /**
+     * Every post one author published — the assistant-footprint sweep.
+     *
+     * `ON DELETE CASCADE` fires per row for a multi-row delete exactly as it does for a single-row
+     * one, so the likes, comments and notifications on these posts go too. No index is added for
+     * this: the declared `(author_kind, author_id, created_at_ms)` index already covers both
+     * predicate columns, and this runs once per assistant deletion rather than per render.
+     */
+    @Query("DELETE FROM space_posts WHERE author_kind = :authorKind AND author_id = :authorId")
+    suspend fun deletePostsByAuthor(authorKind: String, authorId: String): Int
+
     // ── Likes ────────────────────────────────────────────────────────────────────────────────
 
     /**
@@ -106,6 +117,13 @@ interface SpaceDao {
             "ORDER BY created_at_ms DESC, actor_id DESC LIMIT :limit",
     )
     suspend fun listLikers(postId: String, limit: Int): List<SpaceLikeEntity>
+
+    /**
+     * Every like one actor left, on any post — the assistant-footprint sweep. Same reasoning as
+     * [deleteCommentsByAuthor]: a like on somebody else's post outlives the liker's own posts.
+     */
+    @Query("DELETE FROM space_likes WHERE actor_kind = :actorKind AND actor_id = :actorId")
+    suspend fun deleteLikesByActor(actorKind: String, actorId: String): Int
 
     // ── Comments ─────────────────────────────────────────────────────────────────────────────
 
@@ -143,6 +161,15 @@ interface SpaceDao {
 
     @Query("SELECT COUNT(*) FROM space_comments WHERE post_id = :postId")
     suspend fun commentCount(postId: String): Int
+
+    /**
+     * Every comment one author left, on any post — the assistant-footprint sweep.
+     *
+     * A comment on somebody ELSE's post does not go with the author's own posts, so the cascade
+     * cannot reach it and it has to be deleted in its own right.
+     */
+    @Query("DELETE FROM space_comments WHERE author_kind = :authorKind AND author_id = :authorId")
+    suspend fun deleteCommentsByAuthor(authorKind: String, authorId: String): Int
 
     // ── Notifications ────────────────────────────────────────────────────────────────────────
 
@@ -217,6 +244,29 @@ interface SpaceDao {
 
     @Query("SELECT * FROM space_notifications WHERE notification_id = :notificationId LIMIT 1")
     suspend fun getNotification(notificationId: String): SpaceNotificationEntity?
+
+    /**
+     * Every notification naming one identity, in either direction — the assistant-footprint sweep.
+     *
+     * Both halves are load-bearing, and they cover different rows:
+     *  - as ACTOR, the notifications an identity's vanished like or comment produced on OTHER
+     *    identities' posts. Those posts are still there, so the cascade never reaches these rows,
+     *    and a surviving one would both announce a deleted author and point its `comment_id` at a
+     *    comment that no longer exists.
+     *  - as RECIPIENT, the identity's own inbox. Usually already empty by the time this runs — a
+     *    notification is addressed to the post's author, and those posts have just been deleted —
+     *    but swept anyway so the guarantee stays true without resting on that invariant.
+     *
+     * The two `OR` arms are parenthesised, so the `kind`/`id` pair cannot be mixed across
+     * directions (an actor match on one arm and a recipient match on the other would otherwise be
+     * satisfiable by two different identities).
+     */
+    @Query(
+        "DELETE FROM space_notifications " +
+            "WHERE (recipient_kind = :kind AND recipient_id = :id) " +
+            "OR (actor_kind = :kind AND actor_id = :id)",
+    )
+    suspend fun deleteNotificationsInvolving(kind: String, id: String): Int
 
     /**
      * Unconsumed notifications for one recipient, oldest first — the restart/replay scan.
