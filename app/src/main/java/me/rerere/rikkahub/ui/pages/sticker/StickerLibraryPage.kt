@@ -50,6 +50,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import com.dokar.sonner.ToastType
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.Add01
+import me.rerere.hugeicons.stroke.Delete02
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.sticker.Sticker
 import me.rerere.rikkahub.sticker.StickerImportRejection

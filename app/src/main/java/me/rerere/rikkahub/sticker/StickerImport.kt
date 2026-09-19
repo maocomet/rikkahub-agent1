@@ -255,7 +255,7 @@ class StickerImportCoordinator(
                 height = start.height,
                 description = description,
                 tags = tags,
-                checksum = start.checksum,
+                checksum = start.staged.checksum,
                 enabled = enabled,
                 visionState = recognition.state,
                 visionFailure = recognition.failure,
