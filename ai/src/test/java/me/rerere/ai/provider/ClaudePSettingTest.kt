@@ -1,7 +1,12 @@
 package me.rerere.ai.provider
 
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.provider.claudep.ClaudePCachedModel
 import me.rerere.ai.provider.claudep.ClaudePDeviceDescriptor
 import me.rerere.ai.provider.claudep.ClaudePPairingState
@@ -106,12 +111,27 @@ class ClaudePSettingTest {
             claudeCodeVersion = "2.0.1",
         )
 
-        val decoded = json.decodeFromString(
-            ProviderSetting.serializer(),
-            json.encodeToString(ProviderSetting.serializer(), original),
-        )
+        val encoded = json.encodeToString(ProviderSetting.serializer(), original)
 
-        assertEquals(original, decoded)
+        // Deliberately held as the sealed supertype: the whole point is to observe what the
+        // discriminator actually routed to, which a narrowed variable could not tell us.
+        val decoded: ProviderSetting = json.decodeFromString(ProviderSetting.serializer(), encoded)
+
+        assertTrue(decoded is ProviderSetting.ClaudeP)
+        assertFalse(decoded is ProviderSetting.Claude)
+        assertFalse(decoded is ProviderSetting.OpenAI)
+        assertFalse(decoded is ProviderSetting.Google)
+        assertFalse(decoded is ProviderSetting.AICore)
+        assertFalse(decoded is ProviderSetting.LiteRtLocal)
+        assertFalse(decoded is ProviderSetting.Codex)
+
+        assertEquals("claude_p", discriminatorOf(encoded))
+
+        // Whole-object equality is NOT used here: `description` and `shortDescription` are
+        // `@Transient` lambdas that a data class still compares by reference, so two independently
+        // built instances can never be equal even though every persisted field matches.
+        assertClaudePPersistentFieldsEqual(original, decoded as ProviderSetting.ClaudeP)
+        assertTransientUiFieldsAbsent(encoded)
     }
 
     /**
@@ -214,21 +234,43 @@ class ClaudePSettingTest {
 
     @Test
     fun `a claude_p entry round-trips inside a mixed provider list`() {
-        val mixed = listOf(
-            ProviderSetting.OpenAI(id = Uuid_OPENAI, name = "OpenAI"),
-            ProviderSetting.ClaudeP(enabled = true, pairingState = ClaudePPairingState.PAIRED),
-            ProviderSetting.Codex(),
+        val openAi = ProviderSetting.OpenAI(id = Uuid_OPENAI, name = "OpenAI")
+        val claudeP = ProviderSetting.ClaudeP(
+            enabled = true,
+            pairingState = ClaudePPairingState.PAIRED,
         )
+        val codex = ProviderSetting.Codex()
+        val mixed: List<ProviderSetting> = listOf(openAi, claudeP, codex)
+        val serializer = ListSerializer(ProviderSetting.serializer())
 
-        val decoded = json.decodeFromString(
-            kotlinx.serialization.builtins.ListSerializer(ProviderSetting.serializer()),
-            json.encodeToString(
-                kotlinx.serialization.builtins.ListSerializer(ProviderSetting.serializer()),
-                mixed,
-            ),
-        )
+        val encoded = json.encodeToString(serializer, mixed)
+        val decoded: List<ProviderSetting> = json.decodeFromString(serializer, encoded)
 
-        assertEquals(mixed, decoded)
+        // Order is preserved, and every element keeps its own concrete type. Each check keeps the
+        // sealed supertype as its subject so the compiler cannot fold it away.
+        assertEquals(3, decoded.size)
+        assertTrue(decoded[0] is ProviderSetting.OpenAI)
+        assertFalse(decoded[0] is ProviderSetting.ClaudeP)
+        assertTrue(decoded[1] is ProviderSetting.ClaudeP)
+        assertFalse(decoded[1] is ProviderSetting.Claude)
+        assertFalse(decoded[1] is ProviderSetting.OpenAI)
+        assertFalse(decoded[1] is ProviderSetting.Codex)
+        assertTrue(decoded[2] is ProviderSetting.Codex)
+        assertFalse(decoded[2] is ProviderSetting.ClaudeP)
+
+        // The stable discriminator sits on the entry that carries it — and could not be mistaken
+        // for a neighbouring provider's.
+        val encodedArray = json.decodeFromString(JsonArray.serializer(), encoded)
+        assertEquals("openai", encodedArray[0].discriminator())
+        assertEquals("claude_p", encodedArray[1].discriminator())
+        assertEquals("codex", encodedArray[2].discriminator())
+
+        // Field values, element by element.
+        assertEquals(openAi.id, decoded[0].id)
+        assertEquals(openAi.name, decoded[0].name)
+        assertClaudePPersistentFieldsEqual(claudeP, decoded[1] as ProviderSetting.ClaudeP)
+        assertEquals(codex.id, decoded[2].id)
+        assertEquals(codex.name, decoded[2].name)
     }
 
     @Test
@@ -244,6 +286,63 @@ class ClaudePSettingTest {
         assertTrue(deleted is ProviderSetting.ClaudeP)
         assertTrue(deleted.models.isEmpty())
     }
+
+    /**
+     * Compares exactly the fields the persisted contract carries for Claude P.
+     *
+     * This list mirrors the closed key set asserted by
+     * `the serialized form contains only non-secret fields`: thirteen persistent fields plus the
+     * polymorphic `type` discriminator, which is asserted separately. The fields are enumerated by
+     * hand on purpose — a reflective walk, or re-serializing both objects and comparing strings,
+     * would keep passing if a field were added and then silently dropped by serialization.
+     */
+    private fun assertClaudePPersistentFieldsEqual(
+        expected: ProviderSetting.ClaudeP,
+        actual: ProviderSetting.ClaudeP,
+    ) {
+        assertEquals("id", expected.id, actual.id)
+        assertEquals("enabled", expected.enabled, actual.enabled)
+        assertEquals("name", expected.name, actual.name)
+        assertEquals("models", expected.models, actual.models)
+        assertEquals("balanceOption", expected.balanceOption, actual.balanceOption)
+        assertEquals("pairedOrigin", expected.pairedOrigin, actual.pairedOrigin)
+        assertEquals("gatewayFingerprint", expected.gatewayFingerprint, actual.gatewayFingerprint)
+        assertEquals(
+            "gatewayInstallationId",
+            expected.gatewayInstallationId,
+            actual.gatewayInstallationId,
+        )
+        assertEquals("device", expected.device, actual.device)
+        assertEquals("pairingState", expected.pairingState, actual.pairingState)
+        assertEquals("cachedModels", expected.cachedModels, actual.cachedModels)
+        assertEquals("catalogCachedAt", expected.catalogCachedAt, actual.catalogCachedAt)
+        assertEquals("claudeCodeVersion", expected.claudeCodeVersion, actual.claudeCodeVersion)
+        // `builtIn`, `description` and `shortDescription` are excluded by design, not by omission:
+        // they are `@Transient` UI state, and `description`/`shortDescription` are function types
+        // that a data class compares by reference. Comparing them would fail for every pair of
+        // independently constructed instances and would say nothing about persistence.
+    }
+
+    /** The `@Transient` UI fields must never reach the persisted form at all. */
+    private fun assertTransientUiFieldsAbsent(encoded: String) {
+        val keys = json.decodeFromString(JsonObject.serializer(), encoded).keys
+        listOf("builtIn", "description", "shortDescription").forEach { transientKey ->
+            assertFalse(
+                "'$transientKey' is @Transient and must never be persisted, found: $keys",
+                keys.contains(transientKey),
+            )
+        }
+    }
+
+    /** Reads the polymorphic `type` discriminator of a single encoded provider object. */
+    private fun discriminatorOf(encoded: String): String? = json
+        .decodeFromString(JsonObject.serializer(), encoded)["type"]
+        ?.jsonPrimitive
+        ?.content
 }
 
 private val Uuid_OPENAI = kotlin.uuid.Uuid.parse("1eeea727-9ee5-4cae-93e6-6fb01a4d051e")
+
+/** Reads the polymorphic `type` discriminator of one element of an encoded provider array. */
+private fun JsonElement.discriminator(): String? =
+    jsonObject["type"]?.jsonPrimitive?.content
