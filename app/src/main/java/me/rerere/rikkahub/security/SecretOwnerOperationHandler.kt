@@ -230,7 +230,14 @@ class SecretOwnerOperationHandler(
                     SecretLeaseResult.Corrupt -> put("credential_state", "CIPHERTEXT_CORRUPT")
                     null -> put(
                         "credential_state",
-                        if (provider.legacyApiKeyOrNull().isNullOrBlank()) "UNBOUND" else "LEGACY_MIGRATION_REQUIRED",
+                        when {
+                            // Claude P authenticates with a revocable device identity held in the
+                            // Keystore, not an API key. Falling through to UNBOUND would advertise
+                            // a bindable secret slot that can never apply to this provider.
+                            provider is ProviderSetting.ClaudeP -> "NOT_APPLICABLE"
+                            provider.legacyApiKeyOrNull().isNullOrBlank() -> "UNBOUND"
+                            else -> "LEGACY_MIGRATION_REQUIRED"
+                        },
                     )
                 }
             }
@@ -368,12 +375,17 @@ class SecretOwnerOperationHandler(
         is ProviderSetting.AICore -> "aicore"
         is ProviderSetting.LiteRtLocal -> "local_litert"
         is ProviderSetting.Codex -> "codex"
+        // Claude P owns no API-key secret in Settings. Its device private key lives in the Android
+        // Keystore and never enters this inventory; the paired origin is reported as the base URL
+        // below so the UI can still name the endpoint.
+        is ProviderSetting.ClaudeP -> "claude_p"
     }
 
     private fun ProviderSetting.secretInventoryBaseUrl(): String? = when (this) {
         is ProviderSetting.OpenAI -> baseUrl
         is ProviderSetting.Google -> baseUrl
         is ProviderSetting.Claude -> baseUrl
+        is ProviderSetting.ClaudeP -> pairedOrigin
         else -> null
     }
 

@@ -99,6 +99,7 @@ import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.claudep.ClaudePPairingState
 import me.rerere.ai.context.ABSOLUTE_CONTEXT_WINDOW_TOKENS
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
@@ -121,6 +122,7 @@ import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.ui.pages.assistant.detail.CustomBodies
 import me.rerere.rikkahub.ui.pages.assistant.detail.CustomHeaders
 import me.rerere.rikkahub.ui.pages.setting.components.ProviderConfigure
+import me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigure
 import me.rerere.rikkahub.ui.pages.setting.components.CodexProviderConfigure
 import me.rerere.rikkahub.ui.pages.setting.components.ProviderConnectionTester
 import me.rerere.rikkahub.ui.pages.setting.components.SettingProviderBalanceOption
@@ -184,7 +186,12 @@ fun SettingProviderDetailPage(id: Uuid, vm: SettingVM = koinViewModel()) {
                     }
                 },
                 actions = {
-                    if (provider !is ProviderSetting.Codex) {
+                    // Claude P is excluded alongside Codex: sharing here would export the device
+                    // binding (origin, gateway fingerprint, opaque device id), which is tied to
+                    // this device's Keystore key and is useless — or confusing — on another phone.
+                    if (provider !is ProviderSetting.Codex &&
+                        provider !is ProviderSetting.ClaudeP
+                    ) {
                         val shareSheetState = rememberShareSheetState()
                         ShareSheet(shareSheetState)
                         IconButton(
@@ -269,6 +276,13 @@ private fun SettingProviderConfigPage(
         CodexProviderConfigure(
             provider = provider,
             onEdit = onEdit,
+        )
+        return
+    }
+    if (provider is ProviderSetting.ClaudeP) {
+        ClaudePProviderConfigure(
+            provider = provider,
+            onEdit = { onEdit(it) },
         )
         return
     }
@@ -399,6 +413,25 @@ private fun ModelList(
     val providerManager = koinInject<ProviderManager>()
     val toaster = LocalToaster.current
     val modelList by produceState(emptyList(), providerSetting) {
+        // An unpaired Claude P has no gateway to ask. Showing the cached catalog (empty until
+        // pairing exists) avoids a guaranteed NOT_PAIRED failure and the error toast that would
+        // come with it, while still being honest about what is available.
+        if (providerSetting is ProviderSetting.ClaudeP &&
+            providerSetting.pairingState != ClaudePPairingState.PAIRED
+        ) {
+            value = providerSetting.cachedModels.map { cached ->
+                Model(
+                    modelId = cached.alias,
+                    displayName = cached.displayName.ifBlank { cached.alias },
+                    abilities = if (cached.reasoningSummary) {
+                        listOf(ModelAbility.REASONING)
+                    } else {
+                        emptyList()
+                    },
+                )
+            }
+            return@produceState
+        }
         runCatching {
             value = providerManager.getProviderByType(providerSetting)
                 .listModels(providerSetting)

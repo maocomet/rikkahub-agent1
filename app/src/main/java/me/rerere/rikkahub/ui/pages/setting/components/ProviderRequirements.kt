@@ -38,6 +38,14 @@ data class ProviderRequirement(
                     severity = TagType.INFO,
                 ),
             )
+            // Without this the provider list would imply Claude P needs nothing special, while in
+            // fact it is unusable until a Gateway is paired (CP1-B).
+            is ProviderSetting.ClaudeP -> listOf(
+                ProviderRequirement(
+                    label = "Requires device pairing",
+                    severity = TagType.WARNING,
+                ),
+            )
             else -> emptyList()
         }
     }

@@ -5,6 +5,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlin.uuid.Uuid
+import me.rerere.ai.provider.claudep.ClaudePCachedModel
+import me.rerere.ai.provider.claudep.ClaudePDeviceDescriptor
+import me.rerere.ai.provider.claudep.ClaudePPairingState
 
 @Serializable
 data class BalanceOption(
@@ -381,6 +384,90 @@ sealed class ProviderSetting {
         }
     }
 
+    /**
+     * Claude P — a remote Claude Code runtime behind a user-owned Gateway.
+     *
+     * Deliberately its own subtype rather than a reuse of [Claude] (which is the Anthropic
+     * Messages API) or [Codex] (OpenAI Responses). The three authenticate completely differently:
+     * Claude P holds a revocable device identity and never sees a Claude OAuth token.
+     *
+     * ### What may be persisted here
+     *
+     * Only non-secret, user-visible state: the paired origin, the gateway's public fingerprint and
+     * installation id, the opaque device id, a cached model catalog and a pairing state.
+     *
+     * ### What must never be persisted here
+     *
+     * Claude OAuth credentials, VPS SSH keys, access/refresh tokens, cookies, Worker socket paths
+     * and Claude CLI paths. Settings JSON is backed up to WebDAV and exported through QR codes, so
+     * a secret written here is a secret published. The Keystore-held device private key and the
+     * short-lived access credential live in dedicated stores (CP1-B).
+     */
+    @Serializable
+    @SerialName("claude_p")
+    data class ClaudeP(
+        override var id: Uuid = CLAUDEP_PROVIDER_ID,
+        // Ships disabled. The provider cannot be used until the user pairs a gateway (CP1-B).
+        override var enabled: Boolean = false,
+        override var name: String = "Claude P",
+        override var models: List<Model> = emptyList(),
+        override val balanceOption: BalanceOption = BalanceOption(),
+        @Transient override val builtIn: Boolean = true,
+        @Transient override val description: @Composable (() -> Unit) = {},
+        @Transient override val shortDescription: @Composable (() -> Unit) = {},
+        /** Normalized https origin learned from the pairing QR. Never hand-edited. */
+        @SerialName("paired_origin") var pairedOrigin: String? = null,
+        /** Public key fingerprint of the paired gateway, shown for user verification. */
+        @SerialName("gateway_fingerprint") var gatewayFingerprint: String? = null,
+        /** Stable identifier of the gateway installation. */
+        @SerialName("gateway_installation_id") var gatewayInstallationId: String? = null,
+        /** Opaque device identity; useless without the Keystore private key. */
+        @SerialName("device") var device: ClaudePDeviceDescriptor = ClaudePDeviceDescriptor(),
+        @SerialName("pairing_state") var pairingState: ClaudePPairingState = ClaudePPairingState.NOT_PAIRED,
+        /** Cached catalog. A display cache only — never the authority for capabilities. */
+        @SerialName("cached_models") var cachedModels: List<ClaudePCachedModel> = emptyList(),
+        @SerialName("catalog_cached_at") var catalogCachedAt: String? = null,
+        /** Claude Code version the gateway reported, shown read-only. */
+        @SerialName("claude_code_version") var claudeCodeVersion: String? = null,
+    ) : ProviderSetting() {
+        override fun addModel(model: Model): ProviderSetting = copy(models = models + model)
+
+        override fun editModel(model: Model): ProviderSetting =
+            copy(models = models.map { if (it.id == model.id) model.copy() else it })
+
+        override fun delModel(model: Model): ProviderSetting =
+            copy(models = models.filter { it.id != model.id })
+
+        override fun moveMove(from: Int, to: Int): ProviderSetting {
+            return copy(models = models.toMutableList().apply {
+                val model = removeAt(from)
+                add(to, model)
+            })
+        }
+
+        override fun copyProvider(
+            id: Uuid,
+            enabled: Boolean,
+            name: String,
+            models: List<Model>,
+            balanceOption: BalanceOption,
+            builtIn: Boolean,
+            description: @Composable (() -> Unit),
+            shortDescription: @Composable (() -> Unit),
+        ): ProviderSetting {
+            return copy(
+                id = id,
+                enabled = enabled,
+                name = name,
+                models = models,
+                balanceOption = balanceOption,
+                builtIn = builtIn,
+                description = description,
+                shortDescription = shortDescription,
+            )
+        }
+    }
+
     companion object {
         // Types presented to the user when adding / converting a provider. AICore is
         // intentionally NOT in this list: it is a singleton built-in (one per device,
@@ -405,6 +492,12 @@ enum class AICoreReleaseStage { STABLE, PREVIEW }
 // conversations referencing them survive app re-installs and provider re-seeds.
 val AICORE_PROVIDER_ID: Uuid = Uuid.parse("a1c0a1c0-1234-4111-a000-000000000001")
 val LITERT_PROVIDER_ID: Uuid = Uuid.parse("11111111-aaaa-bbbb-cccc-000000000002")
+
+// Stable identity for the Claude P provider, so persisted settings, backup archives and QR
+// exports keep referring to the same provider across re-installs and re-seeds. Claude P is a
+// singleton built-in (one paired gateway per device), so unlike OpenAI/Google/Claude it is not
+// offered in `ProviderSetting.Types` and never appears in the Add/Convert selector.
+val CLAUDEP_PROVIDER_ID: Uuid = Uuid.parse("cb1ade90-0001-4a1a-9f01-0000000000a1")
 private val AICORE_NANO_FAST_ID: Uuid = Uuid.parse("a1c0a1c0-1234-4111-a000-000000000002")
 private val AICORE_NANO_FULL_ID: Uuid = Uuid.parse("a1c0a1c0-1234-4111-a000-000000000003")
 

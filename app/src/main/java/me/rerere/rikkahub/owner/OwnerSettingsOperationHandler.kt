@@ -810,6 +810,11 @@ class OwnerSettingsOperationHandler(
         is ProviderSetting.OpenAI -> "openai"
         is ProviderSetting.Google -> "google"
         is ProviderSetting.Claude -> "claude"
+        // Explicit rather than the `else` fallback: every other surface (registry key, secret
+        // inventory, importer, background host) reports "claude_p", and the bare simpleName would
+        // report "claudep" — a type string no other API recognises and `providerCreate` cannot
+        // round-trip.
+        is ProviderSetting.ClaudeP -> "claude_p"
         else -> this::class.simpleName.orEmpty().lowercase()
     }
 

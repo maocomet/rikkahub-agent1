@@ -129,6 +129,9 @@ object CherryStudioProviderImporter {
             is ProviderSetting.AICore -> "aicore|${provider.id}"
             is ProviderSetting.LiteRtLocal -> "local_litert|${provider.id}"
             is ProviderSetting.Codex -> "codex|${provider.id}"
+            // Deliberately keyed on the device identity rather than the origin: two devices paired
+            // to the same gateway are distinct providers and must not be merged by an import.
+            is ProviderSetting.ClaudeP -> "claude_p|${provider.device.deviceId}|${provider.id}"
         }
     }
 }

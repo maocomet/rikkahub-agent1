@@ -251,6 +251,9 @@ private fun ProviderSetting.dreamProviderKind(): String = when (this) {
     is ProviderSetting.AICore -> "aicore"
     is ProviderSetting.LiteRtLocal -> "litert"
     is ProviderSetting.Codex -> "codex"
+    // Reachable only for identity labelling. Dreaming never selects Claude P as a model: the
+    // background host excludes it, so this string cannot appear in a real synthesis run.
+    is ProviderSetting.ClaudeP -> "claude_p"
 }
 
 private fun dreamModelIdentityDigest(

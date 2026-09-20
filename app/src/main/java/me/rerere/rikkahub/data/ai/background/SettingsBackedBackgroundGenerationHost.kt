@@ -195,6 +195,11 @@ fun ProviderSetting.officialBackgroundRemoteKindOrNull():
     is ProviderSetting.AICore,
     is ProviderSetting.LiteRtLocal,
     is ProviderSetting.Codex,
+    // Claude P is excluded from background work by contract (claudep/06 D-010). Its runtime lives
+    // on a user-operated VPS that may be offline, asleep or revoked, and it has no fenced
+    // cancellation ABI on this side yet — so it must never be offered as an authorization
+    // candidate, regardless of what its origin looks like.
+    is ProviderSetting.ClaudeP,
     -> null
 }
 
@@ -430,6 +435,11 @@ class ProviderManagerBackgroundTextProviderResolver(
                     providerSetting,
                     providerManager.getProviderByType(providerSetting),
                 )
+                // Explicitly fail closed rather than wrapping. Resolving a provider here would
+                // make Claude P *reachable* by background scheduling, dreaming, learning and
+                // sub-agents; the exclusion is a product contract (claudep/04 §7), not an
+                // accident of a missing capability marker.
+                is ProviderSetting.ClaudeP -> null
             }
         } catch (_: Exception) {
             null
@@ -805,6 +815,12 @@ class SettingsBackedBackgroundGenerationHost(
         if (provider is ProviderSetting.AICore) {
             return LearningModelResolution.Unavailable(LearningModelResolutionFailure.AICORE_EXCLUDED)
         }
+        // Explicit Claude P exclusion, mirroring AICore. The origin classifier already drops it,
+        // so this is defence in depth: enabling the provider in settings must not be enough to
+        // make it reachable from an unattended background path.
+        if (provider is ProviderSetting.ClaudeP) {
+            return LearningModelResolution.Unavailable(LearningModelResolutionFailure.CLAUDEP_EXCLUDED)
+        }
         if (!provider.enabled || model.providerOverwrite != null) {
             return LearningModelResolution.Unavailable(LearningModelResolutionFailure.NO_CONFIGURATION)
         }
@@ -894,6 +910,12 @@ class SettingsBackedBackgroundGenerationHost(
         val (provider, model) = match
         if (provider is ProviderSetting.AICore) {
             return LearningModelResolution.Unavailable(LearningModelResolutionFailure.AICORE_EXCLUDED)
+        }
+        // Explicit Claude P exclusion, mirroring AICore. The origin classifier already drops it,
+        // so this is defence in depth: enabling the provider in settings must not be enough to
+        // make it reachable from an unattended background path.
+        if (provider is ProviderSetting.ClaudeP) {
+            return LearningModelResolution.Unavailable(LearningModelResolutionFailure.CLAUDEP_EXCLUDED)
         }
         if (!provider.enabled || model.providerOverwrite != null) {
             return LearningModelResolution.Unavailable(LearningModelResolutionFailure.NO_CONFIGURATION)
@@ -1065,7 +1087,11 @@ class SettingsBackedBackgroundGenerationHost(
         if (!provider.enabled) {
             return HostResolution.Unavailable(BackgroundBindingUnavailableReason.PROVIDER_DISABLED)
         }
-        if (provider is ProviderSetting.AICore || model.providerOverwrite != null) {
+        if (
+            provider is ProviderSetting.AICore ||
+            provider is ProviderSetting.ClaudeP ||
+            model.providerOverwrite != null
+        ) {
             return HostResolution.Unavailable(BackgroundBindingUnavailableReason.UNSUPPORTED_PROVIDER)
         }
         if (
@@ -1218,7 +1244,11 @@ class SettingsBackedBackgroundGenerationHost(
             return BackgroundBindingUnavailableReason.BACKGROUND_NOT_AUTHORIZED
         }
         if (!provider.enabled) return BackgroundBindingUnavailableReason.PROVIDER_DISABLED
-        if (provider is ProviderSetting.AICore || model.providerOverwrite != null) {
+        if (
+            provider is ProviderSetting.AICore ||
+            provider is ProviderSetting.ClaudeP ||
+            model.providerOverwrite != null
+        ) {
             return BackgroundBindingUnavailableReason.UNSUPPORTED_PROVIDER
         }
         if (
@@ -1529,6 +1559,8 @@ private fun BackgroundGenerationSettingsSnapshot.findByPublicIdentity(
 private fun ProviderSetting.learningKind(): LearningProviderKind = when (this) {
     is ProviderSetting.AICore -> LearningProviderKind.AICORE
     is ProviderSetting.LiteRtLocal -> LearningProviderKind.LOCAL_LITERT
+    // Claude P intentionally has no kind of its own. LearningModelResolver rejects it before this
+    // classification is ever consulted, so a dedicated member would only imply it is selectable.
     else -> LearningProviderKind.REMOTE
 }
 
@@ -1539,6 +1571,7 @@ private fun ProviderSetting.typeTag(): String = when (this) {
     is ProviderSetting.AICore -> "aicore"
     is ProviderSetting.LiteRtLocal -> "local_litert"
     is ProviderSetting.Codex -> "codex"
+    is ProviderSetting.ClaudeP -> "claude_p"
 }
 
 private fun CanonicalSha256.providerConfiguration(
@@ -1586,6 +1619,15 @@ private fun CanonicalSha256.providerConfiguration(
         is ProviderSetting.AICore -> string("aicore_stage", provider.releaseStage.name)
         is ProviderSetting.LiteRtLocal -> Unit
         is ProviderSetting.Codex -> Unit
+        // Non-secret request-affecting surface only. No credential has an analogue here: the
+        // device private key never leaves the Keystore and is unreachable to this digest.
+        is ProviderSetting.ClaudeP -> {
+            nullableString("claude_p_paired_origin", provider.pairedOrigin)
+            nullableString("claude_p_gateway_fingerprint", provider.gatewayFingerprint)
+            nullableString("claude_p_installation", provider.gatewayInstallationId)
+            string("claude_p_pairing_state", provider.pairingState.name)
+            nullableString("claude_p_claude_code_version", provider.claudeCodeVersion)
+        }
     }
     return this
 }
@@ -1623,6 +1665,9 @@ private fun CanonicalSha256.publicProviderPolicyApplicability(
         is ProviderSetting.LiteRtLocal,
         is ProviderSetting.Codex,
         -> Unit
+        // Claude P contributes nothing to learned-Policy applicability: it is never a background
+        // candidate, so no background policy can be conditioned on it.
+        is ProviderSetting.ClaudeP -> Unit
     }
     return this
 }

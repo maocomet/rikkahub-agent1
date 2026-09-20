@@ -55,6 +55,15 @@ enum class LearningModelResolutionFailure {
     BACKGROUND_NOT_AUTHORIZED,
     REMOTE_REFLECTION_DISABLED,
     AICORE_EXCLUDED,
+
+    /**
+     * Claude P never participates in Agent Learning. Its runtime is a user-operated VPS that may
+     * be offline or revoked, it has no fenced cancellation ABI on this side, and unattended
+     * learning would spend the user's subscription without a foreground request. See
+     * `claudep/06-decisions-and-open-items.md` D-010.
+     */
+    CLAUDEP_EXCLUDED,
+
     CANCELLATION_UNSAFE,
     INVALID_IDENTITY,
 }

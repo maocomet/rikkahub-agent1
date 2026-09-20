@@ -9,6 +9,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import me.rerere.ai.provider.BalanceOption
+import me.rerere.ai.provider.CLAUDEP_PROVIDER_ID
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
@@ -95,6 +96,16 @@ val DEFAULT_PROVIDERS = listOf(
     ProviderSetting.Codex(
         id = DEFAULT_CODEX_PROVIDER_ID,
         name = "Codex",
+        enabled = false,
+        builtIn = true,
+    ),
+    ProviderSetting.ClaudeP(
+        // Remote Claude Code runtime behind the user's own Gateway. Disabled and unpaired by
+        // default: this build ships no pairing flow, so the card exists to make the provider
+        // discoverable and honest about its state ("not yet paired") rather than to be usable.
+        // Real pairing is CP1-B.
+        id = CLAUDEP_PROVIDER_ID,
+        name = "Claude P",
         enabled = false,
         builtIn = true,
     ),

@@ -1195,6 +1195,12 @@ class DoctorChecks(
                     // default — don't count it.
                     is me.rerere.ai.provider.ProviderSetting.LiteRtLocal -> p.enabled && p.models.isNotEmpty()
                     is me.rerere.ai.provider.ProviderSetting.Codex -> p.enabled  // OAuth, no API key
+                    // Claude P is "configured" only once a gateway is actually paired. An enabled
+                    // but unpaired provider is the factory default and would otherwise be counted
+                    // as usable while every request fails NOT_PAIRED.
+                    is me.rerere.ai.provider.ProviderSetting.ClaudeP ->
+                        p.enabled && p.pairingState ==
+                            me.rerere.ai.provider.claudep.ClaudePPairingState.PAIRED
                 }
             }
             add(

@@ -216,6 +216,16 @@ internal fun generationProviderIdentity(provider: ProviderSetting): String =
                 is ProviderSetting.LiteRtLocal,
                 is ProviderSetting.Codex,
                 -> Unit
+                // Request-affecting, non-secret surface only. Claude P's device credential is
+                // deliberately unreachable here, so rotating a token cannot silently change a
+                // generation identity that durable state was keyed on.
+                is ProviderSetting.ClaudeP -> {
+                    add(provider.pairedOrigin.orEmpty())
+                    add(provider.gatewayFingerprint.orEmpty())
+                    add(provider.gatewayInstallationId.orEmpty())
+                    add(provider.pairingState.name)
+                    add(provider.claudeCodeVersion.orEmpty())
+                }
             }
         }.joinToString("\u0000"),
     )
