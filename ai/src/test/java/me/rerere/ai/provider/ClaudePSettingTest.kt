@@ -58,14 +58,20 @@ class ClaudePSettingTest {
         )
     }
 
+    /**
+     * Claude P is a separate subtype from the API-key providers, but that is a *compile-time*
+     * fact about a sealed hierarchy — asserting it with `is` is rejected by Kotlin 2.x as
+     * "check for instance is always 'false'", and it could never have failed at runtime.
+     *
+     * The property that actually matters is enforced where it can fail: `claude_p` has its own
+     * wire discriminator (`the serialized name is the stable claude_p discriminator`) and a
+     * `claude_p` entry decodes back to `ClaudeP` and nothing else, including inside a list that
+     * also holds OpenAI and Codex entries (`a claude_p entry round-trips inside a mixed provider
+     * list`). What remains here is only the Kotlin type name used by diagnostics.
+     */
     @Test
-    fun `claude_p is distinct from the api-key providers`() {
-        assertFalse(ProviderSetting.ClaudeP() is ProviderSetting.Claude)
-        assertFalse(ProviderSetting.ClaudeP() is ProviderSetting.OpenAI)
-        assertFalse(ProviderSetting.ClaudeP() is ProviderSetting.Codex)
-
-        val name = ProviderSetting.ClaudeP::class.simpleName
-        assertEquals("ClaudeP", name)
+    fun `claude_p kotlin class name is stable`() {
+        assertEquals("ClaudeP", ProviderSetting.ClaudeP::class.simpleName)
     }
 
     /**
