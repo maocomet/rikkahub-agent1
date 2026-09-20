@@ -82,13 +82,30 @@ class ClaudePProtocolTest {
     }
 
     @Test
-    fun `a missing protocol field is rejected`() {
+    fun `an empty protocol field is rejected`() {
         val inbound = ClaudePProtocol.parseInbound(
             frame(ClaudePEventType.TEXT_DELTA, protocol = ""),
         )
 
         assertEquals(
             ClaudePParseRejection.MISSING_PROTOCOL,
+            (inbound as ClaudePInbound.Rejected).reason,
+        )
+    }
+
+    /**
+     * Regression guard for a fail-open that a defaulted `ClaudePEnvelope.protocol` would create:
+     * a frame with no `protocol` key at all would silently decode to v1 and be accepted. Every
+     * other rejection test sends a *present but wrong* value; this one sends nothing.
+     */
+    @Test
+    fun `a frame with no protocol field at all fails closed instead of assuming v1`() {
+        val inbound = ClaudePProtocol.parseInbound(
+            """{"type":"text.delta","sequence":1,"body":{"text":"hi"}}""",
+        )
+
+        assertEquals(
+            ClaudePParseRejection.MALFORMED_FRAME,
             (inbound as ClaudePInbound.Rejected).reason,
         )
     }
@@ -201,6 +218,7 @@ class ClaudePProtocolTest {
     fun `envelope toString never exposes its body`() {
         val secret = "sk-ant-oat01-super-secret-prompt"
         val envelope = ClaudePEnvelope(
+            protocol = ClaudePProtocol.PROTOCOL_ID,
             type = ClaudePEventType.TEXT_DELTA,
             body = buildJsonObject { put("text", secret) },
         )

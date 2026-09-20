@@ -279,7 +279,13 @@ class ClaudePProvider(
      * Rejects anything Phase 1 cannot faithfully send.
      *
      * Runs before the flow is constructed, so a rejected input cannot have reached the gateway.
+     *
+     * The deprecated `ToolCall` / `ToolResult` / `Search` branches are suppressed rather than
+     * removed: `UIMessagePart` is sealed, so every subtype must be handled, and those variants are
+     * still present in conversation history persisted by older builds. Dropping them would mean a
+     * legacy tool turn silently reaching a provider that cannot execute tools.
      */
+    @Suppress("DEPRECATION")
     private fun rejectUnsupportedInput(messages: List<UIMessage>, params: TextGenerationParams) {
         if (params.tools.isNotEmpty()) {
             throw ClaudePUnsupportedInputException(ClaudePUnsupportedInput.TOOL_DEFINITION)
@@ -485,7 +491,7 @@ private fun ClaudePTerminalGate.route(event: ClaudePServerEvent): ClaudePFrameRo
 }
 
 /** Collects a frame stream through [routeFrame], tracking terminal state as it goes. */
-private suspend fun <T> pumpFrames(
+private suspend fun pumpFrames(
     frames: Flow<String>,
     gate: ClaudePTerminalGate,
     generationId: String?,

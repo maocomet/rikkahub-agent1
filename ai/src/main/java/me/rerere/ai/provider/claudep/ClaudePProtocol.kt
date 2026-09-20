@@ -176,7 +176,10 @@ enum class ClaudePParseRejection {
     /** Not decodable as an envelope at all. */
     MALFORMED_FRAME,
 
-    /** Envelope arrived without a `protocol` field. */
+    /**
+     * Envelope carried an empty `protocol`. A *wholly absent* field never reaches this branch —
+     * it fails decoding first, because [ClaudePEnvelope.protocol] has no default.
+     */
     MISSING_PROTOCOL,
 
     /** `protocol` is not a `<family>.v<major>` identifier. */
@@ -399,7 +402,13 @@ private const val HEX = "0123456789abcdef"
 /** Envelope shared by every frame in both directions. */
 @Serializable
 data class ClaudePEnvelope(
-    val protocol: String = ClaudePProtocol.PROTOCOL_ID,
+    /**
+     * Deliberately **has no default**. A default here would mean a frame that omits `protocol`
+     * decodes to v1 and is accepted — exactly the "assume v1" fail-open the parser's ordering
+     * exists to prevent. Without a default, an absent field fails decoding and is rejected as
+     * [ClaudePParseRejection.MALFORMED_FRAME].
+     */
+    val protocol: String,
     val type: String,
     @SerialName("connection_id") val connectionId: String? = null,
     @SerialName("request_id") val requestId: String? = null,

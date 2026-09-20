@@ -157,7 +157,7 @@ class FakeClaudePGatewayClient(
                     )
                 }
                 val generation = generations.getValue(existing.generationId)
-                return FakeGenerationHandle(generation, requestId, acceptedSeq = ACCEPTED_SEQ)
+                return FakeGenerationHandle(generation, requestId, acceptedEventSeq = ACCEPTED_SEQ)
             }
 
             val entry = catalogModels.firstOrNull { it.alias == body.modelAlias && it.enabled }
@@ -173,7 +173,7 @@ class FakeClaudePGatewayClient(
             generations[generationId] = generation
             idempotency[requestId] = IdempotencyEntry(fingerprint, generationId)
 
-            return FakeGenerationHandle(generation, requestId, acceptedSeq = ACCEPTED_SEQ)
+            return FakeGenerationHandle(generation, requestId, acceptedEventSeq = ACCEPTED_SEQ)
         }
     }
 
