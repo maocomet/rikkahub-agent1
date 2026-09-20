@@ -12,7 +12,7 @@ Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1a`
 | 项目 | 值 |
 |---|---|
 | 权威基线 | `c00f6f3d916ca94468a13e13e15fdffe5e81db1e` |
-| 代码与测试的最终提交 | `cfcc649f`（测试）；主代码见 `9be999b5` |
+| 代码与测试的最终提交 | `73c215bc` |
 | 证据提交（本报告） | 位于上述提交之上；精确值以 `git log --oneline -1` 为准（本文件无法记录包含自身的哈希） |
 | 基线是否为 HEAD 祖先 | **是**（`git merge-base --is-ancestor` 退出码 0） |
 | 源仓库 `D:\rikkahub-agent1` | 未被修改，仍为 `c00f6f3d`，未跟踪文件原样保留 |
@@ -27,7 +27,9 @@ Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1a`
 | 2 | `9be999b5` | `feat(claudep): add local provider protocol skeleton` |
 | 3 | `cfcc649f` | `test(claudep): cover fake gateway and provider boundaries` |
 | 4 | `a0159631` | `ci: run Claude P unit tests in the debug APK workflow` |
-| 5 | *(本报告)* | `docs(claudep): record CP1-A local evidence` |
+| 5 | `1a4ebcb0` | `docs(claudep): record CP1-A local evidence` |
+| 6 | `73c215bc` | `fix(claudep): correct two compile errors in the Claude P tests`（复审判定） |
+| 7 | *(本报告修订)* | `docs(claudep): record CP1-A review findings` |
 
 Phase 0 文档为**逐字节复制**；源目录 `D:\rikkahub-agent1\claudep` 未被删除、移动或修改（复制后源目录仍为 9 个文件）。
 
@@ -173,7 +175,9 @@ Gradle 连**配置阶段**都无法通过，因此下列项目**一律未执行�
 
 ### 4.3 替代验证：人工编译复审
 
-由于无法编译，实现完成后进行了两轮独立的人工复审（符号级编译正确性 + 全仓穷举分支完整性），详见 §7。
+由于无法编译，实现完成后进行了三轮独立复审（全仓穷举分支完整性 + 主源码符号级编译 + 测试符号级编译）。**其中测试那一轮使用了本机真实 Kotlin 编译器与项目真实 JUnit jar 实编译验证**，并据此发现并修复了 2 个真实编译错误。详见 §7、§8。
+
+需强调：这只提升了「编译正确性」这一项的置信度，**不构成任何测试执行证据**。§4.2 的未执行清单不受影响。
 
 ---
 
@@ -268,10 +272,12 @@ Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报�
 
 ## 7. 复审记录
 
-实现完成后执行了两轮独立人工复审（因无法编译，这是唯一的正确性检查手段）：
+实现完成后执行了三轮独立复审（因无法编译，这是唯一的正确性检查手段）。第一次派出的编译复审**因 API 错误中途失败、未产出任何结论**，已重新派出并拆分范围，故实际有效复审如下：
 
-1. **`ai` 模块符号级编译复审**——逐符号核对导入、签名、可见性、穷举性。
-2. **全仓接线与穷举分支复审**——扫描所有模块的 `when (ProviderSetting...)`，核对新增分支完整性与 `else` 分支的语义正确性。
+1. **全仓接线与穷举分支复审**——扫描所有模块的 `when (ProviderSetting...)`，核对新增分支完整性与 `else` 分支的语义正确性。
+2. **`ai` 主源码编译复审**——逐符号核对导入、签名、可见性、sealed 穷举。
+3. **`ai` 测试编译复审**——逐符号核对测试中调用/构造的每个符号。
+   **该轮使用了本地 Gradle 发行版中真实的 Kotlin 编译器与项目真实的 JUnit 4.13.2 jar 进行实际编译验证**，而非仅人工阅读。它因此给出了带编译器诊断的确定性结论，并**发现 2 个真实编译错误**（见 §8 #11、#12）。这一轮的证据强度高于纯人工复审。
 
 复审结论：
 
@@ -304,9 +310,22 @@ Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报�
 | 9 | `OwnerSettingsOperationHandler.typeName()` 的 `else` 让 ClaudeP 报成 `"claudep"`，与其余所有面（`claude_p`）不一致，且 `providerCreate` 无法回环 | 新增显式分支返回 `"claude_p"` |
 | 10 | `SecretOwnerOperationHandler` 的凭证清单对 ClaudeP 报 `UNBOUND`，会诱导 owner/agent 去绑定一个永远不适用的 secret | 新增显式分支报 `NOT_APPLICABLE`，并说明 ClaudeP 使用设备身份而非 API key |
 
+第三轮（编译复审，经真实编译器验证）发现并修复：
+
+| # | 问题 | 处理 |
+|---|---|---|
+| 11 | `ClaudePFakeGatewayTest` 以全限定名调用 `kotlinx.serialization.json.put(...)`。`put` 是 `JsonObjectBuilder` 的**扩展函数**，全限定调用形式即使有隐式接收者也不解析 → `unresolved reference 'put'` | 增加 `import`，改为非全限定调用（同行的 `buildJsonObject` 是顶层函数，全限定调用合法） |
+| 12 | `ClaudePProviderStreamTest` 中 `assertNotNull(instance.negotiatedServerHello).claudeCodeVersion` —— JUnit 4 的 `assertNotNull` 返回 **void**，无法链式取成员 → `unresolved reference` | 改为 `requireNotNull(...)` 后单独断言 |
+
+同轮复审确认为**非问题**（均已用真实编译器/javap 验证）：`assertThrows` 的非 Unit lambda 体（SAM + Unit 强制转换）、`Json.decodeFromString` reified 重载无需 import、`ClaudeP` 序列化出的 14 个键与 `JsonInstant` 实际写入完全一致、禁止子串扫描无误伤、测试源集可见 `internal` 符号。
+
 其中 #8 是**测试有效性**问题而非测试失败问题——空测试会通过，但什么也保护不了；这正是"绿色 CI 不等于有效验证"的典型情形，故按缺陷处理。
 
 **无任何中间失败被记录为通过。**
+
+### 复审机制自身的一次失败
+
+第一次派出的 `ai` 模块编译复审因 API 连接中断而**未产出任何结论**。该失败已如实记录，未计为"已复审"；重新派出并拆分范围后才得到上述 #11、#12。这一点值得列出，因为它说明：本轮的所有编译正确性结论都来自复审，而复审本身也会失败——这正是必须由 CI 复核的原因。
 
 ---
 
