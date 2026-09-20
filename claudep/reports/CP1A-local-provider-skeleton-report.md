@@ -1,9 +1,10 @@
 # CP1-A｜本地 Provider 骨架与 fake Gateway — 实施报告
 
-状态：**待复审（未推送、未触发 CI）**
+状态：**CI 验收通过（R2 全绿）— 停在复审点，等待人工复审**
 日期：2026-09-20
-分支：`codex/claudep-cp1a-local`
+分支：`codex/claudep-cp1a-local`（已推送，未合并）
 Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1a`
+通过依据：Run [35499704797](https://github.com/maocomet/rikkahub-agent1/actions/runs/35499704797) @ `c655fc938f85c6e32de3cf48fa57d432432a6ea8`
 
 ---
 
@@ -12,12 +13,13 @@ Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1a`
 | 项目 | 值 |
 |---|---|
 | 权威基线 | `c00f6f3d916ca94468a13e13e15fdffe5e81db1e` |
-| 代码与测试的最终提交 | `76b38483` |
-| 证据提交（本报告） | 位于上述提交之上；精确值以 `git log --oneline -1` 为准（本文件无法记录包含自身的哈希） |
+| 代码与测试的最终提交 | `c655fc938f85c6e32de3cf48fa57d432432a6ea8` |
+| **CI 验证过的 SHA** | `c655fc938f85c6e32de3cf48fa57d432432a6ea8`（**严格等于**最终提交） |
+| CI 结论 | **success**（R2） |
 | 基线是否为 HEAD 祖先 | **是**（`git merge-base --is-ancestor` 退出码 0） |
 | 源仓库 `D:\rikkahub-agent1` | 未被修改，仍为 `c00f6f3d`，未跟踪文件原样保留 |
-| 分支已推送 | **否** |
-| Tag / Release | 未创建 |
+| 分支已推送 | **是**，仅 `codex/claudep-cp1a-local`；**master 未触碰** |
+| PR / Tag / Release | 均未创建 |
 
 ### 提交清单
 
@@ -28,10 +30,13 @@ Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1a`
 | 3 | `cfcc649f` | `test(claudep): cover fake gateway and provider boundaries` |
 | 4 | `a0159631` | `ci: run Claude P unit tests in the debug APK workflow` |
 | 5 | `1a4ebcb0` | `docs(claudep): record CP1-A local evidence` |
-| 6 | `73c215bc` | `fix(claudep): correct two compile errors in the Claude P tests`（复审判定） |
+| 6 | `73c215bc` | `fix(claudep): correct two compile errors in the Claude P tests`（复审线索） |
 | 7 | `6ec9a706` | `docs(claudep): record CP1-A review findings` |
-| 8 | `76b38483` | `fix(claudep): fix compile errors and a fail-open protocol default`（复审判定） |
-| 9 | *(本报告再修订)* | `docs(claudep): record second review round` |
+| 8 | `76b38483` | `fix(claudep): fix compile errors and a fail-open protocol default`（复审线索） |
+| 9 | `a557c801` | `docs(claudep): record second review round` ← **R0 被验证的提交（失败）** |
+| 10 | `0d2faf5b` | `test(claudep): replace impossible provider type checks` ← **R1 被验证的提交（失败）** |
+| 11 | `c655fc93` | `test(claudep): compare persistent provider fields` ← **R2 被验证的提交（通过）** |
+| 12 | *(本报告)* | `docs(claudep): record CP1-A CI verification` |
 
 Phase 0 文档为**逐字节复制**；源目录 `D:\rikkahub-agent1\claudep` 未被删除、移动或修改（复制后源目录仍为 9 个文件）。
 
@@ -146,9 +151,50 @@ Phase 0 文档为**逐字节复制**；源目录 `D:\rikkahub-agent1\claudep` �
 | 无调试残留 | 对改动文件 grep `TODO`/`FIXME`/`println` | 0 处（唯一的 `printStackTrace` 属既有代码） | 0 |
 | 源码仓库未被触碰 | `git -C D:\rikkahub-agent1 status --short` | 与开始时一致 | 0 |
 
-### 4.2 因缺少 Android SDK 而**未执行**的检查
+### 4.2 正式 CI 验证：R2 全绿（**唯一通过证据**）
 
-本机**没有** Android SDK，且用户明确要求本轮不安装。实测证据：
+CP1-A 的通过结论**只**来自正式 Gradle/Android CI，且只来自 R2。
+
+| 项 | 值 |
+|---|---|
+| Workflow | `Build Debug APK`（`.github/workflows/build-debug-apk.yml`） |
+| 事件 / ref | `workflow_dispatch` / `codex/claudep-cp1a-local` |
+| Run | https://github.com/maocomet/rikkahub-agent1/actions/runs/35499704797 （run_number 74） |
+| 被验证 SHA | `c655fc938f85c6e32de3cf48fa57d432432a6ea8`（**严格等于**最终提交） |
+| 结论 | **success** |
+
+全部 16 个执行步骤 success。唯一 skipped 是 `Diagnose web-ui build (on failure)` —— 其 `if: failure()` 决定它在成功运行中**按设计**不执行，不是漏跑。
+
+CI 门禁逐项核对：
+
+| 门禁 | 结果 |
+|---|---|
+| `assembleDebug`（第 9 步） | ✅ success |
+| 既有 `:app:testDebugUnitTest`（第 11 步） | ✅ success |
+| `:ai:compileDebugUnitTestKotlin` | ✅ success |
+| 9 个 Claude P 测试类产出真实 JUnit XML（第 14 步） | ✅ `Total Claude P test classes executed: 9` |
+| 全日志 `FAILED` 出现次数 | **0** |
+| workflow SHA == 提交 SHA | ✅ |
+
+**测试计数（合计 101）：**
+
+| 模块 | 类数 | 收集 | 执行 | 通过 | 失败 | 跳过 |
+|---|---:|---:|---:|---:|---:|---:|
+| `:ai` Claude P | 7 | 90 | 90 | 90 | 0 | 0 |
+| `:app` Claude P | 2 | 11 | 11 | 11 | 0 | 0 |
+| **合计** | **9** | **101** | **101** | **101** | **0** | **0** |
+
+计数依据与**已知观测限制**（如实标注）：
+
+- **执行 101**：由第 14 步列出的 9 个真实 JUnit XML 证明 —— 只有真正运行过的类才会产出 XML。R1 时该步因 0 个 XML 而失败，正是同一机制在反向起作用。
+- **失败 0**：由 `:ai:testDebugUnitTest` 与 `:app:testDebugUnitTest` 均 `BUILD SUCCESSFUL` 证明 —— Gradle 任务在任何测试失败时必然失败。
+- **跳过 0**：由**构造**保证 —— 8 个新测试文件中不存在 `@Ignore` / `@Disabled` / `assumeTrue` / `assumeFalse` / `Assumptions`（已 grep 核实），不存在可跳过的路径。
+- **各模块条数 90 / 11**：由源码枚举得出；`:ai` 的 90 与 R1 日志的 `90 tests completed` 独立吻合。
+- **限制**：本仓库项目级关闭了 Gradle 测试日志，且该 workflow 只上传 APK、不上传测试报告，因此 CI 日志中**没有**逐类 `tests=` / `skipped=` 汇总。上表"通过 101"是「执行 101 ∧ 失败 0 ∧ 跳过 0」的推论，而非直接读取的 XML 属性。
+
+### 4.3 本机因缺少 Android SDK 而未执行的项（过程记录）
+
+以下是实现阶段本机的真实状态，**现已全部由 R2 CI 覆盖**，保留作为过程记录：
 
 ```
 > Configure project :ai
@@ -156,54 +202,71 @@ FAILURE: Build failed with an exception.
 * What went wrong:
 A problem occurred configuring project ':workspace'.
 > SDK location not found. Define a valid SDK location with an ANDROID_HOME environment
-  variable or by setting the sdk.dir path in your project's local properties file at
-  'D:\rikkahub-agent1.worktrees\claudep-cp1a\local.properties'.
+  variable or by setting the sdk.dir path ...
 BUILD FAILED in 49s
 EXIT=1
 ```
 
-Gradle 连**配置阶段**都无法通过，因此下列项目**一律未执行，不得记为通过**：
+本机始终未安装 Android SDK（用户要求），因此**本机从未编译或运行过任何测试，也没有产生任何通过结论**。
 
-| 未执行项 | 应有命令 |
-|---|---|
-| `:ai` 编译 | `./gradlew :ai:compileDebugKotlin` |
-| `:app` 编译 | `./gradlew :app:compileDebugKotlin` |
-| `:ai` 单元测试（全部 90 个 ClaudeP 测试在此） | `./gradlew :ai:testDebugUnitTest` |
-| `:app` 单元测试 | `./gradlew :app:testDebugUnitTest` |
-| lint / format | `./gradlew lint` |
-| Gradle task 枚举 | `./gradlew :ai:tasks --all` |
+### 4.4 人工/代理编译复审的定位：**仅缺陷线索，不是通过证据**
 
-**因此：本报告不包含任何编译或测试通过结论。101 个测试已编写但从未运行过。**
+实现阶段进行过四轮独立复审（全仓穷举分支完整性 + 主源码编译 + 测试编译 + 接线完整性），其中两轮使用了本机真实 Kotlin 编译器与真实依赖做实际编译。
 
-### 4.3 替代验证：人工编译复审
+**这些复审的结论一律只算"缺陷线索"。** 这一点已被事实证实两次：
 
-由于无法编译，实现完成后进行了三轮独立复审（全仓穷举分支完整性 + 主源码编译 + 测试编译）。**后两轮均使用了本机真实 Kotlin 2.3.0 编译器与项目真实依赖进行实际编译验证**，据此共发现并修复 **5 个真实编译错误 + 1 个 fail-open 缺陷**（详见 §7、§8）。
+1. 声称"用真实编译器编译过测试"的那一轮，把 `ClaudePSettingTest.kt` 判为 **clean** —— 而 CI R0 在该文件报出 3 个**编译错误**。
+2. 同一批复审未发现的"整对象相等"缺陷，直到 CI R1 才暴露。
 
-需强调：这只提升了「编译正确性」这一项的置信度，**不构成任何测试执行证据**。§4.2 的未执行清单不受影响。
+它们仍有价值：共产出 5 个真实编译错误 + 1 个 fail-open 缺陷的线索。但**取代它们的是 CI，不是它们取代 CI。**
 
 ---
 
-## 5. 后续 GitHub CI 必须执行的检查
+## 5. GitHub CI 执行记录与修复链
 
-### 5.1 应当由哪个 workflow 验证
+### 5.1 原状态下 CI 无法验证 CP1-A
 
-**`Build Debug APK`**（`.github/workflows/build-debug-apk.yml`）——它是唯一构建 `:app` 并跑 JVM 单元测试的 workflow。
+**`Build Debug APK`**（`.github/workflows/build-debug-apk.yml`）是唯一构建 `:app` 并跑 JVM 单元测试的 workflow，但原状态存在两个真实缺口：
 
-**但原状态下它无法验证 CP1-A**，存在两个真实缺口：
-
-1. **没有任何 workflow 运行 `:ai` 的单元测试。** 全部 8 个 ClaudeP 测试类中有 6 个在 `:ai`，即 90/101 个测试永远不会执行（`:ai` 的 90 条完全不会运行，`:app` 的 11 条会编译但不会执行）。
+1. **没有任何 workflow 运行 `:ai` 的单元测试。** 101 个测试中有 90 个在 `:ai`，即绝大多数永远不会执行。
 2. **`:app:testDebugUnitTest` 使用 `--tests` 白名单**（约 40 个固定模式）。新增的 `:app` 测试会被**编译**但永不**运行**。
 
-### 5.2 本轮对 CI 的修改（唯一一处，最小化）
+### 5.2 对 CI 的修改（唯一一处，最小化）
 
-用户授权为"确实发现 CP1-A 必需的验证缺口"时可改 CI。上述属于该情形。改动仅**新增 2 个 step**，未修改任何既有 step、未改动触发条件、未改动 `--tests` 白名单：
+用户授权为"确实发现 CP1-A 必需的验证缺口"时可改 CI。改动仅**新增 2 个 step**，未修改任何既有 step、未改动触发条件、未改动 `--tests` 白名单：
 
 - `Run Claude P provider unit tests (CP1-A)`：运行 6 个 `:ai` 类 + 2 个 `:app` 类，**按类名钉死**，因此 `:ai` 中其他既有失败不会波及本 job。
-- `Report executed Claude P test classes`：打印实际执行的 JUnit XML。原因见下。
+- `Report executed Claude P test classes`：打印实际执行的 JUnit XML，找不到 XML 即失败。
 
-**该修改易于回退**：删除这 2 个 step 即可恢复原状；若复审认为不应改 CI，请直接否决该 commit。
+**是否仍需保留：必须保留。** 其必要性由三轮事实反复证实（见 5.4）。回退方式仍是删除这 2 个 step。
 
-### 5.3 必须执行的命令
+### 5.3 三轮执行记录与修复链
+
+功能分支 push **不会**触发该 workflow（触发条件是 `push: master` 与 `workflow_dispatch`）。三轮均通过**既有的** `workflow_dispatch` 指定 branch ref 触发，未修改触发条件、未使用 rerun。
+
+| 轮次 | SHA | Run | 结果 | 首个失败原因 |
+|---|---|---|---|---|
+| **R0** | `a557c801` | [35497785764](https://github.com/maocomet/rikkahub-agent1/actions/runs/35497785764) (#72) | **failure** | `:ai:compileDebugUnitTestKotlin` 报 3 个 `Check for instance is always 'false'`。Kotlin 2.4 下这是 **error** 而非 warning |
+| **R1** | `0d2faf5b` | [35498607628](https://github.com/maocomet/rikkahub-agent1/actions/runs/35498607628) (#73) | **failure** | `:ai:testDebugUnitTest` — `90 tests completed, 2 failed`：两条整对象 JSON 往返相等断言 |
+| **R2** | `c655fc93` | [35499704797](https://github.com/maocomet/rikkahub-agent1/actions/runs/35499704797) (#74) | **success** | — |
+
+修复链：
+
+1. `a557c801` → `0d2faf5b`：删除三条恒假 `is` 判断（未用 `@Suppress`、未降低诊断级别）。
+2. `0d2faf5b` → `c655fc93`：把整对象相等改为"父类型 + 类型断言 + 逐字段比较"，未弱化契约、未删测试、未忽略字段。
+
+R0 与 R1 的失败记录原样保留，**从未 rerun**。
+
+### 5.4 workflow 缺口的实际价值
+
+新增 step 在 R0 立刻抓到"`:ai` 测试源集从未在 CI 编译过"这一事实。若没有它，R0 的编译失败会**完全不可见** —— `assembleDebug` 不编译测试源集，既有 `:app` 测试也不覆盖 `:ai`。其后 R1 证明编译已修复、并让 90 个测试真正跑起来。
+
+### 5.5 R1 曾标注的两处不确定项，结论
+
+- `ClaudePProviderCancellationTest` 中依赖 `Flow.take(n)` 触发上游取消的两条测试：**R2 通过**，未成为失败首因。
+- `:ai:testDebugUnitTest` 任务名：**正确**。AGP 对 Android library 模块的标准命名，已由 CI 确认。
+
+### 5.6 可复现命令（CI 用的就是这些）
 
 ```bash
 # 编译（assembleDebug 也会覆盖，但这两条定位更准）
@@ -229,16 +292,27 @@ Gradle 连**配置阶段**都无法通过，因此下列项目**一律未执行�
 
 可复现脚本：`claudep/reports/verify-cp1a.sh`（`--full` 追加两个全量套件，无 SDK 时以 exit 2 明确失败而非静默通过）。
 
-### 5.4 为什么必须打印 JUnit XML
+### 5.7 为什么必须打印 JUnit XML
 
 Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报错；单个模式匹配不到任何类时是静默的。本仓库项目级关闭了测试日志，运行日志从不列出测试类。因此"编译成功"不等于"测试运行"——列出 `test-results/**/*.xml` 是唯一能证明某个类真的跑过的证据。
 
-### 5.5 预期与已知不确定项
+### 5.8 后续改进建议：让测试数量可**直接取证**
 
-- **预期**：101 个测试全绿；编译无错误。
-- **不确定**：`ClaudePProviderCancellationTest` 中两处依赖 `Flow.take(n)` 触发上游取消（`AbortFlowException` 语义）的测试。该机制是 kotlinx.coroutines 的标准行为，但**未能在本机验证**。若 CI 失败，这两条最可能是首因。
-- **不确定**：CI 上 `:ai:testDebugUnitTest` 的任务名。AGP 对 Android library 模块的标准任务名，本机无法通过 `gradlew tasks` 确认。
-- **重要缺口**：两次「真实编译器验证」跑的是**修复之前**的代码。复审发现的问题修完之后，**修复后的最终状态没有被重新编译过**。修复本身都是机械性的（改名传参、删除未使用的类型参数、移除默认值——三处构造点均已逐一核对），风险低，但"编译验证过的版本"与"最终 HEAD"严格来说不是同一个版本。**这正是必须由 CI 复核的第一个理由。**
+**状态：不阻塞 CP1-A，本轮不修改 workflow。**
+
+§4.2 已如实标注一个观测限制：本仓库项目级关闭了 Gradle 测试日志，且该 workflow 只上传 APK，因此"执行 101 / 通过 101 / 跳过 0"只能由「9 个 XML 存在 ∧ 两个测试任务 BUILD SUCCESSFUL ∧ 测试代码中不存在任何跳过机制」**推论**得出，而不是直接读取的数字。
+
+建议后续（**独立于 CP1-A，另行授权再做**）让 CI 上传**不含敏感信息**的测试摘要 artifact —— 例如各模块的 JUnit XML，或由 XML 派生的 `tests / failures / skipped` 汇总。收益：
+
+- 执行/通过/跳过数量变成**可直读的取证**，不再依赖推论；
+- 失败时不必再从被截断的 job 日志里反推，也不必依赖 `--tests` 白名单是否会静默匹配为空；
+- 与已有的 `Report executed Claude P test classes` 步骤互补：那一步证明"类跑过了"，artifact 才能证明"每个类里有多少条、几条被跳过"。
+
+需要留意的约束：JUnit XML 含测试类名与用例名，需确认其中不含 prompt、消息正文、Token 或用户数据（本门禁的测试全部使用确定性 fake 与字面量，不含真实用户数据），并按需设定保留期。
+
+### 5.9 R1 曾记录的"未验证最终状态"缺口，已闭合
+
+R1 时曾如实记录：两次编译器验证跑的是**修复之前**的代码，最终 HEAD 从未被重新编译。该缺口现已由 R2 闭合 —— R2 验证的 SHA 严格等于最终提交 `c655fc938f85c6e32de3cf48fa57d432432a6ea8`。
 
 ---
 
@@ -259,14 +333,17 @@ Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报�
 | 附件上传 | 未执行（CP4） |
 | 开启后台任务 | 未执行（且已显式排除） |
 | 修改 production / DNS / 网络 / 证书 | 未执行 |
-| push / tag / Release | 未执行 |
+| push 到远端**功能分支** | **已执行**（用户授权；仅 `codex/claudep-cp1a-local`） |
+| push 到 `master` / 创建 tag / Release | 未执行 |
+| 触发 CI | **已执行**（用户授权；仅 R0/R1/R2 三次，均用既有 `workflow_dispatch`，从未 rerun） |
+| 创建或合并 PR | 未执行 |
 | 修改源工作区 | 未执行 |
 | 删除/整理用户未跟踪文件 | 未执行 |
 | 升级依赖/Gradle/Kotlin/Compose/SDK | 未执行（无任何版本变更） |
 
 ### 6.2 零调用证据
 
-- **模型调用：0。** 本机无 SDK 无法运行测试；源码中无任何模型客户端。唯一被装配的传输是 `UnpairedClaudePGatewayClient`，它对每个调用抛 `NOT_PAIRED`。
+- **模型调用：0。** 全部 101 个测试跑在确定性 fake 上，源码中无任何模型客户端。唯一被装配到生产 DI 的传输是 `UnpairedClaudePGatewayClient`，它对每个调用抛 `NOT_PAIRED`。CI 中同样没有任何模型端点被访问。
 - **网络调用：0。** 对全部新增源码 grep `java.net` / `okhttp3` / `okio` / `Socket` / `URLConnection` / `InetAddress` / `ProcessBuilder` / `Runtime.getRuntime`，**0 处真实引用**（仅 3 处出现在 KDoc 注释中）。
 - **Secret 读取：0。** 无 Keystore、无文件读取、无环境变量读取。`ClaudePProvider` 的 `deviceId` 默认值为字面量 `"unpaired-device"`。
 - **持久化的 Secret：0。** `ProviderSetting.ClaudeP` 的序列化键集合被测试固定为封闭集合（见 `the serialized form contains only non-secret fields`）。
@@ -275,7 +352,7 @@ Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报�
 
 ## 7. 复审记录
 
-实现完成后执行了三轮独立复审（因无法编译，这是唯一的正确性检查手段）。第一次派出的编译复审**因 API 错误中途失败、未产出任何结论**，已重新派出并拆分范围，故实际有效复审如下：
+实现阶段（CI 之前）执行了四轮独立复审。当时本机无法编译，复审是唯一的检查手段；**但它们现在只算缺陷线索，正式通过依据是 §4.2 的 R2 CI**（原因见 §4.4）。第一次派出的编译复审**因 API 错误中途失败、未产出任何结论**，已重新派出并拆分范围，故实际有效复审如下：
 
 1. **全仓接线与穷举分支复审**——扫描所有模块的 `when (ProviderSetting...)`，核对新增分支完整性与 `else` 分支的语义正确性。
 2. **`ai` 主源码编译复审**——逐符号核对导入、签名、可见性、sealed 穷举。
@@ -334,6 +411,17 @@ Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报�
 
 #15 是本轮最有价值的发现，也说明了一个方法论问题：**"拒绝路径有测试"不等于"缺字段路径有测试"**。若第一轮复审没有失败、或第四轮没有被派出，这个 fail-open 会直接进入 CI 之后的下一个阶段。
 
+### CI 轮次暴露的问题（这些**全部**是人工/代理复审漏掉的）
+
+| # | 轮次 | 问题 | 处理 |
+|---|---|---|---|
+| 16 | R0 | `ClaudePSettingTest` 中三条 `assertFalse(X is Y)`，X 的静态类型是 **final 子类**，被 Kotlin 2.4 判为 `Check for instance is always 'false'` —— 在 2.1+ 这是 **error** 而非 warning。`assembleDebug` 不编译测试源集，故此前完全不可见 | 删除三条恒假判断（`0d2faf5b`）。未用 `@Suppress`、未降低诊断级别 |
+| 17 | R1 | 两条整对象 JSON 往返相等断言失败。`description` / `shortDescription` 是 `@Transient` 函数类型，`@Transient` 只影响序列化、**不影响 data class 的 `equals`**，反序列化后取新默认 lambda，故整对象相等永不成立。全仓无同类先例，是我引入的新写法 | 改为「父类型 + 类型断言 + 逐字段比较 + discriminator 断言」（`c655fc93`）。未弱化契约、未删测试、未忽略字段 |
+
+**#16、#17 的意义**：它们不来自任何一轮复审，只来自 CI。这正是 §4.4 结论的实证 —— **复审（无论是否声称"用真实编译器验证过"）不能替代构建**。R1 尤其值得记住：那一轮复审明确把 `ClaudePSettingTest.kt` 判为 clean。
+
+**中间失败无一被记为通过**：R0 与 R1 均如实记录为 failure，且从未 rerun 掩盖。
+
 其中 #8 是**测试有效性**问题而非测试失败问题——空测试会通过，但什么也保护不了；这正是"绿色 CI 不等于有效验证"的典型情形，故按缺陷处理。
 
 **无任何中间失败被记录为通过。**
@@ -377,9 +465,11 @@ Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报�
 
 ## 11. 复审点状态
 
-- 分支 `codex/claudep-cp1a-local` 停在本地，**未推送**。
+- 分支 `codex/claudep-cp1a-local` 已推送至 origin，HEAD = `c655fc938f85c6e32de3cf48fa57d432432a6ea8`。
+- CI 只以**既有的** `workflow_dispatch` + branch ref 触发，共 3 次（R0/R1/R2），**从未 rerun**。功能分支 push 本身不触发该 workflow。
+- **master 未触碰**，仍为基线 `c00f6f3d`；未创建 PR / tag / Release。
 - 工作区洁净，`git diff --check` 通过。
-- 未创建 tag / Release / PR，未触发任何 CI。
-- 无 Gradle daemon / Java 进程残留。§4.2 那次失败的尝试确实拉起过一个 Gradle daemon（PID 28760），已通过 `./gradlew --stop` 干净停止并核实（`Get-Process java` → 无结果）。
-- 说明：本机存在一个 `adb` 进程（PID 7432，启动于 2026-09-17 01:30），**早于本次会话且非本轮启动**。本轮从未执行过 `adb`、未连接任何设备，故未终止该进程——它是用户其他工作的进程，不属于本轮的清理范围。
-- **等待复审。** 未进入 CP1-B / CP2 / CP3 / CP4。
+- 无 Gradle daemon / Java 进程残留。实现阶段那次失败的本地尝试确实拉起过一个 Gradle daemon（PID 28760），已通过 `./gradlew --stop` 干净停止并核实（`Get-Process java` → 无结果）。
+- 说明：本机存在一个 `adb` 进程（PID 7432，启动于 2026-09-17 01:30），**早于本次会话且非本轮启动**。本轮从未执行过 `adb`、未连接任何设备，故未终止该进程。
+- 本轮自始至终**未安装本地 Android SDK**、未连接 VPS、未调用 Claude、未实现真实 WSS / 配对 / MCP / 附件 / session resume。
+- **停在复审点，等待人工复审。** 未创建或合并 PR，未进入 CP1-B / CP2 / CP3 / CP4。
