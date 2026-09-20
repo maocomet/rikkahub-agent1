@@ -2,6 +2,8 @@ package me.rerere.ai.provider.claudep
 
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -329,6 +331,7 @@ class ClaudePFakeGatewayTest {
     }
 }
 
-private fun buildTextDelta(text: String) = kotlinx.serialization.json.buildJsonObject {
-    kotlinx.serialization.json.put("text", text)
-}
+// `put` is an extension on JsonObjectBuilder, so it must be called unqualified with
+// `buildJsonObject`'s receiver in scope — a fully-qualified `kotlinx.serialization.json.put(...)`
+// does not resolve.
+private fun buildTextDelta(text: String) = buildJsonObject { put("text", text) }

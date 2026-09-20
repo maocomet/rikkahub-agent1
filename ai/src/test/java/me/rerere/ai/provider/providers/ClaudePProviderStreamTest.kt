@@ -97,7 +97,9 @@ class ClaudePProviderStreamTest {
         }
 
         // The version is still reported, just as handshake metadata rather than a model.
-        assertEquals("2.0.1", assertNotNull(instance.negotiatedServerHello).claudeCodeVersion)
+        // (JUnit 4's assertNotNull returns void, so it cannot be chained into this assertion.)
+        val hello = requireNotNull(instance.negotiatedServerHello)
+        assertEquals("2.0.1", hello.claudeCodeVersion)
     }
 
     @Test
