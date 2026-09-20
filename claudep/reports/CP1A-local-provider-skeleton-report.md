@@ -12,7 +12,7 @@ Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1a`
 | 项目 | 值 |
 |---|---|
 | 权威基线 | `c00f6f3d916ca94468a13e13e15fdffe5e81db1e` |
-| 代码与测试的最终提交 | `73c215bc` |
+| 代码与测试的最终提交 | `76b38483` |
 | 证据提交（本报告） | 位于上述提交之上；精确值以 `git log --oneline -1` 为准（本文件无法记录包含自身的哈希） |
 | 基线是否为 HEAD 祖先 | **是**（`git merge-base --is-ancestor` 退出码 0） |
 | 源仓库 `D:\rikkahub-agent1` | 未被修改，仍为 `c00f6f3d`，未跟踪文件原样保留 |
@@ -29,7 +29,9 @@ Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1a`
 | 4 | `a0159631` | `ci: run Claude P unit tests in the debug APK workflow` |
 | 5 | `1a4ebcb0` | `docs(claudep): record CP1-A local evidence` |
 | 6 | `73c215bc` | `fix(claudep): correct two compile errors in the Claude P tests`（复审判定） |
-| 7 | *(本报告修订)* | `docs(claudep): record CP1-A review findings` |
+| 7 | `6ec9a706` | `docs(claudep): record CP1-A review findings` |
+| 8 | `76b38483` | `fix(claudep): fix compile errors and a fail-open protocol default`（复审判定） |
+| 9 | *(本报告再修订)* | `docs(claudep): record second review round` |
 
 Phase 0 文档为**逐字节复制**；源目录 `D:\rikkahub-agent1\claudep` 未被删除、移动或修改（复制后源目录仍为 9 个文件）。
 
@@ -37,7 +39,7 @@ Phase 0 文档为**逐字节复制**；源目录 `D:\rikkahub-agent1\claudep` �
 
 ## 2. 修改文件清单
 
-相对基线的 diffstat：**43 files changed, 6595 insertions(+), 16 deletions(-)**（含 9 份 Phase 0 文档、本报告与验证脚本）。
+相对基线的 diffstat：**43 files changed, 6652 insertions(+), 16 deletions(-)**（含 9 份 Phase 0 文档、本报告与验证脚本）。
 
 ### 2.1 新增 — 协议与传输（`ai` 模块）
 
@@ -77,11 +79,11 @@ Phase 0 文档为**逐字节复制**；源目录 `D:\rikkahub-agent1\claudep` �
 | `ui/pages/setting/components/ProviderRequirements.kt` | 显示"需要设备配对" |
 | `ui/pages/setting/components/ClaudePProviderConfigure.kt` | **新增**：最小诚实设置页 |
 
-### 2.4 新增 — 测试（8 个类，100 个 `@Test`）
+### 2.4 新增 — 测试（8 个类，101 个 `@Test`）
 
 | 文件 | `@Test` |
 |---|---:|
-| `ai/.../claudep/ClaudePProtocolTest.kt` | 21 |
+| `ai/.../claudep/ClaudePProtocolTest.kt` | 22 |
 | `ai/.../claudep/ClaudePFakeGatewayTest.kt` | 19 |
 | `ai/.../providers/ClaudePProviderStreamTest.kt` | 17 |
 | `ai/.../providers/ClaudePProviderCancellationTest.kt` | 13 |
@@ -89,7 +91,7 @@ Phase 0 文档为**逐字节复制**；源目录 `D:\rikkahub-agent1\claudep` �
 | `ai/.../provider/ProviderManagerClaudePTest.kt` | 8 |
 | `app/.../background/ClaudePBackgroundExclusionTest.kt` | 6 |
 | `app/.../setting/components/ClaudePProviderConfigureTest.kt` | 5 |
-| **合计** | **100** |
+| **合计** | **101** |
 
 `ClaudePBackgroundExclusionTest` 原为 8 条，其中 3 条经复审判定为"永不失败"的空测试被删除，替换为 1 条带阳性对照的 host 级测试，净减 2 条（见 §8 #8）。
 
@@ -166,16 +168,16 @@ Gradle 连**配置阶段**都无法通过，因此下列项目**一律未执行�
 |---|---|
 | `:ai` 编译 | `./gradlew :ai:compileDebugKotlin` |
 | `:app` 编译 | `./gradlew :app:compileDebugKotlin` |
-| `:ai` 单元测试（全部 89 个 ClaudeP 测试在此） | `./gradlew :ai:testDebugUnitTest` |
+| `:ai` 单元测试（全部 90 个 ClaudeP 测试在此） | `./gradlew :ai:testDebugUnitTest` |
 | `:app` 单元测试 | `./gradlew :app:testDebugUnitTest` |
 | lint / format | `./gradlew lint` |
 | Gradle task 枚举 | `./gradlew :ai:tasks --all` |
 
-**因此：本报告不包含任何编译或测试通过结论。100 个测试已编写但从未运行过。**
+**因此：本报告不包含任何编译或测试通过结论。101 个测试已编写但从未运行过。**
 
 ### 4.3 替代验证：人工编译复审
 
-由于无法编译，实现完成后进行了三轮独立复审（全仓穷举分支完整性 + 主源码符号级编译 + 测试符号级编译）。**其中测试那一轮使用了本机真实 Kotlin 编译器与项目真实 JUnit jar 实编译验证**，并据此发现并修复了 2 个真实编译错误。详见 §7、§8。
+由于无法编译，实现完成后进行了三轮独立复审（全仓穷举分支完整性 + 主源码编译 + 测试编译）。**后两轮均使用了本机真实 Kotlin 2.3.0 编译器与项目真实依赖进行实际编译验证**，据此共发现并修复 **5 个真实编译错误 + 1 个 fail-open 缺陷**（详见 §7、§8）。
 
 需强调：这只提升了「编译正确性」这一项的置信度，**不构成任何测试执行证据**。§4.2 的未执行清单不受影响。
 
@@ -189,7 +191,7 @@ Gradle 连**配置阶段**都无法通过，因此下列项目**一律未执行�
 
 **但原状态下它无法验证 CP1-A**，存在两个真实缺口：
 
-1. **没有任何 workflow 运行 `:ai` 的单元测试。** 全部 8 个 ClaudeP 测试类中有 6 个在 `:ai`，即 89/100 个测试永远不会执行（`:ai` 的 89 条完全不会运行，`:app` 的 11 条会编译但不会执行）。
+1. **没有任何 workflow 运行 `:ai` 的单元测试。** 全部 8 个 ClaudeP 测试类中有 6 个在 `:ai`，即 90/101 个测试永远不会执行（`:ai` 的 90 条完全不会运行，`:app` 的 11 条会编译但不会执行）。
 2. **`:app:testDebugUnitTest` 使用 `--tests` 白名单**（约 40 个固定模式）。新增的 `:app` 测试会被**编译**但永不**运行**。
 
 ### 5.2 本轮对 CI 的修改（唯一一处，最小化）
@@ -233,9 +235,10 @@ Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报�
 
 ### 5.5 预期与已知不确定项
 
-- **预期**：100 个测试全绿；编译无错误。
+- **预期**：101 个测试全绿；编译无错误。
 - **不确定**：`ClaudePProviderCancellationTest` 中两处依赖 `Flow.take(n)` 触发上游取消（`AbortFlowException` 语义）的测试。该机制是 kotlinx.coroutines 的标准行为，但**未能在本机验证**。若 CI 失败，这两条最可能是首因。
 - **不确定**：CI 上 `:ai:testDebugUnitTest` 的任务名。AGP 对 Android library 模块的标准任务名，本机无法通过 `gradlew tasks` 确认。
+- **重要缺口**：两次「真实编译器验证」跑的是**修复之前**的代码。复审发现的问题修完之后，**修复后的最终状态没有被重新编译过**。修复本身都是机械性的（改名传参、删除未使用的类型参数、移除默认值——三处构造点均已逐一核对），风险低，但"编译验证过的版本"与"最终 HEAD"严格来说不是同一个版本。**这正是必须由 CI 复核的第一个理由。**
 
 ---
 
@@ -277,7 +280,9 @@ Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报�
 1. **全仓接线与穷举分支复审**——扫描所有模块的 `when (ProviderSetting...)`，核对新增分支完整性与 `else` 分支的语义正确性。
 2. **`ai` 主源码编译复审**——逐符号核对导入、签名、可见性、sealed 穷举。
 3. **`ai` 测试编译复审**——逐符号核对测试中调用/构造的每个符号。
-   **该轮使用了本地 Gradle 发行版中真实的 Kotlin 编译器与项目真实的 JUnit 4.13.2 jar 进行实际编译验证**，而非仅人工阅读。它因此给出了带编译器诊断的确定性结论，并**发现 2 个真实编译错误**（见 §8 #11、#12）。这一轮的证据强度高于纯人工复审。
+4. **`ai` 主源码编译复审**——对 6 个主源码文件做实际编译（provider 文件配合其真实依赖的精确副本）。
+
+第 3、4 轮均**使用本机真实的 Kotlin 2.3.0 编译器与项目真实依赖（kotlinx-serialization 1.9.0、JUnit 4.13.2）做了实际编译**，而非仅人工阅读，因此给出了带编译器诊断的确定性结论，并**合计发现 5 个真实编译错误**（见 §8 #11–#15）。这两轮的证据强度高于纯人工复审——但仍低于本仓库自己的 Gradle 构建，因为它们不是在真实模块依赖图与 AGP 配置下编译的。
 
 复审结论：
 
@@ -318,6 +323,16 @@ Gradle 的 `--tests` 过滤器**只在组合过滤整体匹配为空时**才报�
 | 12 | `ClaudePProviderStreamTest` 中 `assertNotNull(instance.negotiatedServerHello).claudeCodeVersion` —— JUnit 4 的 `assertNotNull` 返回 **void**，无法链式取成员 → `unresolved reference` | 改为 `requireNotNull(...)` 后单独断言 |
 
 同轮复审确认为**非问题**（均已用真实编译器/javap 验证）：`assertThrows` 的非 Unit lambda 体（SAM + Unit 强制转换）、`Json.decodeFromString` reified 重载无需 import、`ClaudeP` 序列化出的 14 个键与 `JsonInstant` 实际写入完全一致、禁止子串扫描无误伤、测试源集可见 `internal` 符号。
+
+第四轮（主源码编译复审，经真实编译器验证）发现并修复：
+
+| # | 问题 | 处理 |
+|---|---|---|
+| 13 | `FakeClaudePGatewayClient` 两处以 `acceptedSeq =` 传参，而 `FakeGenerationHandle` 的形参名是 `acceptedEventSeq` → `no parameter with name 'acceptedSeq' found` | 改为 `acceptedEventSeq =` |
+| 14 | `ClaudePProvider.pumpFrames` 声明了未被任何参数使用、也无法推断的类型参数 `<T>` → K2 `cannot infer type for type parameter 'T'`（两处调用点都失败） | 删除 `<T>` |
+| 15 | **fail-open 缺陷（比编译错误更严重）**：`ClaudePEnvelope.protocol` 有默认值 `PROTOCOL_ID`，于是**完全省略** `protocol` 字段的帧会解码成 v1 并被接受——正是解析器"绝不假定 v1"规则要防的情况。原有全部拒绝测试都只发送"字段存在但值错误"，因此这条路径一直未被覆盖 | 移除默认值：缺字段即解码失败 → `MALFORMED_FRAME`。新增回归测试 `a frame with no protocol field at all fails closed instead of assuming v1`，它发送的是**没有 protocol 键**的帧 |
+
+#15 是本轮最有价值的发现，也说明了一个方法论问题：**"拒绝路径有测试"不等于"缺字段路径有测试"**。若第一轮复审没有失败、或第四轮没有被派出，这个 fail-open 会直接进入 CI 之后的下一个阶段。
 
 其中 #8 是**测试有效性**问题而非测试失败问题——空测试会通过，但什么也保护不了；这正是"绿色 CI 不等于有效验证"的典型情形，故按缺陷处理。
 
