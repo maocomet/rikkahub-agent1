@@ -179,6 +179,49 @@ jobs:
           echo "Executed test classes:"
           find "$results" -name '*.xml' -exec basename {} .xml \; | sort
 
+      # Claude P provider (Gate CP1-A) focused tests.
+      #
+      # These need their own step for two reasons, both of which meant the CP1-A tests would
+      # otherwise never execute:
+      #   1. No workflow runs :ai unit tests at all, and every Claude P protocol/gateway/provider
+      #      test lives in :ai.
+      #   2. The :app step above pins an explicit --tests allowlist, so new :app test classes
+      #      compile there but are never run.
+      # Pinned by class name so an unrelated pre-existing :ai failure cannot break this job.
+      - name: Run Claude P provider unit tests (CP1-A)
+        run: |
+          chmod +x gradlew
+          ./gradlew :ai:testDebugUnitTest \
+            --tests "me.rerere.ai.provider.claudep.*" \
+            --tests "me.rerere.ai.provider.providers.ClaudePProviderStreamTest" \
+            --tests "me.rerere.ai.provider.providers.ClaudePProviderCancellationTest" \
+            --tests "me.rerere.ai.provider.ClaudePSettingTest" \
+            --tests "me.rerere.ai.provider.ProviderManagerClaudePTest"
+          ./gradlew :app:testDebugUnitTest \
+            --tests "me.rerere.rikkahub.data.ai.background.ClaudePBackgroundExclusionTest" \
+            --tests "me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest"
+
+      # Compiling is not running. Gradle only fails when the COMBINED filter matches nothing, and
+      # its test logging is off project-wide, so the JUnit XML basenames are the proof.
+      - name: Report executed Claude P test classes
+        if: always()
+        run: |
+          set -uo pipefail
+          found=0
+          for results in ai/build/test-results/testDebugUnitTest app/build/test-results/testDebugUnitTest; do
+            [ -d "$results" ] || continue
+            while read -r xml; do
+              [ -n "$xml" ] || continue
+              found=$((found + 1))
+              echo "executed: $(basename "$xml" .xml)"
+            done < <(find "$results" -name '*ClaudeP*.xml' | sort)
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No Claude P test result XML found — the tests compiled but did not run."
+            exit 1
+          fi
+          echo "Total Claude P test classes executed: $found"
+
       # :web:buildWebUi (pnpm run build) fails with a bare exit code 1 while
       # Gradle's concurrent task output buries the real react-router/vite error.
       # Retry it standalone so the actual error lands at the end of the log.
