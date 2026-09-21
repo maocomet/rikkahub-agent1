@@ -22,7 +22,8 @@ PR / Tag / Release / master：**均未触碰**
 | CP1-A 收口提交是否仅文档 | **是**（`git diff --name-only c655fc93..876a814b` 仅 1 个 `.md`） |
 | 本阶段基线 | `876a814bdee3687039d8c48832d3701b31d69354` |
 | **R0 最终 HEAD（旧）** | `10ad17ba2e485030c02ec74603417d47494f0960` |
-| **R1 最终 HEAD** | `059fc2f3`（见 §14 R1 返修） |
+| **R1 代码最终 HEAD** | `059fc2f3`（`fix(claudep): serialize pairing and revocation`，见 §14） |
+| **R1 最终 HEAD（含本报告）** | `0efbc7d6` |
 | 工作区 | **洁净**（`git status --porcelain` 为空） |
 | `git diff --check` | **通过** |
 
@@ -495,7 +496,7 @@ CP1-B 新增分模块：`ClaudePWssTransportTest` 36、`ClaudePEndpointTest` 33�
 |---|---|
 | 1 | `9a6a95b3` `fix(claudep): isolate credential transport` |
 | 2 | `059fc2f3` `fix(claudep): serialize pairing and revocation` |
-| 3 | *(本文件)* `docs(claudep): record CP1-B R1 evidence` |
+| 3 | `0efbc7d6` `docs(claudep): record CP1-B R1 evidence` |
 
 ### 14.8 状态
 
