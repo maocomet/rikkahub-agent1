@@ -11,6 +11,7 @@ import me.rerere.ai.provider.claudep.InMemoryClaudePDeviceCredentialStore
 import me.rerere.ai.provider.claudep.InMemoryClaudePDeviceKeyStore
 import me.rerere.ai.provider.claudep.InMemoryClaudePPairingSettingsGateway
 import me.rerere.ai.provider.claudep.ClaudePPairingOutcome
+import me.rerere.ai.provider.claudep.ClaudePPairedMetadata
 import me.rerere.ai.provider.claudep.ClaudePPairingState
 import me.rerere.ai.provider.claudep.ClaudePTombstoneRejection
 import me.rerere.ai.provider.claudep.ClaudePUiStatus
@@ -220,6 +221,85 @@ class ClaudePDevicePairingRepositoryTest {
             assertEquals(ClaudePUiStatus.OFFLINE, repository.status.value)
             assertFalse(repository.status.value.allowsDispatch)
         }
+
+    // ---------------------------------------------------------------------------------------
+    // Durable device identity
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    fun `the device id comes from durable state after pairing`() = withRepository { repository, harness ->
+        repository.pair(invitationJson(), "Pixel")
+
+        val id = repository.currentDeviceIdOrNull()
+
+        assertEquals(harness.credentials.stored?.deviceId, id)
+        assertNotNull(id)
+    }
+
+    @Test
+    fun `unpair revokes the device id rather than serving a cached one`() =
+        withRepository { repository, _ ->
+            repository.pair(invitationJson(), "Pixel")
+            assertNotNull(repository.currentDeviceIdOrNull())
+
+            repository.unpair()
+
+            // The volatile cache still held the old id at this point in an earlier revision, so the
+            // provider would have bound a fingerprint to a device this app can no longer
+            // authenticate. Re-derivation from durable state is what prevents that.
+            assertNull(repository.currentDeviceIdOrNull())
+        }
+
+    @Test
+    fun `a pending cleanup hides the device id even with settings claiming paired`() =
+        withRepository { repository, harness ->
+            repository.pair(invitationJson(), "Pixel")
+            harness.settings.state = ClaudePPairingState.REVOKED
+
+            assertNull(repository.currentDeviceIdOrNull())
+        }
+
+    @Test
+    fun `a misleading tombstone blocks the device id`() = withRepository { repository, harness ->
+        repository.pair(invitationJson(), "Pixel")
+        harness.tombstones.readRejection = ClaudePTombstoneRejection.MALFORMED
+
+        assertNull(repository.currentDeviceIdOrNull())
+    }
+
+    @Test
+    fun `a restarted repository recovers the same device id from durable state`() =
+        withRepository { repository, harness ->
+            repository.pair(invitationJson(), "Pixel")
+            val before = repository.currentDeviceIdOrNull()
+
+            val restarted = harness.newRepository()
+
+            assertEquals(before, restarted.currentDeviceIdOrNull())
+        }
+
+    @Test
+    fun `settings that disagree with the credential yield no device id`() =
+        withRepository { repository, harness ->
+            repository.pair(invitationJson(), "Pixel")
+            // A partial write, or a tampered record: there is no safe way to pick a winner.
+            harness.settings.metadata = ClaudePPairedMetadata(
+                pairedOrigin = "https://other.example.com",
+                gatewayFingerprint = "other",
+                gatewayInstallationId = "other",
+                deviceId = "other",
+            )
+
+            assertNull(repository.currentDeviceIdOrNull())
+        }
+
+    @Test
+    fun `a wiped device key yields no device id`() = withRepository { repository, harness ->
+        repository.pair(invitationJson(), "Pixel")
+        harness.keys.loadFails = true
+
+        assertNull(repository.currentDeviceIdOrNull())
+    }
 
     // ---------------------------------------------------------------------------------------
     // Harness

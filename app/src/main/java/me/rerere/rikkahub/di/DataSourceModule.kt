@@ -1542,9 +1542,15 @@ val dataSourceModule = module {
             pm.registerProvider(
                 me.rerere.ai.provider.CLAUDEP_REGISTRY_KEY,
                 ClaudePProvider(
-                    gateway = ResolvingClaudePGatewayClient {
-                        claudePPairing.gatewayClientOrNull()
-                    },
+                    // Named argument on purpose. `resolve` is the first parameter and `fallback` the
+                    // last, so a trailing lambda binds to `fallback` — which is not a function type,
+                    // and produced "No value passed for parameter 'resolve'" in run 35563308861.
+                    gateway = ResolvingClaudePGatewayClient(
+                        resolve = { claudePPairing.gatewayClientOrNull() },
+                    ),
+                    // Returns the validated device id, or null. Null is a hard stop at the provider
+                    // (NOT_PAIRED, zero dispatch) — never papered over with a placeholder, and never
+                    // served from a cache a revocation could have invalidated.
                     deviceIdProvider = { claudePPairing.currentDeviceIdOrNull() },
                 ),
             )

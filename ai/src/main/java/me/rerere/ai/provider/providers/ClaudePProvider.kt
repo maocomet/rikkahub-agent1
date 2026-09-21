@@ -81,14 +81,27 @@ class ClaudePProvider(
     private val remoteThreadId: String = "local-thread",
     private val remoteBranchId: String = "local-branch",
     /**
-     * Resolves the device id at call time, falling back to [deviceId] when absent.
+     * Resolves the **paired** device id at call time, or `null` when this device has none.
      *
-     * The device id is part of the request fingerprint, so it has to be the *paired* device rather
-     * than a startup-time placeholder — otherwise two devices could produce the same fingerprint for
-     * the same request. It is resolved per call rather than captured because `ProviderManager` is
-     * built before the encrypted credential store has been read.
+     * ### Why this is nullable and suspend
+     *
+     * The device id is part of the request fingerprint *and* of `client.hello`, so it has to be the
+     * device that is actually paired — not a startup-time placeholder. Two different devices sharing
+     * `"unpaired-device"` would produce identical fingerprints for identical requests, and hello
+     * would announce one identity while the fingerprint bound another.
+     *
+     * So a configured provider is authoritative and may return `null`. When it does, the request
+     * **fails closed** before any dispatch rather than falling back to [deviceId]: a placeholder is
+     * not a device identity, and silently substituting one is how a request gets bound to nothing.
+     *
+     * It is `suspend` because the production implementation re-validates durable pairing state
+     * (credential, settings agreement, key loadability) rather than reading a cached value that a
+     * revocation may have invalidated.
+     *
+     * Leaving it unset keeps CP1-A's static behaviour, including the constructor default and the
+     * handshake cache.
      */
-    private val deviceIdProvider: (() -> String)? = null,
+    private val deviceIdProvider: (suspend () -> String?)? = null,
 ) : Provider<ProviderSetting.ClaudeP> {
 
     private val handshakeMutex = Mutex()
@@ -101,7 +114,7 @@ class ClaudePProvider(
         get() = cachedServerHello
 
     override suspend fun listModels(providerSetting: ProviderSetting.ClaudeP): List<Model> {
-        ensureHandshake()
+        ensureHandshake(requireDeviceId())
         return gateway.catalog().toModels()
     }
 
@@ -113,7 +126,12 @@ class ClaudePProvider(
         // Ordering is the safety property: validate, then handshake, then dispatch. A rejected
         // input or an incompatible gateway must both produce zero dispatches.
         rejectUnsupportedInput(messages, params)
-        ensureHandshake()
+
+        // Resolved **once** and used for both the handshake and the fingerprint. Two separate
+        // resolutions could observe different values — a revocation landing between them — and the
+        // request would then bind a fingerprint to a device that never saw the handshake.
+        val deviceId = requireDeviceId()
+        ensureHandshake(deviceId)
 
         val modelAlias = params.model.modelId
         if (modelAlias.isBlank()) {
@@ -125,7 +143,7 @@ class ClaudePProvider(
         val systemPrompt = messages.systemPromptOrNull()
         val requestId = requestIdFactory()
         val fingerprint = ClaudePRequestFingerprint.compute(
-            deviceId = resolvedDeviceId(),
+            deviceId = deviceId,
             remoteThreadId = remoteThreadId,
             remoteBranchId = remoteBranchId,
             mode = MODE_NEW,
@@ -329,32 +347,65 @@ class ClaudePProvider(
         }
     }
 
-    /** The paired device id when one is known, otherwise the constructor's placeholder. */
-    private fun resolvedDeviceId(): String =
-        deviceIdProvider?.invoke()?.takeIf { it.isNotBlank() } ?: deviceId
+    /**
+     * The paired device id, or [ClaudePErrorCode.NOT_PAIRED].
+     *
+     * A configured provider returning `null` or a blank value is a *failure*, not a fallback: the
+     * device has no provable identity, so there is nothing safe to dispatch.
+     */
+    private suspend fun requireDeviceId(): String {
+        val provider = deviceIdProvider ?: return deviceId
+        return provider()?.takeIf { it.isNotBlank() }
+            ?: throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+    }
 
-    private suspend fun ensureHandshake(): ClaudePServerHelloBody {
+    /**
+     * Performs `client.hello` for [deviceId].
+     *
+     * ### Caching, and why a dynamic resolver does not get it
+     *
+     * The static CP1-A path keeps its cache: the device id never changes, so a negotiated hello stays
+     * valid.
+     *
+     * A dynamic resolver must **not** reuse one. A re-pairing can produce a different device
+     * identity, and a cached hello would then be replayed under the new identity — hello announcing
+     * device A's session while the request belongs to device B. Caching per device id would not fix
+     * it either: nothing proves a re-pairing always yields a new id, so the cache key could collide
+     * across two pairings.
+     *
+     * The bounded cost is one extra `client.hello` per request, which the gateway is required to
+     * answer cheaply. Re-validating is the safe direction; reusing is the direction that silently
+     * carries an old identity forward.
+     */
+    private suspend fun ensureHandshake(deviceId: String): ClaudePServerHelloBody {
+        if (deviceIdProvider != null) return negotiateHello(deviceId)
+
         cachedServerHello?.let { return it }
         return handshakeMutex.withLock {
             cachedServerHello?.let { return@withLock it }
-            val hello = gateway.hello(
-                ClaudePClientHelloBody(
-                    appVersion = appVersion,
-                    protocolVersions = listOf("v1"),
-                    deviceId = deviceId,
-                    nonce = "local-skeleton",
-                    signature = "local-skeleton",
-                    capabilities = listOf("text_stream", "cancel", "receipt_query"),
-                ),
-            )
-            // A gateway speaking another major may have changed the meaning of events we think we
-            // understand. Stop here: this must produce zero dispatches, not a best-effort run.
-            if (!ClaudePProtocol.acceptsServerProtocolVersion(hello.protocolVersion)) {
-                throw ClaudePGatewayException(ClaudePErrorCode.PROTOCOL_MISMATCH)
-            }
-            cachedServerHello = hello
-            hello
+            negotiateHello(deviceId).also { cachedServerHello = it }
         }
+    }
+
+    private suspend fun negotiateHello(deviceId: String): ClaudePServerHelloBody {
+        val hello = gateway.hello(
+            ClaudePClientHelloBody(
+                appVersion = appVersion,
+                protocolVersions = listOf("v1"),
+                deviceId = deviceId,
+                // The transport owns the nonce and signature: they must come from a Keystore key the
+                // caller cannot reach, so these are placeholders the real client replaces.
+                nonce = "transport-signed",
+                signature = "transport-signed",
+                capabilities = listOf("text_stream", "cancel", "receipt_query"),
+            ),
+        )
+        // A gateway speaking another major may have changed the meaning of events we think we
+        // understand. Stop here: this must produce zero dispatches, not a best-effort run.
+        if (!ClaudePProtocol.acceptsServerProtocolVersion(hello.protocolVersion)) {
+            throw ClaudePGatewayException(ClaudePErrorCode.PROTOCOL_MISMATCH)
+        }
+        return hello
     }
 
     private companion object {

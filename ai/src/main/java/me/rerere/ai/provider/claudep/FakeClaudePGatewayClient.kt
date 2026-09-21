@@ -87,6 +87,7 @@ class FakeClaudePGatewayClient(
     private val lock = Any()
     private var handshakeCompleted = false
 
+    private var helloCalls = 0
     private var startGenerationCalls = 0
     private var remoteDispatches = 0
     private var cancelCalls = 0
@@ -97,6 +98,16 @@ class FakeClaudePGatewayClient(
     private val generations = mutableMapOf<String, FakeGeneration>()
 
     private var nextGenerationSuffix = 0
+
+    /** Handshakes performed. Lets a test prove a cached hello was *not* reused. */
+    val helloCount: Int
+        get() = synchronized(lock) { helloCalls }
+
+    /** Device ids presented in `client.hello`, in order. */
+    private val presentedDeviceIds = mutableListOf<String>()
+
+    val helloDeviceIds: List<String>
+        get() = synchronized(lock) { presentedDeviceIds.toList() }
 
     override val startGenerationCallCount: Int
         get() = synchronized(lock) { startGenerationCalls }
@@ -112,6 +123,10 @@ class FakeClaudePGatewayClient(
         get() = synchronized(lock) { generations.keys.lastOrNull() }
 
     override suspend fun hello(request: ClaudePClientHelloBody): ClaudePServerHelloBody {
+        synchronized(lock) {
+            helloCalls++
+            presentedDeviceIds += request.deviceId
+        }
         val outcome = handshake
         if (outcome is FakeHandshake.Reject) {
             throw ClaudePGatewayException(outcome.code)

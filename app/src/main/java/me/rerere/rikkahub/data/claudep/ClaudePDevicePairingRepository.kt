@@ -269,8 +269,20 @@ class ClaudePDevicePairingRepository(
     // State
     // -----------------------------------------------------------------------------------------
 
-    /** The paired device id, or `null`. Used for the request fingerprint. */
-    fun currentDeviceIdOrNull(): String? = lastKnownDeviceId
+    /**
+     * The **validated** paired device id, or `null`.
+     *
+     * Deliberately re-derives through [resolveDevice] rather than returning the cached
+     * `lastKnownDeviceId`. A cache survives a revocation: after an unpair the volatile field still
+     * holds the old id until something refreshes it, and handing that to the provider would bind a
+     * request fingerprint to a device this app no longer has a credential for.
+     *
+     * `null` here is a hard stop — the provider fails closed with `NOT_PAIRED` before any dispatch.
+     */
+    suspend fun currentDeviceIdOrNull(): String? {
+        if (coordinator.mustNotDispatch()) return null
+        return resolveDevice()?.deviceId
+    }
 
     /** Re-reads durable state and recomputes [status]. */
     suspend fun refresh() {

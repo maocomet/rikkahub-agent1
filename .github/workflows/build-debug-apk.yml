@@ -194,6 +194,7 @@ jobs:
           ./gradlew :ai:testDebugUnitTest \
             --tests "me.rerere.ai.provider.claudep.*" \
             --tests "me.rerere.ai.provider.providers.ClaudePProviderStreamTest" \
+            --tests "me.rerere.ai.provider.providers.ClaudePProviderIdentityTest" \
             --tests "me.rerere.ai.provider.providers.ClaudePProviderCancellationTest" \
             --tests "me.rerere.ai.provider.ClaudePSettingTest" \
             --tests "me.rerere.ai.provider.ProviderManagerClaudePTest"
@@ -225,10 +226,12 @@ jobs:
             "ai:me.rerere.ai.provider.claudep.ClaudePProtocolTest"
             "ai:me.rerere.ai.provider.claudep.ClaudePRequestFingerprintTest"
             "ai:me.rerere.ai.provider.claudep.ClaudePRevocationTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePResolvingClientTest"
             "ai:me.rerere.ai.provider.claudep.ClaudePUiStatusTest"
             "ai:me.rerere.ai.provider.claudep.ClaudePWssTransportTest"
             "ai:me.rerere.ai.provider.providers.ClaudePProviderCancellationTest"
             "ai:me.rerere.ai.provider.providers.ClaudePProviderStreamTest"
+            "ai:me.rerere.ai.provider.providers.ClaudePProviderIdentityTest"
             "ai:me.rerere.ai.provider.ClaudePSettingTest"
             "ai:me.rerere.ai.provider.ProviderManagerClaudePTest"
             "app:me.rerere.rikkahub.data.ai.background.ClaudePBackgroundExclusionTest"
