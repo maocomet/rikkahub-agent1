@@ -1,6 +1,6 @@
 # CP1-B｜安全联网传输与一次性配对 — 本地实施报告
 
-状态：**CP1-B 生产接线与 CI 门禁已完成；Android CI 待授权**
+状态：**CP1-B R2 返修完成；等待第二次 Android CI 授权**
 日期：2026-09-20
 分支：`codex/claudep-cp1b-local`（**未 push**）
 Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1b`
@@ -782,3 +782,118 @@ OK (235 tests)
 - 工作区洁净，`git diff --check` 通过；依赖零变更。
 - **`:app` 仍无任何真实 Android 编译证据。** 新增的 13 条 app 测试首次得到编译与运行证据将是 CI。
 - **停在最终 CI 授权点。**
+
+
+---
+
+## 18. R2：首次 CI 结果与返修
+
+### 18.1 首次 CI（已消耗的授权）
+
+| 项 | 值 |
+|---|---|
+| Run ID | **35563308861** |
+| URL | https://github.com/maocomet/rikkahub-agent1/actions/runs/35563308861 |
+| SHA | `95c42dea1ea5d978a1cb643d48811771c12a83ea` |
+| attempt | **1**（从未 rerun） |
+| 结论 | **failure** |
+
+**第一个可信失败：step 9 `Build debug APK` → `:app:compileDebugKotlin` 编译失败。**
+
+```
+DataSourceModule.kt:1545:31  No value passed for parameter 'resolve'.
+DataSourceModule.kt:1545:61  Argument type mismatch: actual type is
+                             '() -> ClaudePGatewayClient?', but 'ClaudePGatewayClient' was expected.
+DataSourceModule.kt:1546:40  Suspend function 'gatewayClientOrNull()' can only be called
+                             from a coroutine or another suspend function.
+DataSourceModule.kt:1548:42  Return type mismatch: expected 'String', actual 'String?'.
+```
+
+**共 4 个编译错误，全部位于同一处 DI 注册块**（R1.3 引入）。
+
+**级联，非根因**：step 12 与 14（两个 `if: always()` 的 JUnit XML 报告步）同样显示 failure —— 编译未通过
+⇒ 无 XML ⇒ 门禁正确报告"什么都没跑"。**未将其计为测试失败或门禁失败。**
+Step 10（签名校验）、11、13（两批测试）、16（APK 上传）被 skip。
+
+**无 artifact 产出**，故无 APK 名称/大小/SHA-256。
+
+### 18.2 根因一：尾随 lambda 绑定
+
+`ResolvingClaudePGatewayClient` 的 `resolve` 是**首参**、`fallback` 是**末参**。
+`ResolvingClaudePGatewayClient { ... }` 的尾随 lambda 被绑定到 `fallback`（非函数类型），
+于是 `resolve` 缺参、lambda 类型不符，并连带产生"suspend 函数不能在非挂起上下文调用"。
+
+修复：改为命名参数 `resolve = { ... }`。**fail-closed fallback 未改动。**
+
+### 18.3 根因二：nullable 被违反的契约掩盖
+
+`currentDeviceIdOrNull()` 返回 `String?`，而 `deviceIdProvider: (() -> String)?` 要求非空。
+**没有用 `"unpaired-device"`、空串或其他占位值去满足类型** —— 改为修正契约本身（见 §18.4）。
+
+### 18.4 动态设备身份契约（本轮发现的问题）
+
+三处缺陷：
+
+1. **身份分裂**：`streamText` 的 fingerprint 取动态 device id，而 `ensureHandshake()` 的
+   `client.hello` 取构造器字段。一次请求可能以 `"unpaired-device"` 握手，却把 fingerprint 绑到真实设备。
+2. **缓存跨重新配对**：单一 `cachedServerHello` 在 unpair 后仍保留，重新配对后的请求可能复用**上一个身份**协商的 hello。
+3. **陈旧的 volatile 身份**：`currentDeviceIdOrNull()` 直接返回 `lastKnownDeviceId`，该值在撤销后仍然存在。
+
+修复：
+
+- `deviceIdProvider` 改为 `(suspend () -> String?)?`。**已配置但返回 null/blank ⇒ 在任何 dispatch 之前
+  以 `NOT_PAIRED` fail-closed**，绝不用构造器占位值回退。未配置 ⇒ 保持 CP1-A 静态行为与缓存。
+- `streamText` **只解析一次**身份，hello 与 fingerprint 严格共用同一值。
+- `currentDeviceIdOrNull()` 改为 `suspend`，经与 transport 相同的 `resolveDevice()` 重新校验
+  durable 状态（settings 一致、credential 存在未过期、key 可加载），不再返回缓存。
+- 动态 resolver **不复用 hello 缓存**，每次请求重新协商。仅按 device id 缓存也不充分 ——
+  没有证据表明重新配对必然产生新 id，缓存键可能跨两次配对碰撞。代价是每请求多一次有界 `client.hello`。
+
+未扩大 wire protocol，未新增危险 fallback，未改动持久化 credential 格式或引入 migration。
+
+### 18.5 本机实际执行（最终 HEAD）
+
+```
+bash /c/Users/hp/.claudep-buildcheck/run.sh
+JUnit version 4.13.2
+OK (239 tests)
+```
+
+| 类别 | 执行 | 通过 |
+|---|---:|---:|
+| CP1-A 真正复跑 | 41 | 41 |
+| CP1-B 新增（harness 可编译） | 198 | 198 |
+| **合计** | **239** | **239** |
+
+### 18.6 本机**未**编译（R2 新增）
+
+| 类 | `@Test` | 说明 |
+|---|---:|---|
+| `ai:...providers.ClaudePProviderIdentityTest` | 8 | **已写**；`ClaudePProvider` 位于本地 harness 编译集合之外（依赖 Compose），因此**本机未编译、未运行** |
+
+**并且：本轮的 `ClaudePProvider` 改动与 `DataSourceModule` 修复本身也没有本机编译证据。**
+它们分别位于 harness 编译集合之外与 `:app` 内。第二次 CI 是它们第一次被编译。
+
+### 18.7 静态复核（`DataSourceModule`）
+
+| 检查点 | 结论 |
+|---|---|
+| `resolve` 使用命名参数 | **是**（`resolve = { claudePPairing.gatewayClientOrNull() }`） |
+| suspend lambda 类型正确 | 命名到 `resolve`，其类型即 `suspend () -> ClaudePGatewayClient?`，与 `gatewayClientOrNull()` 一致 |
+| nullable 身份未被占位值掩盖 | **是** —— 无占位值；`deviceIdProvider` 已改为 nullable suspend，由 provider 侧 fail-closed |
+| fallback 未改动 | 仍是 `UnpairedClaudePGatewayClient` |
+| 触发条件/签名/上传步骤 | 未改动 |
+
+**这是静态阅读结论，不是编译通过。**
+
+### 18.8 CI 门禁
+
+REQUIRED 数组由 **21 → 23**：新增 `ClaudePResolvingClientTest` 与 `ClaudePProviderIdentityTest`。
+`ClaudePProviderIdentityTest` 同时加入 `:ai` 的 `--tests` 白名单（它在 `providers` 包，不受
+`claudep.*` 通配符覆盖）。YAML 语法已校验。
+
+### 18.9 状态
+
+- 分支 `codex/claudep-cp1b-local`，**未 push**，**未触发第二次 CI**；PR / tag / master 未触碰。
+- 工作区洁净，`git diff --check` 通过；依赖零变更。
+- **停在第二次 CI 授权点。**
