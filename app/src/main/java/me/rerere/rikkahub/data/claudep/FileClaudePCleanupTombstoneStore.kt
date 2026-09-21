@@ -30,11 +30,21 @@ import me.rerere.ai.provider.claudep.ClaudePTombstoneRead
  * version limits — live in `ai` with the tests that cover them, rather than being re-derived here
  * where a JVM test could never reach them.
  */
-class FileClaudePCleanupTombstoneStore(
-    context: Context,
+class FileClaudePCleanupTombstoneStore private constructor(
+    /** Base directory the Claude P private subdirectory is created under. */
+    baseDirectory: File,
 ) : ClaudePCleanupTombstoneStore {
 
-    private val directory = File(context.noBackupFilesDir, DIRECTORY_NAME)
+    /**
+     * Production construction.
+     *
+     * `noBackupFilesDir` and nothing else — never `cacheDir`, `filesDir` or external storage. This
+     * is the platform-level guarantee that a pending-cleanup record never enters cloud backup or a
+     * device transfer, so a restored device cannot inherit another installation's tombstone.
+     */
+    constructor(context: Context) : this(context.noBackupFilesDir)
+
+    private val directory = File(baseDirectory, DIRECTORY_NAME)
     private val file = File(directory, FILE_NAME)
     private val temporaryFile = File(directory, "$FILE_NAME.tmp")
 

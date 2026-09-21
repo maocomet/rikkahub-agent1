@@ -10,9 +10,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * a failed **clear** must stop the device from claiming it is clean.
  */
 class InMemoryClaudePCleanupTombstoneStore : ClaudePCleanupTombstoneStore {
+    /** Fixture setup: pre-existing durable state. */
     @Volatile
     var stored: ClaudePCleanupTombstone? = null
-        private set
 
     @Volatile
     var writeFails: Boolean = false
@@ -68,9 +68,9 @@ class InMemoryClaudePPairingSettingsGateway(
     initial: ClaudePPairingState = ClaudePPairingState.NOT_PAIRED,
 ) : ClaudePPairingSettingsGateway {
 
+    /** Fixture setup: pre-existing persisted state. */
     @Volatile
     var state: ClaudePPairingState = initial
-        private set
 
     @Volatile
     var metadata: ClaudePPairedMetadata? = null

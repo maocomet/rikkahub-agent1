@@ -26,7 +26,9 @@ import me.rerere.ai.provider.claudep.ClaudePPairingSettingsGateway
 import me.rerere.ai.provider.claudep.ClaudePPairingState
 import me.rerere.ai.provider.claudep.ClaudePUiStatus
 import me.rerere.ai.provider.claudep.ClaudePUiStatusMapper
+import me.rerere.ai.provider.claudep.ClaudePPairingTransport
 import me.rerere.ai.provider.claudep.ClaudePUnpairResult
+import me.rerere.ai.provider.claudep.ClaudePWebSocketConnector
 import me.rerere.ai.provider.claudep.OkHttpClaudePPairingTransport
 import me.rerere.ai.provider.claudep.OkHttpClaudePWebSocketConnector
 import me.rerere.ai.provider.claudep.WssClaudePGatewayClient
@@ -53,6 +55,18 @@ class ClaudePDevicePairingRepository(
     private val scope: CoroutineScope,
     private val appVersion: String,
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
+    /**
+     * Builds the pairing transport for a gateway.
+     *
+     * A seam with a production default. Both defaults construct the real OkHttp-backed transports,
+     * which build their own isolated clients — the seam exists so the wiring above them can be
+     * exercised without a socket, not so the transport can be swapped in production.
+     */
+    private val pairingTransportFor: (ClaudePEndpoint) -> ClaudePPairingTransport = { endpoint ->
+        OkHttpClaudePPairingTransport(endpoint)
+    },
+    /** Builds the WebSocket connector. Same reasoning as [pairingTransportFor]. */
+    private val webSocketConnectorFor: () -> ClaudePWebSocketConnector = { OkHttpClaudePWebSocketConnector() },
 ) {
     private val _pairingInFlight = MutableStateFlow(false)
     private val _connectionState = MutableStateFlow(ClaudePConnectionState.DISCONNECTED)
@@ -81,7 +95,7 @@ class ClaudePDevicePairingRepository(
         tombstoneStore = tombstoneStore,
         settings = settingsGateway,
         pairingClient = ClaudePPairingClient(
-            transportFor = { endpoint -> OkHttpClaudePPairingTransport(endpoint) },
+            transportFor = pairingTransportFor,
             keyStore = deviceKeyStore,
             appVersion = appVersion,
         ),
@@ -173,7 +187,7 @@ class ClaudePDevicePairingRepository(
             ?.endpoint ?: return null
 
         val client = WssClaudePGatewayClient(
-            connector = OkHttpClaudePWebSocketConnector(),
+            connector = webSocketConnectorFor(),
             endpoint = endpoint,
             accessProvider = ClaudePDeviceAccessProvider { now ->
                 // Re-read on every connection rather than closing over the credential captured above,

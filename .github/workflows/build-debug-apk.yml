@@ -199,6 +199,7 @@ jobs:
             --tests "me.rerere.ai.provider.ProviderManagerClaudePTest"
           ./gradlew :app:testDebugUnitTest \
             --tests "me.rerere.rikkahub.data.ai.background.ClaudePBackgroundExclusionTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepositoryTest" \
             --tests "me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest"
 
       # Compiling is not running. Gradle only fails when the COMBINED filter matches nothing, and
@@ -207,24 +208,64 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
-          found=0
-          for results in ai/build/test-results/testDebugUnitTest app/build/test-results/testDebugUnitTest; do
-            [ -d "$results" ] || continue
-            while read -r xml; do
-              [ -n "$xml" ] || continue
-              found=$((found + 1))
-              echo "executed: $(basename "$xml" .xml)"
-            done < <(find "$results" -name '*ClaudeP*.xml' | sort)
+          # Every class below is REQUIRED to have produced a JUnit XML. Listing the expected set
+          # explicitly is the point: `--tests` filters only fail when the COMBINED filter matches
+          # nothing, so a single renamed or dropped class is otherwise invisible, and "at least one
+          # ClaudeP XML exists" would pass while most of the suite silently never ran.
+          REQUIRED=(
+            "ai:me.rerere.ai.provider.claudep.ClaudePCleanupTombstoneCodecTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePConfigureUiTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePCredentialStoreTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePEndpointTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePFakeGatewayTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePImportSanitizerTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePOkHttpTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePPairingCoordinatorTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePPairingFlowTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePProtocolTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePRequestFingerprintTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePRevocationTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePUiStatusTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePWssTransportTest"
+            "ai:me.rerere.ai.provider.providers.ClaudePProviderCancellationTest"
+            "ai:me.rerere.ai.provider.providers.ClaudePProviderStreamTest"
+            "ai:me.rerere.ai.provider.ClaudePSettingTest"
+            "ai:me.rerere.ai.provider.ProviderManagerClaudePTest"
+            "app:me.rerere.rikkahub.data.ai.background.ClaudePBackgroundExclusionTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepositoryTest"
+            "app:me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest"
+          )
+
+          missing=0
+          for entry in "${REQUIRED[@]}"; do
+            module="${entry%%:*}"
+            class="${entry#*:}"
+            if [ "$module" = "ai" ]; then
+              results=ai/build/test-results/testDebugUnitTest
+            else
+              results=app/build/test-results/testDebugUnitTest
+            fi
+            found=0
+            if [ -d "$results" ]; then
+              while read -r xml; do
+                [ -n "$xml" ] || continue
+                # Compare the XML's own class name, not the file name: an inner-class or a renamed
+                # file must not be able to satisfy an entry it does not match.
+                if grep -q "name=\"$class\"" "$xml"; then found=1; echo "executed: $class"; fi
+              done < <(find "$results" -name '*.xml' | sort)
+            fi
+            if [ "$found" -ne 1 ]; then
+              echo "::error::No JUnit XML for required Claude P test class $class — it compiled but did not run, or was renamed."
+              missing=$((missing + 1))
+            fi
           done
-          if [ "$found" -eq 0 ]; then
-            echo "::error::No Claude P test result XML found — the tests compiled but did not run."
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::$missing required Claude P test class(es) produced no results."
             exit 1
           fi
-          echo "Total Claude P test classes executed: $found"
+          echo "All ${#REQUIRED[@]} required Claude P test classes executed."
 
-      # :web:buildWebUi (pnpm run build) fails with a bare exit code 1 while
-      # Gradle's concurrent task output buries the real react-router/vite error.
-      # Retry it standalone so the actual error lands at the end of the log.
       - name: Diagnose web-ui build (on failure)
         if: failure()
         working-directory: web-ui
