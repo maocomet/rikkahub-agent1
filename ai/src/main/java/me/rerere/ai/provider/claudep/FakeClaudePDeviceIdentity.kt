@@ -136,6 +136,17 @@ class InMemoryClaudePDeviceCredentialStore : ClaudePDeviceCredentialStore {
     var writeCount: Int = 0
         private set
 
+    /**
+     * When set, [write] suspends on this gate before storing anything.
+     *
+     * Lets a test hold persistence open while a second operation starts, with no sleep and no timing
+     * assumption — the test decides exactly when persistence is allowed to finish.
+     */
+    var writeGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+    /** When set, [clear] suspends on this gate, so an unpair can be paused mid-cleanup. */
+    var clearGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override suspend fun read(): ClaudePCredentialRead {
         readFailure?.let { return ClaudePCredentialRead.Unusable(it) }
         return stored?.let { ClaudePCredentialRead.Present(it) } ?: ClaudePCredentialRead.Absent
@@ -154,6 +165,7 @@ class InMemoryClaudePDeviceCredentialStore : ClaudePDeviceCredentialStore {
     var clearKeepsData: Boolean = false
 
     override suspend fun write(device: ClaudePPairedDevice): List<ClaudePCredentialStoreFailure> {
+        writeGate?.await()
         if (writeFailures.isNotEmpty()) return writeFailures
         writeCount += 1
         readFailure = null
@@ -162,6 +174,7 @@ class InMemoryClaudePDeviceCredentialStore : ClaudePDeviceCredentialStore {
     }
 
     override suspend fun clear(): List<ClaudePCredentialStoreFailure> {
+        clearGate?.await()
         if (clearFailures.isNotEmpty()) {
             if (!clearKeepsData) {
                 stored = null

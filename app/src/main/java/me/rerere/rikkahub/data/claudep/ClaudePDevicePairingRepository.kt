@@ -37,7 +37,6 @@ import me.rerere.ai.provider.claudep.OkHttpClaudePWebSocketConnector
 import me.rerere.ai.provider.claudep.OkHttpClaudePPairingTransport
 import me.rerere.ai.provider.claudep.WssClaudePGatewayClient
 import me.rerere.rikkahub.data.datastore.SettingsStore
-import okhttp3.OkHttpClient
 
 /**
  * The single owner of "is this device paired, and can it talk to its gateway".
@@ -65,7 +64,6 @@ class ClaudePDevicePairingRepository(
     private val settingsStore: SettingsStore,
     private val credentialStore: ClaudePDeviceCredentialStore,
     private val deviceKeyStore: ClaudePDeviceKeyStore,
-    private val okHttpClient: OkHttpClient,
     private val scope: CoroutineScope,
     private val appVersion: String,
     /** Injectable so expiry checks are deterministic in tests rather than wall-clock reads. */
@@ -98,7 +96,7 @@ class ClaudePDevicePairingRepository(
         ClaudePPairingClient(
             // Endpoint is only known after the QR is parsed, so the transport is built per attempt —
             // but the *client* stays, and it is the client that serialises.
-            transportFor = { endpoint -> OkHttpClaudePPairingTransport(okHttpClient, endpoint) },
+            transportFor = { endpoint -> OkHttpClaudePPairingTransport(endpoint) },
             keyStore = deviceKeyStore,
             appVersion = appVersion,
         )
@@ -316,7 +314,7 @@ class ClaudePDevicePairingRepository(
         val endpoint = device.endpointOrNull() ?: return null
 
         val client = WssClaudePGatewayClient(
-            connector = OkHttpClaudePWebSocketConnector(okHttpClient),
+            connector = OkHttpClaudePWebSocketConnector(),
             endpoint = endpoint,
             accessProvider = ClaudePDeviceAccessProvider { now ->
                 // Re-read on every connection rather than closing over the credential captured above,

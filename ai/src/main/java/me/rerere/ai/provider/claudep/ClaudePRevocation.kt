@@ -64,6 +64,17 @@ enum class ClaudePUnpairFailure {
 
     /** A staged file was left behind. */
     TEMP_FILE_NOT_DELETED,
+
+    /**
+     * The cleanup could not be recorded, so no destructive step was attempted.
+     *
+     * Reporting this as a failure rather than proceeding is the point: deleting the credential while
+     * failing to record the alias would lose the only pointer to a key that may still exist.
+     */
+    TOMBSTONE_WRITE_FAILED,
+
+    /** A completed cleanup could not be recorded, so the device must not claim to be clean. */
+    TOMBSTONE_DELETE_FAILED,
 }
 
 /** What remained after an unpair attempt. An empty list means nothing is left. */
