@@ -1,6 +1,6 @@
 # CP1-B｜安全联网传输与一次性配对 — 本地实施报告
 
-状态：**CP1-B 本地实现完成，Android CI 待验证**
+状态：**CP1-B 本地返修完成，Android CI 待验证**
 日期：2026-09-20
 分支：`codex/claudep-cp1b-local`（**未 push**）
 Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1b`
@@ -21,7 +21,8 @@ PR / Tag / Release / master：**均未触碰**
 | `c655fc93…` 是否为祖先 | **是**（`git merge-base --is-ancestor` 退出码 0） |
 | CP1-A 收口提交是否仅文档 | **是**（`git diff --name-only c655fc93..876a814b` 仅 1 个 `.md`） |
 | 本阶段基线 | `876a814bdee3687039d8c48832d3701b31d69354` |
-| **最终 HEAD** | `10ad17ba2e485030c02ec74603417d47494f0960` |
+| **R0 最终 HEAD（旧）** | `10ad17ba2e485030c02ec74603417d47494f0960` |
+| **R1 最终 HEAD** | `059fc2f3`（见 §14 R1 返修） |
 | 工作区 | **洁净**（`git status --porcelain` 为空） |
 | `git diff --check` | **通过** |
 
@@ -378,4 +379,127 @@ Git 残留：无。进程残留：本轮未启动 Gradle daemon、未运行 `adb
 - 工作区洁净，`git diff --check` 通过。
 - **CI 未触发**，授权按用户指示冻结。
 - 源仓库、master、远端均未被触碰。
+- **停在静态复审点，等待 CI 授权。**
+
+
+---
+
+## 14. R1 返修（静态复审后）
+
+R0 的静态复审发现 6 项安全边界缺陷。**R0 的全部结论已被本节取代**；§6.2 的
+「163 tests」只属于 R0 那个 HEAD，不得沿用。
+
+### 14.1 修复项
+
+| 项 | 缺陷 | 修复 |
+|---|---|---|
+| **P1-1** | Claude P 使用共享 OkHttpClient；`newBuilder()` **会复制 interceptor 列表**，因此共享的 request-logging、debug header-logging、AI interceptor 都会作用于携带 credential / ticket / proof 的流量。R0 中"没有继承日志拦截器"的注释不成立 | 新增 `ClaudePOkHttp`：`newIsolated()` 从**全新** `OkHttpClient.Builder()` 构建；`hardened()` 额外**清空**两个 interceptor 列表（错误注入也无法记录凭证）。两个 connector 改走 `hardened()`。DI 注册具名 `claude_p` client |
+| **P1-2** | 运行期 handshake 调 `loadOrCreate`：私钥丢失/恢复失败/被删后会**生成新钥匙**，而不是进入未配对 | 契约拆为 `createFresh`（仅 pairing）/ `loadExisting`（仅 runtime，**绝不创建**）/ `delete` 返回 Boolean。运行期路径不再能创建或替换设备密钥 |
+| **P1-3** | Repository 每次 `pair()` 新建 PairingClient，其 Mutex 与 consumed-ticket guard **不跨请求生效** | `ClaudePPairingClient` 改为**单例复用**，接收按 endpoint 解析的 transport **工厂**；每次 attempt 使用**独立 key alias**，一个失败 attempt 无法删除另一个的 key |
+| **P1-4** | 凭证写入后 settings 写入失败会留下可用 credential；"原子写入"实为 `copyTo()`；`clear()` 吞掉删除失败；AES wrapping key 未删除；unpair 后 dispatch 路径仍直接读 credential | 见 §14.2 |
+| **P1-5** | 只更新 `_connectionState`，未重新派生 `_status` | connection 变化经同一个 `refresh()` 重新派生；旧 client 的事件被身份比对丢弃 |
+| **P2** | `sanitizedAfterImport()` 绑在 `ShareSheet.kt`（需要 `android.util.Base64` + Compose），只能静态复审 | 规则移入 `ai`，不依赖 Android/Compose；Base64 解码仍留在 app 层。**新增 5 条直接单元测试** |
+
+### 14.2 P1-4 的 fail-closed 协议
+
+```text
+pair() 成功交换后：
+  1. credentialStore.write()  → 暂存到 .tmp，renameTo 原子替换
+       替换失败 → 旧记录保持原样，临时文件清除，返回失败（不覆盖有效旧配对）
+  2. 写入失败 → 补偿：清除新 credential + 删除新 device key
+              → PAIRING_NOT_PERSISTED（不谎报成功）
+  3. settings 写入失败 → 同样补偿 → PAIRING_NOT_PERSISTED
+  4. 全部成功 → 关闭旧 client（新身份取代旧身份）
+
+unpair()：
+  1. settings → REVOKED 且 enabled=false     ← 先剥夺可调度性
+  2. 关闭 socket；派生状态
+  3. credentialStore.clear()  → 删密文文件 + 删 AES wrapping key，失败**返回**不吞
+  4. deviceKeyStore.delete(alias) → 返回 Boolean；alias 不可知时报告 KEY_ALIAS_UNKNOWN
+  5. settings → NOT_PAIRED
+  返回 ClaudePUnpairResult(failures)；空列表才代表收口完成
+
+gatewayClientOrNull()（唯一获得 transport 的途径）：
+  必须同时满足，任一不满足即返回 null（不构建 client）：
+    · settings.pairingState == PAIRED（NOT_PAIRED / REVOKED 一律拒绝）
+    · credential Present 且未过期
+    · pairedOrigin / gatewayFingerprint / gatewayInstallationId / deviceId 与设置一致
+    · keyAlias 非空且 loadExisting 可加载、公钥可读
+  client 按 identity(deviceId|keyAlias|origin|credential) 缓存；
+  身份变化或 unpair 一律销毁旧 client
+```
+
+### 14.3 本机实际执行（R1 最终 HEAD）
+
+在 R1 最终 HEAD（工作区洁净）上重新完整执行：
+
+```
+bash /c/Users/hp/.claudep-buildcheck/run.sh
+JUnit version 4.13.2
+OK (176 tests)
+```
+
+| 类别 | 类数 | 执行 | 通过 | 失败 | 跳过 |
+|---|---:|---:|---:|---:|---:|
+| CP1-B 新增（`ai`，harness 可编译） | 6 | 135 | 135 | 0 | 0 |
+| CP1-A 真正复跑 | 2 | 41 | 41 | 0 | 0 |
+| **harness 合计** | **8** | **176** | **176** | **0** | **0** |
+
+CP1-B 新增分模块：`ClaudePWssTransportTest` 36、`ClaudePEndpointTest` 33、
+`ClaudePPairingFlowTest` 25、`ClaudePCredentialStoreTest` 21、
+`ClaudePUiStatusTest` 14、`ClaudePOkHttpTest` 6。
+
+### 14.4 本机**未**编译的测试（不得计入）
+
+| 类 | `@Test` | 原因 |
+|---|---:|---|
+| `ClaudePImportSanitizerTest` | 5 | 与 `ClaudePImportSanitizer.kt` 同因：`ProviderSetting` 依赖 `androidx.compose.runtime`，超出本地 harness 的编译集合。harness 已按显式文件列表**排除**该文件，并在 `compile.sh` 中写明排除原因 |
+| CP1-A 的 `ClaudePProviderStreamTest` / `ClaudePProviderCancellationTest` / `ClaudePSettingTest` / `ProviderManagerClaudePTest`（`:ai`） | 49 | 需要 `:ai` 全模块（Compose） |
+| CP1-A 的 `ClaudePBackgroundExclusionTest` / `ClaudePProviderConfigureTest`（`:app`） | 11 | `:app` 未编译 |
+
+**CP1-A 的 101 条中，本机真正复跑 41 条，未运行 60 条。**
+**CP1-B 新增 140 条中，本机执行 135 条，未编译 5 条。**
+
+### 14.5 仍未验证（app 侧）
+
+§7 的风险清单在 R1 后**全部仍然有效**，并新增：
+
+| # | 风险 |
+|---|---|
+| 9 | Koin `single(named("claude_p"))` 与 `get(named("claude_p"))` 的解析需 CI 确认 |
+| 10 | `ClaudePOkHttp.newIsolated()` 在 Android 上的实际 interceptor 列表（`ClaudePOkHttpTest` 用 JVM OkHttp 验收，逻辑相同但非 Android 运行时） |
+| 11 | `renameTo` 在 `noBackupFilesDir` 上的原子性（Android/Linux 上应为原子；未在真机验证） |
+| 12 | `ClaudePUnpairResult` / `ClaudePUnpairFailure` / `ClaudePPairingCleanupFailure` 的 app 层调用点（`SettingProviderDetailPage` 目前忽略 unpair 结果——**已知缺口**：清理失败尚未呈现给用户） |
+
+### 14.6 P1-4 覆盖缺口（如实标注）
+
+以下要求项**无法由本机 JVM 测试覆盖**，因为实现位于 `:app`（依赖 `android.util.Log`、
+`Context`、`noBackupFilesDir`）：
+
+- credential write 成功 / settings write 失败的补偿；
+- 临时文件写入失败与替换失败；
+- 密文删除失败、AES key 删除失败、device key 删除失败；
+- unpair 后旧 Provider 即使仍 enabled 也不能 dispatch；
+- 旧 credential 残留时 REVOKED 优先；
+- re-pair 后旧 client 不再可用；
+- app/process restart 后仍 fail-closed。
+
+其中「凭证缺失 / 密钥缺失 / 身份不一致 → 不构建 client」的**纯逻辑部分**已由
+`ClaudePCredentialStoreTest` 与 `ClaudePWssTransportTest` 在 `ai` 层覆盖；
+`ClaudePPairingClient` 的 attempt 级清理与 `cleanupFailures` 上报亦已覆盖。
+**但 Repository 与两个 Android store 的行为本身，未经任何自动化验证。**
+
+### 14.7 R1 提交
+
+| # | Commit |
+|---|---|
+| 1 | `9a6a95b3` `fix(claudep): isolate credential transport` |
+| 2 | `059fc2f3` `fix(claudep): serialize pairing and revocation` |
+| 3 | *(本文件)* `docs(claudep): record CP1-B R1 evidence` |
+
+### 14.8 状态
+
+- 分支 `codex/claudep-cp1b-local`，**未 push**；CI **未触发**；PR / tag / master 均未触碰。
+- 工作区洁净，`git diff --check` 通过。
+- 依赖**零变更**。
 - **停在静态复审点，等待 CI 授权。**
