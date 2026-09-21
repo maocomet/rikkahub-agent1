@@ -174,3 +174,77 @@ APK 未被提交进仓库，部分下载物位于仓库外 `C:\Users\hp\.claudep
 
 与 §2 相同：本 run 全绿，日志中**没有** `N tests completed` 汇总行（Gradle 只在失败时打印），
 workflow 也不上传 JUnit XML。因此测试数量仍无法从本 run 直读取证。
+
+
+---
+
+## 6. R3.1 / R3.2：managed-device 结果与 scope 返修
+
+### 6.1 R3 的接口绑定：已由真实设备证明有效
+
+Run 35610800900 在 managed device 上真实执行了 `ClaudePKoinGraphTest`：
+`tests=7 failures=3 errors=0 skipped=0`。
+
+**7 条全部真实执行**，其中两条接口解析测试（`tombstoneStoreResolvesThroughItsInterface`、
+`pairingSettingsGatewayResolvesThroughItsInterface`）**通过** —— R3 的两个接口绑定**有效，且已被真机验证**。
+
+（run 35601743353 因 D8 拒绝含空格的 DEX 方法名而未能编译，R3.1 重命名后本 run 才真正执行。）
+
+### 6.2 三个失败共享同一真实根因
+
+```
+InstanceCreationException: Could not create instance for '[Singleton: ClaudePDevicePairingRepository]'
+Caused by: NoDefinitionFoundException:
+  No definition found for type 'kotlinx.coroutines.CoroutineScope' on scope '_root_'
+  at DataSourceModuleKt.dataSourceModule$lambda$0$232(DataSourceModule.kt:4027)
+```
+
+失败的 3 条为 `repositoryDefinitionCompletesConstruction`、`repositoryIsASingle`、
+`graphResolvesUpToProviderManager` —— 全部依赖 Repository 的构造。
+
+`AppModule:558` 是 `single { AppScope() }`（具体类）；`SettingsStore` 能工作是因为其参数类型本就是
+`AppScope`。而已修复的调用点参数类型是 `CoroutineScope`（接口），无定义。
+
+**这与 R3 修掉的两个缺陷是同一类问题，位于同一段代码 —— 第一次扫描漏掉了它**，
+因为 `CoroutineScope` 来自协程库而非 `claudep` 包。
+
+### 6.3 当时聊天页仍会崩溃
+
+`ClaudePDevicePairingRepository` 当时仍无法构造，因此
+`InstanceCreationException: Could not create instance for ChatVM` **依然会发生**。
+R3 的修复是**必要但不充分**的。本节不声称崩溃已修复。
+
+### 6.4 R3.2 的修复：调用点类型对齐
+
+`scope = get()` → `scope = get<AppScope>()`，**只改 DI 调用点一个地方**。
+
+只读审计依据：
+
+- `AppScope : CoroutineScope by CoroutineScope(SupervisorJob() + Dispatchers.Main + …)` —— 委托，故**是** `CoroutineScope`；
+- 全仓生产 module **不存在** `get<CoroutineScope>()` 或 `single<CoroutineScope>`；
+  `AppModule` 中有 **9 处** `get<AppScope>()` —— 约定明确；
+- 亦**不应**新增宽泛的 `single<CoroutineScope>`：`AppScope` 有特定生命周期，且存在其他生命周期的
+  scope（`AppModule:408` 的 `parentScope`）。
+
+因此这是**调用点类型对齐**，不是扩大全局 Koin 图；未新增第二个 scope，未改生命周期。
+
+### 6.5 完整构造参数审计
+
+| 参数 | 声明类型 | DI 取值方式 | 已注册 | 可解析 |
+|---|---|---|---|---|
+| `credentialStore` | `ClaudePDeviceCredentialStore` | 内联构造 | 不涉及 | ✅ |
+| `deviceKeyStore` | `ClaudePDeviceKeyStore` | 内联构造 | 不涉及 | ✅ |
+| `tombstoneStore` | `ClaudePCleanupTombstoneStore` | `get()` | 接口（R3） | ✅ 真机已证 |
+| `settingsGateway` | `ClaudePPairingSettingsGateway` | `get()` | 接口（R3） | ✅ 真机已证 |
+| `scope` | `CoroutineScope` | `get()` | `AppScope` 具体类 | ❌ → R3.2 已修 |
+| `appVersion` | `String` | `BuildConfig` | 不涉及 | ✅ |
+
+后续路径：`ProviderManager(client = get(), context = get())` —— `OkHttpClient`、`Context` 均已注册；
+`ResolvingClaudePGatewayClient` 与 `ClaudePProvider` 内联构造。`ChatService ← ProviderManager`。
+**未发现第四个 Claude-P 专属缺失注册。**
+
+### 6.6 状态
+
+- R3.2 提交 HEAD `fed70f3c`，**未 push**；未触发任何 CI。
+- 本地 harness 239 全绿；工作区洁净，`git diff --check` 通过。
+- **Repository 能否构造仍待下一次 managed-device run 验证**，不得据本机静态检查断言。
