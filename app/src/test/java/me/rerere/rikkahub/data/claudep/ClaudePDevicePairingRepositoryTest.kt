@@ -219,8 +219,14 @@ class ClaudePDevicePairingRepositoryTest {
             harness.keys.deleteFails = true
             repository.unpair()
 
-            // Derived status comes from the repository, not from the UI's own reasoning.
-            assertEquals(ClaudePUiStatus.OFFLINE, repository.status.value)
+            // A partially failed cleanup leaves settings at REVOKED, and the mapper maps REVOKED to
+            // CREDENTIAL_INVALID — the state that tells the user to re-pair or to finish the
+            // cleanup. It is *not* OFFLINE: an earlier revision of this test expected OFFLINE, which
+            // was written before the mapper gave REVOKED priority over the connection state.
+            //
+            // The exact state matters less than the property, but the state is asserted exactly
+            // rather than loosely: whatever it renders as, it must not be dispatchable.
+            assertEquals(ClaudePUiStatus.CREDENTIAL_INVALID, repository.status.value)
             assertFalse(repository.status.value.allowsDispatch)
         }
 
