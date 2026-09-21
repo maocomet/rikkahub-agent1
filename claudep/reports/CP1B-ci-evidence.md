@@ -135,3 +135,42 @@ APK 未被提交进仓库，部分下载物位于仓库外 `C:\Users\hp\.claudep
 - 依赖零变更；协议、凭证格式、Gateway wire format 未改动；未引入 migration。
 - `master` 未触碰；未创建 PR / tag / Release。
 - 本报告本身不触发 CI。
+
+
+---
+
+## 5. R3：Koin 绑定修复的普通 CI 验证
+
+| 项 | 值 |
+|---|---|
+| Run | [35593444804](https://github.com/maocomet/rikkahub-agent1/actions/runs/35593444804) |
+| SHA | `8687dcda1d2b9bf787426fe0f0f99c180365bac7` |
+| attempt / event | **1** / `workflow_dispatch` |
+| 结论 | **success** |
+
+全部执行步骤 success；唯一 skipped 是 step 15 `Diagnose web-ui build (on failure)`（`if: failure()` 决定）。
+
+| 项 | 结果 |
+|---|---|
+| 编译错误数 | **0** |
+| `assembleDebug` | success |
+| 固定签名校验 | success — 三个 APK 均为 `2f1965cf7447301f857ec222fb1996ac179b07c771d9b3a636bd0116fefffcc3` |
+| regression unit tests + XML | success |
+| Claude P 必跑类 XML 门禁 | **`All 23 required Claude P test classes executed.`** |
+| Artifact | `rikkahub-agent-debug-apk`，id `10635343152`，**353,554,103 bytes** |
+
+### 这次 CI 证明了什么、没证明什么
+
+**证明了**：本次 Koin DI 改动（`DataSourceModule` 两处接口注册）与相关 Android 源码
+**能够编译**；`assembleDebug` 通过；两批测试与 23 类 XML 门禁继续通过。
+
+**没有证明**：**真实 Koin 图能否解析。** 该 workflow **既不编译也不运行 `androidTest`**，
+`ClaudePKoinGraphTest` 未执行。而且这两个被重新绑定的具体类在上一轮 CI 里**已经编译通过**
+（`assembleDebug` 成功），所以本次新增的编译证据只覆盖 DI 那两行。
+
+**Koin 图仍须由 managed-device instrumentation 验证**，本轮未触发 `migration-instrumentation.yml`。
+
+### 关于「测试数量」
+
+与 §2 相同：本 run 全绿，日志中**没有** `N tests completed` 汇总行（Gradle 只在失败时打印），
+workflow 也不上传 JUnit XML。因此测试数量仍无法从本 run 直读取证。
