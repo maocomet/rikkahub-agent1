@@ -34,11 +34,9 @@ class OkHttpClaudePPairingTransport(
     private val endpoint: ClaudePEndpoint,
 ) : ClaudePPairingTransport {
 
-    private val client: OkHttpClient = client.newBuilder()
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .retryOnConnectionFailure(false)
-        .build()
+    // Stripped rather than trusted: this request carries the one-time ticket and the possession
+    // proof, and `newBuilder()` would copy any logging interceptor the source client had.
+    private val client: OkHttpClient = ClaudePOkHttp.hardened(client)
 
     override suspend fun send(
         request: ClaudePPairingWireRequest,

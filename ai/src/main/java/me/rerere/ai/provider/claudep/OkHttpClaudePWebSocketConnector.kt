@@ -25,29 +25,22 @@ import okio.ByteString
  *
  * ### The client it uses
  *
- * A hardened copy is derived from the injected client rather than trusting the injected one to be
- * safe:
+ * See [ClaudePOkHttp.hardened]: interceptors are **removed** from the injected client, redirects are
+ * disabled (a redirect would replay the device's `Authorization` header against another host), and
+ * automatic retry is disabled (the client above owns the reconnect budget).
  *
- * - **Redirects are disabled**, both kinds. `claudep/04-rikkahub-integration-map.md` §2 requires it,
- *   and it matters more here than for an ordinary API call: a redirect would replay the device's
- *   `Authorization` header against a different host, which is precisely the "move the credential
- *   somewhere the user did not agree to" attack the unified origin type exists to prevent.
- * - **Automatic retry on connection failure is disabled.** A retry is another connection attempt with
- *   the credential attached; the client above owns the reconnect budget and must be the only thing
- *   deciding how many times we try.
- *
- * No logging interceptor is installed and none is inherited: the credential travels in a header, and
- * an interceptor that logs headers would write it out.
+ * An earlier revision claimed no logging interceptor was "inherited". That was wrong —
+ * `newBuilder()` copies interceptor lists — which is exactly why the stripping is now explicit and
+ * tested rather than assumed.
  */
 class OkHttpClaudePWebSocketConnector(
     client: OkHttpClient,
 ) : ClaudePWebSocketConnector {
 
-    private val client: OkHttpClient = client.newBuilder()
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .retryOnConnectionFailure(false)
-        .build()
+    // Interceptors are stripped here rather than trusted to be absent upstream: `newBuilder()`
+    // copies them from the source, so a shared logging interceptor would otherwise run against the
+    // `Authorization` header this connector sets.
+    private val client: OkHttpClient = ClaudePOkHttp.hardened(client)
 
     override suspend fun connect(request: ClaudePConnectRequest): ClaudePConnectOutcome {
         // Checked here as well as in ClaudePEndpoint, because this is the last point before a socket
