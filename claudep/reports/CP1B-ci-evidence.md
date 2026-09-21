@@ -248,3 +248,76 @@ R3 的修复是**必要但不充分**的。本节不声称崩溃已修复。
 - R3.2 提交 HEAD `fed70f3c`，**未 push**；未触发任何 CI。
 - 本地 harness 239 全绿；工作区洁净，`git diff --check` 通过。
 - **Repository 能否构造仍待下一次 managed-device run 验证**，不得据本机静态检查断言。
+
+
+---
+
+## 7. R3.2 串行验证：两关全绿
+
+同一精确 SHA `95624b6db94bd6c03f6b505096e161d35231020c`，两个新 run，均 attempt 1、均未 rerun。
+
+### 第一关：普通 CI
+
+| 项 | 值 |
+|---|---|
+| Run | [35613938145](https://github.com/maocomet/rikkahub-agent1/actions/runs/35613938145) |
+| 结论 | **success** |
+
+`assembleDebug`（step 9）、固定签名校验（10）、regression unit tests + XML（11/12）、
+Claude P 两批测试 + `All 23 required Claude P test classes executed.`（13/14）、APK 上传（16）全部 success。
+
+### 第二关：managed-device instrumentation
+
+| 项 | 值 |
+|---|---|
+| Run | [35614890304](https://github.com/maocomet/rikkahub-agent1/actions/runs/35614890304) |
+| 结论 | **success**（11 个执行步骤全部 success） |
+
+**唯一能做这项证明的地方就是这一关** —— 普通 CI 既不编译也不运行 `androidTest`。
+
+### `ClaudePKoinGraphTest`：7 tests / 7 passed / 0 failed / 0 errors / 0 skipped
+
+门禁输出（从设备产出的 XML 解析）：
+
+```
+me.rerere.rikkahub.data.claudep.ClaudePKoinGraphTest: tests=7 failures=0 errors=0 skipped=0
+```
+
+逐条：
+
+| 测试 | 结果 |
+|---|---|
+| `tombstoneStoreResolvesThroughItsInterface` | PASS |
+| `pairingSettingsGatewayResolvesThroughItsInterface` | PASS |
+| `bothInterfacesResolveToTheSameInstance` | PASS |
+| `repositoryDefinitionCompletesConstruction` | PASS |
+| `repositoryIsASingle` | PASS |
+| `graphResolvesUpToProviderManager` | PASS |
+| `graphResolvesRepositoryCollaborators` | PASS |
+
+对应你要求的确认项：
+
+- **两个接口绑定通过** —— R3 的修复在真机上有效，且本轮仍然有效；
+- **singleton 断言通过** —— `bothInterfacesResolveToTheSameInstance` 与 `repositoryIsASingle`；
+- **`ClaudePDevicePairingRepository` 构造通过** —— 这正是 run 35610800900 中以真实
+  `NoDefinitionFoundException: CoroutineScope` 失败的那一条，R3.2 修复后通过；
+- **无会话条件下解析至 `ProviderManager`** —— `graphResolvesUpToProviderManager` 通过；
+- migration 与其他 instrumentation 类同批执行并全部 success，设备与临时资源正常收口。
+
+### 仍然不得声称的范围
+
+**本轮没有构造完整的 `ChatVM`。** 测试止于 `ProviderManager`：`ChatVM` 是带运行时参数
+（conversation id）的 ViewModel，只能由聊天页构造。已验证的是**其无会话依赖路径解析至
+`ProviderManager`**，不是 `ChatVM` 本身。
+
+同时说明：这次修复是通过 managed-device 的真实 Koin 图验证的，而不是从编译成功推断的。
+
+### 本轮修复链（三个同类缺陷）
+
+| 轮次 | 缺陷 | 证据 |
+|---|---|---|
+| R3 | `ClaudePCleanupTombstoneStore` / `ClaudePPairingSettingsGateway` 按具体类注册、按接口解析 | 真机 stack trace |
+| R3.2 | `scope = get()` 解析 `CoroutineScope`，而 `AppScope` 按具体类注册 | 真机 stack trace |
+
+两者都是「按接口请求、按具体类注册」。R3 的修复**必要但不充分** —— 这一点在 R3.2 之前
+已由真机证据证实，而不是事后推断。
