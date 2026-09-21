@@ -14,6 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import me.rerere.ai.provider.ProviderManager
+import me.rerere.ai.provider.claudep.ResolvingClaudePGatewayClient
+import me.rerere.ai.provider.providers.ClaudePProvider
 import me.rerere.common.http.AcceptLanguageBuilder
 import me.rerere.rikkahub.BuildConfig
 import me.rerere.rikkahub.AppScope
@@ -1471,10 +1473,27 @@ val dataSourceModule = module {
         )
     }
 
+    // Claude P pairing state. Declared before the ProviderManager block so the provider below can
+    // resolve its transport from a real instance rather than through a late `get()`.
+    single {
+        me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository(
+            settingsStore = get(),
+            credentialStore = me.rerere.rikkahub.data.claudep.EncryptedClaudePDeviceCredentialStore(
+                context = get(),
+                json = get(),
+            ),
+            deviceKeyStore = me.rerere.rikkahub.data.claudep.AndroidKeystoreClaudePDeviceKeyStore(),
+            okHttpClient = get(),
+            scope = get(),
+            appVersion = me.rerere.rikkahub.BuildConfig.VERSION_NAME,
+        )
+    }
+
     single {
         val settingsStore: me.rerere.rikkahub.data.datastore.SettingsStore = get()
         val codexRepository: CodexAccountRepository = get()
         val json: Json = get()
+        val claudePPairing: me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository = get()
         ProviderManager(client = get(), context = get()).also { pm ->
             pm.registerProvider(
                 "local_litert",
@@ -1495,6 +1514,18 @@ val dataSourceModule = module {
                     repository = codexRepository,
                     json = json,
                 )
+            )
+            // CP1-B: replaces the CP1-A `UnpairedClaudePGatewayClient` binding with a resolver that
+            // returns the real WSS transport once a device is paired. Until then every call still
+            // reports NOT_PAIRED, so the provider stays visible but unreachable.
+            pm.registerProvider(
+                me.rerere.ai.provider.CLAUDEP_REGISTRY_KEY,
+                ClaudePProvider(
+                    gateway = ResolvingClaudePGatewayClient {
+                        claudePPairing.gatewayClientOrNull()
+                    },
+                    deviceIdProvider = { claudePPairing.currentDeviceIdOrNull() },
+                ),
             )
         }
     }

@@ -553,22 +553,5 @@ private class FakeGenerationHandle(
     override fun frames(): Flow<String> = generation.emit()
 }
 
-/** Wire value for an enum constant, via its `@SerialName`, without a reflective lookup. */
-private fun ClaudePErrorCode.wireName(): String = when (this) {
-    ClaudePErrorCode.AUTHENTICATION_REQUIRED -> "authentication_required"
-    ClaudePErrorCode.DEVICE_REVOKED -> "device_revoked"
-    ClaudePErrorCode.PROTOCOL_MISMATCH -> "protocol_mismatch"
-    ClaudePErrorCode.CLI_VERSION_MISMATCH -> "cli_version_mismatch"
-    ClaudePErrorCode.MODEL_NOT_ALLOWED -> "model_not_allowed"
-    ClaudePErrorCode.SESSION_MISSING -> "session_missing"
-    ClaudePErrorCode.SESSION_CONFLICT -> "session_conflict"
-    ClaudePErrorCode.WORKER_BUSY -> "worker_busy"
-    ClaudePErrorCode.QUOTA_UNAVAILABLE -> "quota_unavailable"
-    ClaudePErrorCode.TIMEOUT -> "timeout"
-    ClaudePErrorCode.CANCELLED -> "cancelled"
-    ClaudePErrorCode.STREAM_INTERRUPTED -> "stream_interrupted"
-    ClaudePErrorCode.TOOL_BRIDGE_UNAVAILABLE -> "tool_bridge_unavailable"
-    ClaudePErrorCode.IDEMPOTENCY_CONFLICT -> "idempotency_conflict"
-    ClaudePErrorCode.EXTERNAL_RUNTIME_ERROR -> "external_runtime_error"
-    ClaudePErrorCode.NOT_PAIRED -> "not_paired"
-}
+// `ClaudePErrorCode.wireName()` moved to ClaudePBoundedGenerationStream.kt so the fake and the real
+// WSS client cannot disagree about how an error code is spelled on the wire.

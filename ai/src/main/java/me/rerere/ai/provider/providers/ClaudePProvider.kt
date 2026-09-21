@@ -80,6 +80,15 @@ class ClaudePProvider(
     private val requestIdFactory: () -> String = { Uuid.random().toString() },
     private val remoteThreadId: String = "local-thread",
     private val remoteBranchId: String = "local-branch",
+    /**
+     * Resolves the device id at call time, falling back to [deviceId] when absent.
+     *
+     * The device id is part of the request fingerprint, so it has to be the *paired* device rather
+     * than a startup-time placeholder — otherwise two devices could produce the same fingerprint for
+     * the same request. It is resolved per call rather than captured because `ProviderManager` is
+     * built before the encrypted credential store has been read.
+     */
+    private val deviceIdProvider: (() -> String)? = null,
 ) : Provider<ProviderSetting.ClaudeP> {
 
     private val handshakeMutex = Mutex()
@@ -116,7 +125,7 @@ class ClaudePProvider(
         val systemPrompt = messages.systemPromptOrNull()
         val requestId = requestIdFactory()
         val fingerprint = ClaudePRequestFingerprint.compute(
-            deviceId = deviceId,
+            deviceId = resolvedDeviceId(),
             remoteThreadId = remoteThreadId,
             remoteBranchId = remoteBranchId,
             mode = MODE_NEW,
@@ -319,6 +328,10 @@ class ClaudePProvider(
             }
         }
     }
+
+    /** The paired device id when one is known, otherwise the constructor's placeholder. */
+    private fun resolvedDeviceId(): String =
+        deviceIdProvider?.invoke()?.takeIf { it.isNotBlank() } ?: deviceId
 
     private suspend fun ensureHandshake(): ClaudePServerHelloBody {
         cachedServerHello?.let { return it }
