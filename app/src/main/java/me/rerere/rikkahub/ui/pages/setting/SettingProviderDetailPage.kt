@@ -100,8 +100,8 @@ import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.claudep.ClaudePConfigureUi
 import me.rerere.ai.provider.claudep.ClaudePPairingState
-import me.rerere.ai.provider.claudep.ClaudePUnpairFailure
 import me.rerere.ai.context.ABSOLUTE_CONTEXT_WINDOW_TOKENS
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
@@ -295,7 +295,6 @@ private fun SettingProviderConfigPage(
 
         // What the last revocation actually managed to remove. Non-empty means local material may
         // remain, which the screen must say out loud rather than silently showing "not paired".
-        var cleanupFailures by remember { mutableStateOf<List<ClaudePUnpairFailure>>(emptyList()) }
         var cleanupInFlight by remember { mutableStateOf(false) }
         var cleanupPending by remember { mutableStateOf(false) }
 
@@ -315,7 +314,6 @@ private fun SettingProviderConfigPage(
                     invitationPayload = payload,
                     deviceName = android.os.Build.MODEL ?: "Android device",
                 )
-                cleanupFailures = emptyList()
                 cleanupPending = pairingRepository.hasPendingCleanup()
             }
         }
@@ -323,16 +321,18 @@ private fun SettingProviderConfigPage(
         ClaudePProviderConfigure(
             provider = provider,
             onEdit = { onEdit(it) },
-            status = pairingStatus,
-            unpairCleanupFailures = cleanupFailures,
-            cleanupPending = cleanupPending,
-            cleanupInFlight = cleanupInFlight,
+            // The action rules come from the tested pure reducer; this screen derives none of them.
+            ui = ClaudePConfigureUi.reduce(
+                status = pairingStatus,
+                cleanupPending = cleanupPending,
+                cleanupInFlight = cleanupInFlight,
+            ),
             onScanPairingQr = { scanPairingCode.launch(null) },
             onUnpair = {
                 pairingScope.launch {
                     cleanupInFlight = true
                     try {
-                        cleanupFailures = pairingRepository.unpair().failures
+                        pairingRepository.unpair()
                         cleanupPending = pairingRepository.hasPendingCleanup()
                     } catch (_: Throwable) {
                         // A cancellation or a store failure must not re-enable the provider. The
@@ -347,7 +347,7 @@ private fun SettingProviderConfigPage(
                 pairingScope.launch {
                     cleanupInFlight = true
                     try {
-                        cleanupFailures = pairingRepository.retryCleanup().failures
+                        pairingRepository.retryCleanup()
                         cleanupPending = pairingRepository.hasPendingCleanup()
                     } catch (_: Throwable) {
                         cleanupPending = true

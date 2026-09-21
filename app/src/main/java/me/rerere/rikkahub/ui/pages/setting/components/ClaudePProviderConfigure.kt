@@ -21,7 +21,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.claudep.ClaudePPairingFailure
-import me.rerere.ai.provider.claudep.ClaudePUnpairFailure
+import me.rerere.ai.provider.claudep.ClaudePConfigureNotice
+import me.rerere.ai.provider.claudep.ClaudePConfigureUi
+import me.rerere.ai.provider.claudep.ClaudePConfigureUiState
 import me.rerere.ai.provider.claudep.ClaudePUiStatus
 import me.rerere.ai.provider.claudep.allowsDispatch
 import me.rerere.ai.provider.claudep.offersPairing
@@ -49,8 +51,18 @@ import me.rerere.ai.provider.claudep.offersUnpair
 fun ClaudePProviderConfigure(
     provider: ProviderSetting.ClaudeP,
     onEdit: (ProviderSetting.ClaudeP) -> Unit,
-    /** Derived status. Defaults to the honest "not paired" for previews and tests. */
-    status: ClaudePUiStatus = ClaudePUiStatus.NOT_PAIRED,
+    /**
+     * The derived action rules: which controls are offered, and which bounded notice to show.
+     *
+     * Computed by `ClaudePConfigureUi` and covered by JVM tests. This screen renders it and derives
+     * nothing of its own — a safety rule re-expressed inside a composable can only be verified by
+     * reading it.
+     */
+    ui: ClaudePConfigureUiState = ClaudePConfigureUi.reduce(
+        status = ClaudePUiStatus.NOT_PAIRED,
+        cleanupPending = false,
+        cleanupInFlight = false,
+    ),
     /** Most recent pairing failure, or `null` when the last attempt succeeded or none was made. */
     pairingFailure: ClaudePPairingFailure? = null,
     /**
@@ -60,11 +72,6 @@ fun ClaudePProviderConfigure(
      * showing a clean "not paired": telling a user their device is clean while a credential or
      * private key survives is the failure this exists to prevent.
      */
-    unpairCleanupFailures: List<ClaudePUnpairFailure> = emptyList(),
-    /** True while a cleanup is outstanding — a tombstone exists, or the device is REVOKED. */
-    cleanupPending: Boolean = false,
-    /** True while an unpair or retry is running, so the buttons cannot be double-tapped. */
-    cleanupInFlight: Boolean = false,
     /** Opens the QR scanner. The caller owns the launcher; this screen owns only the copy. */
     onScanPairingQr: () -> Unit = {},
     /** Ends the pairing: credential, device key and socket. */
@@ -90,18 +97,16 @@ fun ClaudePProviderConfigure(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        StatusCard(status = status, pairingFailure = pairingFailure)
+        StatusCard(status = ui.status, pairingFailure = pairingFailure, notice = ui.notice)
 
         PairingCard(
-            status = status,
-            cleanupIncomplete = cleanupPending || unpairCleanupFailures.isNotEmpty(),
-            cleanupInFlight = cleanupInFlight,
+            ui = ui,
             onScanPairingQr = onScanPairingQr,
             onUnpair = onUnpair,
             onRetryCleanup = onRetryCleanup,
         )
 
-        if (status.offersUnpair) {
+        if (ui.showsGatewayDetails) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -130,7 +135,7 @@ fun ClaudePProviderConfigure(
                         // Enabling is blocked rather than merely discouraged: an enabled provider
                         // that fails every request at the connection check is worse than one the
                         // user cannot turn on yet.
-                        text = if (status.allowsDispatch) {
+                        text = if (ui.canEnableProvider) {
                             "Available to assistants."
                         } else {
                             "Available once this device is paired and reachable."
@@ -140,9 +145,9 @@ fun ClaudePProviderConfigure(
                     )
                 }
                 Switch(
-                    checked = provider.enabled && status.allowsDispatch,
+                    checked = provider.enabled && ui.canEnableProvider,
                     onCheckedChange = { onEdit(provider.copy(enabled = it)) },
-                    enabled = status.allowsDispatch,
+                    enabled = ui.canEnableProvider,
                 )
             }
         }
@@ -166,7 +171,11 @@ fun ClaudePProviderConfigure(
 }
 
 @Composable
-private fun StatusCard(status: ClaudePUiStatus, pairingFailure: ClaudePPairingFailure?) {
+private fun StatusCard(
+    status: ClaudePUiStatus,
+    pairingFailure: ClaudePPairingFailure?,
+    notice: ClaudePConfigureNotice?,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = when (status) {
@@ -202,6 +211,15 @@ private fun StatusCard(status: ClaudePUiStatus, pairingFailure: ClaudePPairingFa
             )
             // Only a bounded enum is ever shown. A gateway's raw error text is never rendered,
             // because it is untrusted remote input that could quote a prompt or a path.
+            // A bounded category mapped to prose here. No alias, path, exception text, credential
+            // or gateway detail can reach the user, because none of them is in the type.
+            notice?.let {
+                Text(
+                    text = it.explanation(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             pairingFailure?.let { failure ->
                 Text(
                     text = "Pairing failed: ${failure.name.lowercase()}",
@@ -215,9 +233,7 @@ private fun StatusCard(status: ClaudePUiStatus, pairingFailure: ClaudePPairingFa
 
 @Composable
 private fun PairingCard(
-    status: ClaudePUiStatus,
-    cleanupIncomplete: Boolean,
-    cleanupInFlight: Boolean,
+    ui: ClaudePConfigureUiState,
     onScanPairingQr: () -> Unit,
     onUnpair: () -> Unit,
     onRetryCleanup: () -> Unit,
@@ -231,7 +247,7 @@ private fun PairingCard(
 
             // Stated plainly, and only in safe terms. No alias, path, exception text, credential or
             // gateway detail is ever rendered — the categories are bounded enums rendered as prose.
-            if (cleanupIncomplete) {
+            if (ui.cleanupIncomplete) {
                 Text(
                     text = "The connection has been disabled, but some local pairing material " +
                         "could not be removed. Retry the cleanup to finish unpairing.",
@@ -240,7 +256,7 @@ private fun PairingCard(
                 )
             }
 
-            if (status.offersPairing) {
+            if (ui.status.offersPairing) {
                 Text(
                     text = "Generate a pairing code on your Gateway server, then scan it here. " +
                         "The code is single-use and expires in minutes.",
@@ -251,27 +267,27 @@ private fun PairingCard(
                     onClick = onScanPairingQr,
                     // Blocked while a cleanup is outstanding: pairing over unfinished material would
                     // leave the old key undeletable.
-                    enabled = status != ClaudePUiStatus.PAIRING && !cleanupInFlight && !cleanupIncomplete,
+                    enabled = ui.canScanPairingQr,
                 ) {
                     Text("Scan pairing QR code")
                 }
             }
 
-            if (status.offersUnpair) {
+            if (ui.canUnpair || ui.cleanupIncomplete) {
                 Text(
                     text = "Unpairing removes this device's credential and key from the phone. " +
                         "It does not sign you out of Claude on the server.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedButton(onClick = onUnpair, enabled = !cleanupInFlight) {
-                    Text(if (cleanupInFlight) "Unpairing…" else "Unpair this device")
+                OutlinedButton(onClick = onUnpair, enabled = ui.canUnpair) {
+                    Text(if (ui.cleanupInFlight) "Unpairing…" else "Unpair this device")
                 }
             }
 
-            if (cleanupIncomplete) {
-                Button(onClick = onRetryCleanup, enabled = !cleanupInFlight) {
-                    Text(if (cleanupInFlight) "Retrying…" else "Retry cleanup")
+            if (ui.canRetryCleanup) {
+                Button(onClick = onRetryCleanup) {
+                    Text("Retry cleanup")
                 }
             }
         }
@@ -316,4 +332,17 @@ private fun LabeledValue(label: String, value: String) {
         )
         Text(text = value, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+/** The bounded, non-sensitive prose for each notice category. */
+private fun ClaudePConfigureNotice.explanation(): String = when (this) {
+    ClaudePConfigureNotice.CLEANUP_INCOMPLETE ->
+        "The connection has been disabled, but some local pairing material could not be removed."
+
+    ClaudePConfigureNotice.CREDENTIAL_INVALID ->
+        "This device's credential is missing, expired or revoked. Pair again to continue."
+
+    ClaudePConfigureNotice.PROTOCOL_ERROR ->
+        "The gateway replied in a way this app cannot safely interpret. Update the app or the " +
+            "gateway so both speak the same protocol version."
 }
