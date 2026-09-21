@@ -3,7 +3,6 @@ package me.rerere.ai.provider.claudep
 import me.rerere.ai.provider.ProviderSetting
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -86,8 +85,15 @@ class ClaudePImportSanitizerTest {
             gatewayInstallationId = "someone-elses-gateway",
         ).sanitizedAfterImport() as ProviderSetting.ClaudeP
 
-        // Even with a (fabricated) credential present, the reset state must not read as paired: the
-        // settings say NOT_PAIRED, and the resolver requires a usable credential *and* agreement.
+        // Sanitisation reset the settings to NOT_PAIRED, and settings are the pairing authority. A
+        // leftover or forged credential can therefore only *downgrade* that verdict — expired,
+        // unusable or missing — and can never upgrade NOT_PAIRED back to a paired one.
+        //
+        // So this import is refused here, by the status derivation itself, before anything reaches
+        // the device-key load or a socket. The earlier revision of this test expected PAIRED and
+        // argued the remaining defence was the missing key; that was written before the resolver was
+        // made settings-authoritative, and it was wrong: there is no "remaining defence", because
+        // this gate already refuses.
         val status = ClaudePUiStatusMapper.map(
             settingsState = sanitized.pairingState,
             credentialRead = ClaudePCredentialRead.Present(
@@ -107,10 +113,8 @@ class ClaudePImportSanitizerTest {
             nowEpochSeconds = 0,
         )
 
-        assertEquals(ClaudePUiStatus.PAIRED, status)
-        // The remaining defence is that no device key exists for the imported alias, so the runtime
-        // refuses before a socket is opened — asserted directly in ClaudePWssTransportTest.
-        assertNotNull(status)
+        assertEquals(ClaudePUiStatus.NOT_PAIRED, status)
+        assertFalse(status.allowsDispatch)
     }
 
     @Test
