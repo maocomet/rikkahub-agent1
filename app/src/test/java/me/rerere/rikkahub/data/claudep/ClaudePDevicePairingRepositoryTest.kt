@@ -12,9 +12,11 @@ import me.rerere.ai.provider.claudep.InMemoryClaudePDeviceKeyStore
 import me.rerere.ai.provider.claudep.InMemoryClaudePPairingSettingsGateway
 import me.rerere.ai.provider.claudep.ClaudePPairingOutcome
 import me.rerere.ai.provider.claudep.ClaudePPairedMetadata
+import me.rerere.ai.provider.claudep.ClaudePPairingSettingsGateway
 import me.rerere.ai.provider.claudep.ClaudePPairingState
 import me.rerere.ai.provider.claudep.ClaudePTombstoneRejection
 import me.rerere.ai.provider.claudep.ClaudePUiStatus
+import me.rerere.ai.provider.claudep.allowsDispatch
 import me.rerere.ai.provider.claudep.FakeClaudePPairingTransport
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -283,7 +285,7 @@ class ClaudePDevicePairingRepositoryTest {
         withRepository { repository, harness ->
             repository.pair(invitationJson(), "Pixel")
             // A partial write, or a tampered record: there is no safe way to pick a winner.
-            harness.settings.metadata = ClaudePPairedMetadata(
+            harness.metadataOverride.metadataOverride = ClaudePPairedMetadata(
                 pairedOrigin = "https://other.example.com",
                 gatewayFingerprint = "other",
                 gatewayInstallationId = "other",
@@ -323,6 +325,16 @@ class ClaudePDevicePairingRepositoryTest {
         val keys = InMemoryClaudePDeviceKeyStore()
         val tombstones = InMemoryClaudePCleanupTombstoneStore()
         val settings = InMemoryClaudePPairingSettingsGateway()
+
+        /**
+         * Test-only wrapper that can report metadata disagreeing with the credential.
+         *
+         * It exists so the "settings disagree with the stored record" case can be exercised without
+         * widening `InMemoryClaudePPairingSettingsGateway`'s API — that class stands in for the
+         * production gateway, and a setter added for one test would become part of the contract every
+         * other caller sees.
+         */
+        val metadataOverride = MetadataOverrideGateway(settings)
         private val transport = FakeClaudePPairingTransport(
             gatewayFingerprint = FINGERPRINT,
         )
@@ -333,7 +345,7 @@ class ClaudePDevicePairingRepositoryTest {
             credentialStore = credentials,
             deviceKeyStore = keys,
             tombstoneStore = tombstones,
-            settingsGateway = settings,
+            settingsGateway = metadataOverride,
             scope = scope,
             appVersion = APP_VERSION,
             nowEpochSeconds = { NOW },
@@ -348,6 +360,30 @@ class ClaudePDevicePairingRepositoryTest {
             const val FINGERPRINT =
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         }
+    }
+
+    /**
+     * Delegates everything to [delegate] except `pairedMetadata`, which a test may override.
+     *
+     * With no override set it returns the delegate's answer unchanged, so it is transparent for
+     * every test that does not use it.
+     */
+    private class MetadataOverrideGateway(
+        private val delegate: ClaudePPairingSettingsGateway,
+    ) : ClaudePPairingSettingsGateway {
+        var metadataOverride: ClaudePPairedMetadata? = null
+
+        override suspend fun pairingState(): ClaudePPairingState = delegate.pairingState()
+
+        override suspend fun pairedMetadata(): ClaudePPairedMetadata? =
+            metadataOverride ?: delegate.pairedMetadata()
+
+        override suspend fun markPaired(device: me.rerere.ai.provider.claudep.ClaudePPairedDevice): Boolean =
+            delegate.markPaired(device)
+
+        override suspend fun markRevoked(): Boolean = delegate.markRevoked()
+
+        override suspend fun markNotPaired(): Boolean = delegate.markNotPaired()
     }
 
     private companion object {
