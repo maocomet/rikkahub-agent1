@@ -28,6 +28,9 @@ import me.rerere.ai.provider.claudep.ClaudePPairingOutcome
 import me.rerere.ai.provider.claudep.ClaudePPairingRejection
 import me.rerere.ai.provider.claudep.ClaudePPairingResult
 import me.rerere.ai.provider.claudep.ClaudePPairingState
+import me.rerere.ai.provider.claudep.ClaudePRevocation
+import me.rerere.ai.provider.claudep.ClaudePUnpairFailure
+import me.rerere.ai.provider.claudep.ClaudePUnpairResult
 import me.rerere.ai.provider.claudep.ClaudePUiStatus
 import me.rerere.ai.provider.claudep.ClaudePUiStatusMapper
 import me.rerere.ai.provider.claudep.OkHttpClaudePWebSocketConnector
@@ -268,11 +271,19 @@ class ClaudePDevicePairingRepository(
             failures += ClaudePUnpairFailure.DEVICE_KEY_ALIAS_UNKNOWN
         }
 
-        updateSettings { it.copy(pairingState = ClaudePPairingState.NOT_PAIRED) }
-        lastKnownDeviceId = null
-        lastKnownKeyAlias = null
+        val result = ClaudePUnpairResult(failures)
+
+        // `NOT_PAIRED` is earned, not assumed: it is written only when every deletion was confirmed.
+        // Otherwise the device stays `REVOKED` — still undispatchable, but honest that material may
+        // remain, and offering a retry. Moving straight to `NOT_PAIRED` would tell the user the
+        // device is clean while a credential or private key could still be on it.
+        updateSettings { it.copy(pairingState = result.resultingState, enabled = false) }
+        if (result.isComplete) {
+            lastKnownDeviceId = null
+            lastKnownKeyAlias = null
+        }
         refresh()
-        return ClaudePUnpairResult(failures)
+        return result
     }
 
     // -----------------------------------------------------------------------------------------
@@ -443,34 +454,6 @@ class ClaudePDevicePairingRepository(
         const val TAG = "ClaudePPairing"
     }
 }
-
-/** What remained after an unpair attempt. An empty list means nothing is left. */
-data class ClaudePUnpairResult(val failures: List<ClaudePUnpairFailure>) {
-    val isComplete: Boolean get() = failures.isEmpty()
-}
-
-/** Something an unpair was supposed to remove and did not. */
-enum class ClaudePUnpairFailure {
-    CREDENTIAL_FILE_NOT_DELETED,
-    CREDENTIAL_WRAPPING_KEY_NOT_DELETED,
-    DEVICE_KEY_NOT_DELETED,
-    /** No readable record named the key to destroy, so it could not even be attempted. */
-    DEVICE_KEY_ALIAS_UNKNOWN,
-}
-
-private fun me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.toUnpairFailure() =
-    when (this) {
-        me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.FILE_DELETE_FAILED ->
-            ClaudePUnpairFailure.CREDENTIAL_FILE_NOT_DELETED
-
-        me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.WRAPPING_KEY_DELETE_FAILED ->
-            ClaudePUnpairFailure.CREDENTIAL_WRAPPING_KEY_NOT_DELETED
-
-        // A staged-file failure during `clear` means the ciphertext itself went; nothing to report.
-        me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.TEMP_WRITE_FAILED,
-        me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.REPLACE_FAILED,
-        -> ClaudePUnpairFailure.CREDENTIAL_FILE_NOT_DELETED
-    }
 
 private fun ClaudePPairedDevice.endpointOrNull(): ClaudePEndpoint? =
     (ClaudePEndpoint.parse(pairedOrigin) as? ClaudePEndpointResult.Accepted)?.endpoint

@@ -163,16 +163,23 @@ class ClaudePCredentialStoreTest {
     }
 
     @Test
-    fun `a usable credential outranks stale settings that say not paired`() {
-        // The credential is the thing that can authenticate, so it decides. A half-applied settings
-        // write must not strand a device that is genuinely paired.
+    fun `settings that say not paired are authoritative even with a lingering credential`() {
+        // Regression: an earlier revision let the credential outrank settings here. That made this
+        // function report "paired" while `gatewayClientOrNull` — which requires settings to say
+        // PAIRED — refused to build a transport. The UI then sided with the permissive authority.
+        //
+        // This is exactly the state a partially-failed unpair leaves behind, so getting it wrong
+        // means a revoked device can still be enabled.
         val resolution = ClaudePPairingResolver.resolve(
             settingsState = ClaudePPairingState.NOT_PAIRED,
             credentialRead = ClaudePCredentialRead.Present(device()),
             nowEpochSeconds = NOW,
         )
 
-        assertTrue(resolution.isPaired)
+        assertEquals(
+            ClaudePPairingResolution.Unpaired(ClaudePUnpairedReason.NEVER_PAIRED),
+            resolution,
+        )
     }
 
     @Test

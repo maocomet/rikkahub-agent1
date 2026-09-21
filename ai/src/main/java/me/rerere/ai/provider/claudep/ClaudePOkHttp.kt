@@ -6,52 +6,45 @@ import okhttp3.OkHttpClient
 /**
  * The only OkHttp configuration Claude P is allowed to use.
  *
- * ### Why a dedicated client, and why "no logging interceptor" is not enough
+ * ### Why the client is built here and never accepted from outside
  *
- * Claude P puts a device credential in an `Authorization` header and a one-time pairing ticket and
- * possession proof in a request body. The app's shared client carries a `RequestLoggingInterceptor`,
- * a debug `HttpLoggingInterceptor(Level.HEADERS)` and a shared AI interceptor.
+ * Claude P puts a device credential in an `Authorization` header and, during pairing, a one-time
+ * ticket and possession proof in a request body. Every one of those must reach exactly one host over
+ * exactly one TLS connection.
  *
- * An earlier revision assumed `client.newBuilder()` started from a clean slate. **It does not** —
- * `newBuilder()` copies the interceptor lists, so every one of those would have run against Claude P
- * traffic and written the credential and the ticket to the log. Relying on "logging is off in
- * release" is not a fix either: the debug build is the one people paste into bug reports.
+ * Two earlier revisions got this wrong in escalating ways:
  *
- * So there are two independent guarantees here:
+ * 1. It reused the app's shared client. That client carries a request-logging interceptor, a debug
+ *    header-logging interceptor and a shared AI interceptor — and `newBuilder()` **copies**
+ *    interceptor lists, so all of them ran against credential-bearing traffic.
+ * 2. It derived from an injected client and stripped the interceptors. Better, but `newBuilder()`
+ *    also carries over the **proxy, proxy authenticator, authenticator, cookie jar, cache, DNS,
+ *    connection specs and event listener factory** from the source. A hostile or merely mis-wired
+ *    source client could still have routed the credential through a proxy or attached a cookie.
  *
- * 1. [newIsolated] builds a client from a **fresh** `OkHttpClient.Builder()` — not derived from the
- *    shared client — so nothing can be inherited in the first place.
- * 2. [hardened] explicitly **empties** both interceptor lists. This is defence in depth for the
- *    case where someone wires the shared client in by mistake; a wrong injection still cannot log a
- *    credential.
+ * So there is no longer any way to supply a client. [newIsolated] builds one from a fresh
+ * `OkHttpClient.Builder()`, and both connectors call it themselves. The "malicious source client"
+ * test case is not passed because there is no API to pass one through — which is a stronger
+ * guarantee than any amount of stripping.
  *
- * Both are exercised by tests that install a recording interceptor and assert it is never invoked.
+ * ### What is deliberately *not* changed
+ *
+ * The system default TLS stack, hostname verification and certificate validation. A trust-all
+ * `SSLSocketFactory` or `HostnameVerifier` would make every other control here pointless, and
+ * `claudep/00-scope-and-product-contract.md` §4 forbids plaintext or weakened production transport.
  */
 object ClaudePOkHttp {
     /**
-     * A client with no interceptors, no redirects and no automatic retry.
+     * A client with no interceptors, no redirects, no automatic retry and no inherited transport
+     * policy.
      *
-     * Timeouts stay finite — deliberately *not* the shared client's 10-minute read timeout. A
+     * Timeouts are finite and deliberately *not* the shared client's 10-minute read timeout: a
      * gateway that accepts a connection and then goes silent must fail rather than pin a coroutine
-     * for the rest of the session; the transport above turns that failure into a bounded reconnect.
+     * for the rest of the session.
      */
-    fun newIsolated(): OkHttpClient = hardened(OkHttpClient())
-
-    /**
-     * Derives a hardened client from [source].
-     *
-     * Interceptors are *removed*, not merely not-added. Everything else is re-applied rather than
-     * inherited so that the safety properties hold regardless of how [source] was configured.
-     */
-    fun hardened(source: OkHttpClient): OkHttpClient = source.newBuilder()
-        .apply {
-            // The point of this function. `newBuilder()` copies both lists from the source, so a
-            // shared logging or AI interceptor would otherwise run on credential-bearing traffic.
-            interceptors().clear()
-            networkInterceptors().clear()
-        }
+    fun newIsolated(): OkHttpClient = OkHttpClient.Builder()
         // A redirect would replay the device's Authorization header — and, during pairing, the
-        // ticket and proof — against whatever host answered. `claudep/04-rikkahub-integration-map.md`
+        // ticket and the proof — against whatever host answered. `claudep/04-rikkahub-integration-map.md`
         // §2 requires redirects off; this is why.
         .followRedirects(false)
         .followSslRedirects(false)
@@ -61,9 +54,18 @@ object ClaudePOkHttp {
         .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .writeTimeout(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        // No proxy, no proxyAuthenticator, no authenticator, no cookieJar, no cache, no
+        // eventListenerFactory, no DNS override and no connectionSpecs are set, so every one of them
+        // keeps the OkHttp default: direct connection, no cookies, no disk cache, system TLS.
         .build()
 
     private const val CONNECT_TIMEOUT_SECONDS = 15L
+
+    /**
+     * Long enough for a slow pairing exchange, short enough that a silent gateway cannot hold a
+     * coroutine for the session.
+     */
     private const val READ_TIMEOUT_SECONDS = 60L
+
     private const val WRITE_TIMEOUT_SECONDS = 30L
 }

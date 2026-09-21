@@ -25,22 +25,20 @@ import okio.ByteString
  *
  * ### The client it uses
  *
- * See [ClaudePOkHttp.hardened]: interceptors are **removed** from the injected client, redirects are
- * disabled (a redirect would replay the device's `Authorization` header against another host), and
- * automatic retry is disabled (the client above owns the reconnect budget).
- *
- * An earlier revision claimed no logging interceptor was "inherited". That was wrong —
- * `newBuilder()` copies interceptor lists — which is exactly why the stripping is now explicit and
- * tested rather than assumed.
+ * [ClaudePOkHttp.newIsolated], built inside this class. No client is accepted from outside, because
+ * `newBuilder()` copies an interceptor list *and* a proxy, authenticator, cookie jar and event
+ * listener from its source — so a caller-supplied client is a caller-supplied transport policy.
  */
-class OkHttpClaudePWebSocketConnector(
-    client: OkHttpClient,
-) : ClaudePWebSocketConnector {
+class OkHttpClaudePWebSocketConnector : ClaudePWebSocketConnector {
 
-    // Interceptors are stripped here rather than trusted to be absent upstream: `newBuilder()`
-    // copies them from the source, so a shared logging interceptor would otherwise run against the
-    // `Authorization` header this connector sets.
-    private val client: OkHttpClient = ClaudePOkHttp.hardened(client)
+    /**
+     * Built here, from a fresh builder, and **not** accepted from a caller.
+     *
+     * There is deliberately no constructor parameter: a client supplied by a caller could carry a
+     * proxy, an authenticator, a cookie jar, interceptors or an event listener that this connector
+     * would inherit. Not having the parameter is the guarantee — see [ClaudePOkHttp].
+     */
+    private val client: OkHttpClient = ClaudePOkHttp.newIsolated()
 
     override suspend fun connect(request: ClaudePConnectRequest): ClaudePConnectOutcome {
         // Checked here as well as in ClaudePEndpoint, because this is the last point before a socket

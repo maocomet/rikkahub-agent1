@@ -13,16 +13,26 @@ package me.rerere.ai.provider.claudep
  *
  * | settings | credential store | result |
  * |---|---|---|
- * | anything | usable, unexpired | **paired** |
- * | anything | usable, expired | unpaired — expired |
- * | anything | unusable | unpaired — unusable |
+ * | `PAIRED` | usable, unexpired | **paired** |
+ * | `PAIRED` | usable, expired | unpaired — expired |
+ * | `PAIRED` | unusable | unpaired — unusable |
  * | `PAIRED` | absent | unpaired — missing |
- * | anything else | absent | unpaired — never paired |
+ * | `NOT_PAIRED` | anything | unpaired — never paired |
  * | `REVOKED` | anything | unpaired — revoked |
  *
- * Note the asymmetry: a present, usable credential wins over settings saying `NOT_PAIRED`, because
- * the credential is the thing that can authenticate. This keeps a half-applied settings write from
- * stranding a device that is, in fact, paired.
+ * ### Settings state is authoritative, and an earlier revision had that backwards
+ *
+ * The first version let a present, usable credential outrank settings saying `NOT_PAIRED`, on the
+ * theory that a half-applied settings write must not strand a genuinely paired device. That reasoning
+ * no longer holds — pairing now compensates for a failed settings write by destroying the credential
+ * it just stored — and it had become a genuine hazard: after an unpair whose deletion failed, a
+ * surviving credential would make this function report "paired" while `gatewayClientOrNull` — which
+ * requires settings to say `PAIRED` — refused to build a transport. Two authorities, disagreeing, and
+ * the UI siding with the permissive one.
+ *
+ * So the rule is now the simple one: **if settings do not say `PAIRED`, the device is not paired.**
+ * The credential can only ever *downgrade* that verdict (expired, unusable, missing), never upgrade it.
+ * A lost settings write therefore fails closed into "re-pair", which is the safe direction.
  *
  * Pure and clock-injected, so it is exhaustively testable on the JVM — which matters, because this is
  * the function that decides whether the app is allowed to believe it holds a device identity.
@@ -36,6 +46,12 @@ object ClaudePPairingResolver {
         // Revocation is explicit and wins over everything: the user (or the gateway) said stop.
         if (settingsState == ClaudePPairingState.REVOKED) {
             return ClaudePPairingResolution.Unpaired(ClaudePUnpairedReason.REVOKED)
+        }
+
+        // `NOT_PAIRED` means the device holds no pairing as far as the app is concerned. Whatever a
+        // leftover credential says, there is no authority that will build a transport for it.
+        if (settingsState == ClaudePPairingState.NOT_PAIRED) {
+            return ClaudePPairingResolution.Unpaired(ClaudePUnpairedReason.NEVER_PAIRED)
         }
 
         return when (credentialRead) {

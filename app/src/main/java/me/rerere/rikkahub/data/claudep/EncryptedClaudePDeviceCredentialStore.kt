@@ -5,6 +5,8 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Log
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -97,13 +99,14 @@ class EncryptedClaudePDeviceCredentialStore(
     }
 
     /**
-     * Stages the ciphertext beside the real file and moves it into place atomically.
+     * Stages the ciphertext beside the real file and replaces the real file atomically.
      *
-     * `renameTo` within one directory is an atomic replace on the filesystems Android uses, so a
-     * process death either leaves the old record or the new one — never a truncated mix. If the move
-     * fails, the staged file is removed and **the existing record is left untouched**; the caller is
-     * told, and compensates. Overwriting in place would have destroyed a possibly-valid old pairing
-     * to make room for one that never landed.
+     * The staging file is created in the **same directory** as the target, which is what makes an
+     * atomic move possible at all — `ATOMIC_MOVE` cannot be honoured across filesystems.
+     *
+     * If the move fails, the staged file is cleaned up and **the existing record is left untouched**;
+     * the caller is told and compensates. A process death at any point leaves either the old record
+     * or the new one, never a truncated mix.
      */
     override suspend fun write(device: ClaudePPairedDevice): List<ClaudePCredentialStoreFailure> {
         val plaintext = json.encodeToString(device.toRecord())
@@ -125,9 +128,25 @@ class EncryptedClaudePDeviceCredentialStore(
         }
 
         val replaced = try {
-            temporaryFile.renameTo(file)
+            // `java.nio.file.Files.move` with ATOMIC_MOVE is the contract-backed way to replace a
+            // file in place: on the POSIX filesystems Android uses it maps to `rename(2)`, which the
+            // kernel guarantees is atomic. `File.renameTo` carries no such guarantee — it is
+            // documented as platform-dependent and returns a bare boolean — so it must not be
+            // described as atomic.
+            //
+            // There is deliberately **no** destructive fallback (delete-then-move). If an atomic
+            // move is unavailable or fails, the previous record must stay readable; losing a
+            // possibly-valid pairing to make room for one that never landed is the worse outcome.
+            Files.move(
+                temporaryFile.toPath(),
+                file.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+            true
         } catch (t: Throwable) {
-            Log.w(TAG, "Claude P credential replace threw: ${t::class.java.simpleName}")
+            // Includes AtomicMoveNotSupportedException and FileSystemException.
+            Log.w(TAG, "Claude P credential replace failed: ${t::class.java.simpleName}")
             false
         }
 

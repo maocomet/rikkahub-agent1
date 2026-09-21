@@ -29,14 +29,15 @@ import okhttp3.Response
  * - No logging interceptor: the body contains the ticket and the proof.
  */
 class OkHttpClaudePPairingTransport(
-    client: OkHttpClient,
     /** Endpoint the request is posted to. Built from the validated pairing invitation. */
     private val endpoint: ClaudePEndpoint,
 ) : ClaudePPairingTransport {
 
-    // Stripped rather than trusted: this request carries the one-time ticket and the possession
-    // proof, and `newBuilder()` would copy any logging interceptor the source client had.
-    private val client: OkHttpClient = ClaudePOkHttp.hardened(client)
+    /**
+     * Built here, never accepted from a caller. This request carries the one-time ticket and the
+     * possession proof, so an inherited proxy, cookie jar or interceptor is a disclosure path.
+     */
+    private val client: OkHttpClient = ClaudePOkHttp.newIsolated()
 
     override suspend fun send(
         request: ClaudePPairingWireRequest,

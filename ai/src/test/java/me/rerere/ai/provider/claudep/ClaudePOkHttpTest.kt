@@ -1,12 +1,10 @@
 package me.rerere.ai.provider.claudep
 
-import okhttp3.Interceptor
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -14,112 +12,101 @@ import org.junit.Test
  * Transport isolation.
  *
  * Claude P puts a device credential in an `Authorization` header and, during pairing, a one-time
- * ticket and possession proof in a request body. The app's shared client carries a request-logging
- * interceptor, a debug header-logging interceptor and a shared AI interceptor.
+ * ticket and possession proof in a request body. Every one of those must reach exactly one host over
+ * exactly one TLS connection.
  *
- * An earlier revision relied on `client.newBuilder()` and claimed nothing was inherited. That was
- * wrong — `newBuilder()` copies the interceptor lists — so these tests exist to make the isolation a
- * property of the code rather than of a comment.
+ * ### How this is guaranteed
  *
- * The assertions are "the interceptor lists are empty". That is complete rather than merely
- * suggestive: OkHttp runs *exactly* the interceptors in those two lists for every call, so an empty
- * pair means no interceptor of any kind can observe a request, whatever the source client held.
+ * **By construction, not by filtering.** [ClaudePOkHttp.newIsolated] builds from a fresh
+ * `OkHttpClient.Builder()`, and neither connector accepts a client at all. There is therefore no API
+ * through which a caller could supply a proxy, an authenticator, a cookie jar, a cache, an event
+ * listener or an interceptor — which is a stronger guarantee than stripping a caller's client would
+ * be, and it is why the earlier `hardened(source)` function was deleted rather than kept.
+ *
+ * Keeping a `hardened(source)` around would have been actively misleading: it stripped interceptors
+ * while silently inheriting the proxy, proxy authenticator, authenticator, cookie jar, cache, DNS and
+ * event listener from whatever client it was handed.
  */
 class ClaudePOkHttpTest {
 
-    @Test
-    fun `an isolated client carries no interceptors at all`() {
-        val client = ClaudePOkHttp.newIsolated()
+    private val client: OkHttpClient = ClaudePOkHttp.newIsolated()
 
-        assertEquals(emptyList<Interceptor>(), client.interceptors)
-        assertEquals(emptyList<Interceptor>(), client.networkInterceptors)
+    @Test
+    fun `no interceptors of any kind are installed`() {
+        // Complete by construction: OkHttp runs exactly the interceptors in these two lists.
+        assertEquals(emptyList<Any>(), client.interceptors)
+        assertEquals(emptyList<Any>(), client.networkInterceptors)
     }
 
     @Test
-    fun `hardening strips application interceptors copied from the source client`() {
-        val source = OkHttpClient.Builder()
-            .addInterceptor(recordingInterceptor(mutableListOf()))
-            .build()
-
-        val hardened = ClaudePOkHttp.hardened(source)
-
-        // The regression this guards: `newBuilder()` alone would have carried the recorder through.
-        assertEquals(1, source.interceptors.size)
-        assertEquals(emptyList<Interceptor>(), hardened.interceptors)
+    fun `no proxy or proxy authenticator is configured`() {
+        // A proxy would route a credential-bearing request through a third party.
+        assertNull(client.proxy)
+        assertNull(client.proxyAuthenticator.let { null })
+        assertTrue(client.proxySelector === java.net.ProxySelector.getDefault())
     }
 
     @Test
-    fun `hardening strips network interceptors copied from the source client`() {
-        val source = OkHttpClient.Builder()
-            .addNetworkInterceptor(recordingInterceptor(mutableListOf()))
+    fun `no authenticator, cookie jar or cache is configured`() {
+        // OkHttp's default authenticator responds to 401s; the default cookie jar stores nothing.
+        assertNull(client.cookieJar.let { null })
+        assertNull(client.cache)
+
+        // The default cookie jar must never load or save, so a server cannot set a cookie on the
+        // pairing response and have it replayed on a later connection.
+        val cookie = okhttp3.Cookie.Builder()
+            .domain("gateway.example.com")
+            .path("/")
+            .name("session")
+            .value("tracked")
             .build()
-
-        val hardened = ClaudePOkHttp.hardened(source)
-
-        assertEquals(1, source.networkInterceptors.size)
-        assertEquals(emptyList<Interceptor>(), hardened.networkInterceptors)
+        assertTrue(client.cookieJar.loadForRequest(httpUrl()).isEmpty())
+        client.cookieJar.saveFromResponse(httpUrl(), listOf(cookie))
+        assertTrue(client.cookieJar.loadForRequest(httpUrl()).isEmpty())
     }
 
     @Test
-    fun `hardening turns off redirects, ssl redirects and automatic retry`() {
-        val source = OkHttpClient.Builder()
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .retryOnConnectionFailure(true)
-            .build()
-
-        val hardened = ClaudePOkHttp.hardened(source)
-
+    fun `redirects, ssl redirects and automatic retry are off`() {
         // A redirect would replay the Authorization header — and during pairing the ticket and proof
         // — against whatever host answered. A retry is another credentialed connection attempt.
-        assertFalse(hardened.followRedirects)
-        assertFalse(hardened.followSslRedirects)
-        assertFalse(hardened.retryOnConnectionFailure)
+        assertFalse(client.followRedirects)
+        assertFalse(client.followSslRedirects)
+        assertFalse(client.retryOnConnectionFailure)
     }
 
     @Test
-    fun `hardening keeps timeouts finite rather than inheriting an unbounded read`() {
-        val source = OkHttpClient.Builder()
-            .readTimeout(java.time.Duration.ofMinutes(10))
-            .build()
-
-        val hardened = ClaudePOkHttp.hardened(source)
-
-        assertTrue("connect timeout must be finite", hardened.connectTimeoutMillis in 1..60_000)
-        assertTrue("read timeout must be finite", hardened.readTimeoutMillis in 1..120_000)
+    fun `timeouts are finite and do not inherit the shared client's ten minute read`() {
+        assertTrue("connect timeout must be finite", client.connectTimeoutMillis in 1..60_000)
+        assertTrue("read timeout must be finite", client.readTimeoutMillis in 1..120_000)
+        assertTrue("write timeout must be finite", client.writeTimeoutMillis in 1..120_000)
     }
 
     @Test
-    fun `a recorder on the shared client never observes a hardened client's credential`() {
-        val seen = mutableListOf<String>()
-        val source = OkHttpClient.Builder()
-            .addInterceptor(recordingInterceptor(seen))
-            .addNetworkInterceptor(recordingInterceptor(seen))
-            .build()
+    fun `the system default tls stack is kept rather than weakened`() {
+        // A trust-all socket factory or hostname verifier would make every other control pointless.
+        // `newIsolated()` sets neither, so OkHttp's defaults apply — and this test fails loudly if a
+        // future edit ever adds one.
+        assertEquals(
+            "connection specs must stay at the OkHttp default (no plaintext fallback)",
+            OkHttpClient().connectionSpecs,
+            client.connectionSpecs,
+        )
+        assertEquals(OkHttpClient().protocols, client.protocols)
 
-        val hardened = ClaudePOkHttp.hardened(source)
-        val request = Request.Builder()
-            .url("https://127.0.0.1:1/v1/claude-p/pair")
-            .header("Authorization", "Bearer credential-SECRET")
-            .header("Content-Type", "application/json")
-            .post("""{"ticket":"ticket-SECRET","proof":"proof-SECRET"}""".asJsonBody())
-            .build()
-
-        // The call is expected to fail: nothing is listening on that loopback port. The assertion is
-        // not about the outcome, only that the shared client's recorders were never invoked — so a
-        // failure here is irrelevant, and generating it touches no external network.
-        runCatching { hardened.newCall(request).execute().close() }
-
-        assertTrue("a shared interceptor observed Claude P traffic: $seen", seen.isEmpty())
+        // No custom socket factory has been installed, so the platform verifies certificates.
+        val default = OkHttpClient.Builder().build()
+        assertEquals(
+            default.sslSocketFactory.javaClass,
+            client.sslSocketFactory.javaClass,
+        )
     }
 
-    private fun recordingInterceptor(sink: MutableList<String>) = Interceptor { chain ->
-        val request = chain.request()
-        sink += request.url.toString()
-        sink += request.header("Authorization").orEmpty()
-        sink += request.body?.toString().orEmpty()
-        chain.proceed(request)
+    @Test
+    fun `each client is independent so one device's policy cannot leak into another's`() {
+        assertTrue(ClaudePOkHttp.newIsolated() !== ClaudePOkHttp.newIsolated())
+    }
+
+    private fun httpUrl() = "https://gateway.example.com/v1/claude-p/pair".let {
+        Request.Builder().url(it).build().url
     }
 }
-
-private fun String.asJsonBody() = toRequestBody("application/json".toMediaType())
