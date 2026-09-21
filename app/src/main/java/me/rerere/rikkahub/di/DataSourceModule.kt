@@ -1483,14 +1483,20 @@ val dataSourceModule = module {
     // Claude P cleanup tombstone: a Claude P private directory under `noBackupFilesDir`, holding a
     // format version and a device key alias and nothing else. It is what makes an interrupted
     // cleanup recoverable after a restart.
-    single {
+    // Registered against the **interface**, not the concrete class. Koin performs no automatic
+    // implementation-to-interface binding, and `ClaudePDevicePairingRepository` asks for
+    // `ClaudePCleanupTombstoneStore`. Registering the concrete type only meant the repository's
+    // `tombstoneStore = get()` had no definition to find, which surfaced as a failure to create
+    // `ChatVM` (the path is ChatVM -> ChatService -> ProviderManager -> the repository).
+    single<me.rerere.ai.provider.claudep.ClaudePCleanupTombstoneStore> {
         me.rerere.rikkahub.data.claudep.FileClaudePCleanupTombstoneStore(context = get())
     }
 
     // The settings half of the pairing lifecycle. The coordinator reaches settings only through
     // this, so there is exactly one writer and no chance of it and a repository overwriting each
     // other.
-    single {
+    // Same reasoning as the tombstone store above: the repository asks for the interface.
+    single<me.rerere.ai.provider.claudep.ClaudePPairingSettingsGateway> {
         me.rerere.rikkahub.data.claudep.SettingsClaudePPairingGateway(settingsStore = get())
     }
 

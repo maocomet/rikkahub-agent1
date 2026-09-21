@@ -82,6 +82,9 @@ jobs:
           # Cat Garden's post delete relies on ON DELETE CASCADE, which no JVM contract test can
           # prove — the fake only reproduces the constraint. This one runs against real SQLite.
           CLASSES="$CLASSES,me.rerere.rikkahub.data.db.SpacePostDeletionCascadeTest"
+          # The Claude P Koin graph test. It has to be named here explicitly: the runner-arg
+          # filter is a whitelist, so without this line the class is compiled and never executed.
+          CLASSES="$CLASSES,me.rerere.rikkahub.data.claudep.ClaudePKoinGraphTest"
           echo "Instrumentation filter: $CLASSES"
           ls -l /dev/kvm
           ./gradlew :app:p5DisposablePixel6Api35DebugAndroidTest --no-parallel \
@@ -142,6 +145,27 @@ jobs:
               raise SystemExit(1)
           PY
 
+      # A green task is not proof that a *specific* class ran: the runner-arg filter silently
+      # matches nothing for a renamed or deleted class. Assert the required class by name, from the
+      # XML the device produced.
+      - name: Verify required Claude P Koin graph tests executed
+        if: always()
+        run: |
+          set -uo pipefail
+          REQUIRED=(
+            "me.rerere.rikkahub.data.claudep.ClaudePKoinGraphTest"
+          )
+          missing=0
+          for class in "${REQUIRED[@]}"; do
+            if grep -rq "name=\"$class\"" app/build/outputs/androidTest-results 2>/dev/null; then
+              echo "executed: $class"
+            else
+              echo "::error::No instrumentation result for required class $class -- it compiled but did not run, or was renamed."
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          echo "All ${#REQUIRED[@]} required instrumentation classes executed."
       - name: Report managed device identity
         if: always()
         run: |
