@@ -1480,16 +1480,34 @@ val dataSourceModule = module {
     // anywhere. `newBuilder()` copies all of those, which is why passing a client in is no longer
     // possible. See `ai/.../claudep/ClaudePOkHttp.kt` and `ClaudePOkHttpTest`.
 
+    // Claude P cleanup tombstone: a Claude P private directory under `noBackupFilesDir`, holding a
+    // format version and a device key alias and nothing else. It is what makes an interrupted
+    // cleanup recoverable after a restart.
+    single {
+        me.rerere.rikkahub.data.claudep.FileClaudePCleanupTombstoneStore(
+            context = get(),
+            json = get(),
+        )
+    }
+
+    // The settings half of the pairing lifecycle. The coordinator reaches settings only through
+    // this, so there is exactly one writer and no chance of it and a repository overwriting each
+    // other.
+    single {
+        me.rerere.rikkahub.data.claudep.SettingsClaudePPairingGateway(settingsStore = get())
+    }
+
     // Claude P pairing state. Declared before the ProviderManager block so the provider below can
     // resolve its transport from a real instance rather than through a late `get()`.
     single {
         me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository(
-            settingsStore = get(),
             credentialStore = me.rerere.rikkahub.data.claudep.EncryptedClaudePDeviceCredentialStore(
                 context = get(),
                 json = get(),
             ),
             deviceKeyStore = me.rerere.rikkahub.data.claudep.AndroidKeystoreClaudePDeviceKeyStore(),
+            tombstoneStore = get(),
+            settingsGateway = get(),
             scope = get(),
             appVersion = me.rerere.rikkahub.BuildConfig.VERSION_NAME,
         )

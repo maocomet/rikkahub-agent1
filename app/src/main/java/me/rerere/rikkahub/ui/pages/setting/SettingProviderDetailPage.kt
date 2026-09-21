@@ -70,6 +70,7 @@ import androidx.compose.material3.SheetValue
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -100,6 +101,7 @@ import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.claudep.ClaudePPairingState
+import me.rerere.ai.provider.claudep.ClaudePUnpairFailure
 import me.rerere.ai.context.ABSOLUTE_CONTEXT_WINDOW_TOKENS
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
@@ -284,24 +286,37 @@ private fun SettingProviderConfigPage(
         return
     }
     if (provider is ProviderSetting.ClaudeP) {
-        // Claude P owns its own pairing lifecycle, so this screen renders derived state rather than
-        // holding any of its own. Nothing here can put a credential, a ticket or an endpoint into
-        // the provider setting — the pairing repository is the only writer.
+        // Claude P owns its pairing lifecycle, so this screen renders derived state and asks the
+        // repository to act — it never mutates pairing state itself. Every mutation goes through the
+        // repository's coordinator, which holds the single lifecycle lock.
         val pairingRepository = koinInject<ClaudePDevicePairingRepository>()
         val pairingStatus by pairingRepository.status.collectAsStateWithLifecycle()
-        val pairingFailure by pairingRepository.lastFailure.collectAsStateWithLifecycle()
         val pairingScope = rememberCoroutineScope()
+
+        // What the last revocation actually managed to remove. Non-empty means local material may
+        // remain, which the screen must say out loud rather than silently showing "not paired".
+        var cleanupFailures by remember { mutableStateOf<List<ClaudePUnpairFailure>>(emptyList()) }
+        var cleanupInFlight by remember { mutableStateOf(false) }
+        var cleanupPending by remember { mutableStateOf(false) }
+
+        // Restored on recomposition and after a process restart, because the durable state — not this
+        // screen — is the authority on whether a cleanup is still outstanding.
+        LaunchedEffect(pairingStatus) {
+            cleanupPending = pairingRepository.hasPendingCleanup()
+        }
 
         val scanPairingCode = rememberLauncherForActivityResult(ScanQRCode()) { result ->
             val payload = (result as? QRResult.QRSuccess)?.content?.rawValue
                 ?: return@rememberLauncherForActivityResult
             pairingScope.launch {
-                // Parsing and validation happen inside the repository, so a rejected code surfaces
-                // as `lastFailure` on the status card rather than as a half-applied pairing.
+                // Parsing, validation and persistence happen inside the coordinator, so a rejected
+                // code surfaces as status rather than as a half-applied pairing.
                 pairingRepository.pair(
                     invitationPayload = payload,
                     deviceName = android.os.Build.MODEL ?: "Android device",
                 )
+                cleanupFailures = emptyList()
+                cleanupPending = pairingRepository.hasPendingCleanup()
             }
         }
 
@@ -309,9 +324,38 @@ private fun SettingProviderConfigPage(
             provider = provider,
             onEdit = { onEdit(it) },
             status = pairingStatus,
-            pairingFailure = pairingFailure,
+            unpairCleanupFailures = cleanupFailures,
+            cleanupPending = cleanupPending,
+            cleanupInFlight = cleanupInFlight,
             onScanPairingQr = { scanPairingCode.launch(null) },
-            onUnpair = { pairingScope.launch { pairingRepository.unpair() } },
+            onUnpair = {
+                pairingScope.launch {
+                    cleanupInFlight = true
+                    try {
+                        cleanupFailures = pairingRepository.unpair().failures
+                        cleanupPending = pairingRepository.hasPendingCleanup()
+                    } catch (_: Throwable) {
+                        // A cancellation or a store failure must not re-enable the provider. The
+                        // repository is already non-dispatchable; report that cleanup is unfinished.
+                        cleanupPending = true
+                    } finally {
+                        cleanupInFlight = false
+                    }
+                }
+            },
+            onRetryCleanup = {
+                pairingScope.launch {
+                    cleanupInFlight = true
+                    try {
+                        cleanupFailures = pairingRepository.retryCleanup().failures
+                        cleanupPending = pairingRepository.hasPendingCleanup()
+                    } catch (_: Throwable) {
+                        cleanupPending = true
+                    } finally {
+                        cleanupInFlight = false
+                    }
+                }
+            },
         )
         return
     }

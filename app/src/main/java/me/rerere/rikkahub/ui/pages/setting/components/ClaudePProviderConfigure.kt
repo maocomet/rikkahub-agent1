@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.claudep.ClaudePPairingFailure
+import me.rerere.ai.provider.claudep.ClaudePUnpairFailure
 import me.rerere.ai.provider.claudep.ClaudePUiStatus
 import me.rerere.ai.provider.claudep.allowsDispatch
 import me.rerere.ai.provider.claudep.offersPairing
@@ -52,10 +53,24 @@ fun ClaudePProviderConfigure(
     status: ClaudePUiStatus = ClaudePUiStatus.NOT_PAIRED,
     /** Most recent pairing failure, or `null` when the last attempt succeeded or none was made. */
     pairingFailure: ClaudePPairingFailure? = null,
+    /**
+     * What the last revocation could not remove.
+     *
+     * Non-empty means local material may still be on the device. The screen must say so rather than
+     * showing a clean "not paired": telling a user their device is clean while a credential or
+     * private key survives is the failure this exists to prevent.
+     */
+    unpairCleanupFailures: List<ClaudePUnpairFailure> = emptyList(),
+    /** True while a cleanup is outstanding — a tombstone exists, or the device is REVOKED. */
+    cleanupPending: Boolean = false,
+    /** True while an unpair or retry is running, so the buttons cannot be double-tapped. */
+    cleanupInFlight: Boolean = false,
     /** Opens the QR scanner. The caller owns the launcher; this screen owns only the copy. */
     onScanPairingQr: () -> Unit = {},
     /** Ends the pairing: credential, device key and socket. */
     onUnpair: () -> Unit = {},
+    /** Retries an incomplete cleanup. Same code path as unpair, so it is always safe to offer. */
+    onRetryCleanup: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -79,8 +94,11 @@ fun ClaudePProviderConfigure(
 
         PairingCard(
             status = status,
+            cleanupIncomplete = cleanupPending || unpairCleanupFailures.isNotEmpty(),
+            cleanupInFlight = cleanupInFlight,
             onScanPairingQr = onScanPairingQr,
             onUnpair = onUnpair,
+            onRetryCleanup = onRetryCleanup,
         )
 
         if (status.offersUnpair) {
@@ -198,8 +216,11 @@ private fun StatusCard(status: ClaudePUiStatus, pairingFailure: ClaudePPairingFa
 @Composable
 private fun PairingCard(
     status: ClaudePUiStatus,
+    cleanupIncomplete: Boolean,
+    cleanupInFlight: Boolean,
     onScanPairingQr: () -> Unit,
     onUnpair: () -> Unit,
+    onRetryCleanup: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -207,6 +228,17 @@ private fun PairingCard(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(text = "This device", style = MaterialTheme.typography.titleMedium)
+
+            // Stated plainly, and only in safe terms. No alias, path, exception text, credential or
+            // gateway detail is ever rendered — the categories are bounded enums rendered as prose.
+            if (cleanupIncomplete) {
+                Text(
+                    text = "The connection has been disabled, but some local pairing material " +
+                        "could not be removed. Retry the cleanup to finish unpairing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
 
             if (status.offersPairing) {
                 Text(
@@ -217,7 +249,9 @@ private fun PairingCard(
                 )
                 Button(
                     onClick = onScanPairingQr,
-                    enabled = status != ClaudePUiStatus.PAIRING,
+                    // Blocked while a cleanup is outstanding: pairing over unfinished material would
+                    // leave the old key undeletable.
+                    enabled = status != ClaudePUiStatus.PAIRING && !cleanupInFlight && !cleanupIncomplete,
                 ) {
                     Text("Scan pairing QR code")
                 }
@@ -230,8 +264,14 @@ private fun PairingCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedButton(onClick = onUnpair) {
-                    Text("Unpair this device")
+                OutlinedButton(onClick = onUnpair, enabled = !cleanupInFlight) {
+                    Text(if (cleanupInFlight) "Unpairing…" else "Unpair this device")
+                }
+            }
+
+            if (cleanupIncomplete) {
+                Button(onClick = onRetryCleanup, enabled = !cleanupInFlight) {
+                    Text(if (cleanupInFlight) "Retrying…" else "Retry cleanup")
                 }
             }
         }
