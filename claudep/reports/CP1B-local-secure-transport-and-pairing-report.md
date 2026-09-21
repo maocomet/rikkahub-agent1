@@ -897,3 +897,79 @@ REQUIRED 数组由 **21 → 23**：新增 `ClaudePResolvingClientTest` 与 `Clau
 - 分支 `codex/claudep-cp1b-local`，**未 push**，**未触发第二次 CI**；PR / tag / master 未触碰。
 - 工作区洁净，`git diff --check` 通过；依赖零变更。
 - **停在第二次 CI 授权点。**
+
+
+---
+
+## 19. R3：Koin 启动崩溃
+
+### 19.1 结论（按要求措辞）
+
+> **这是已经源码确认的 Koin 注册缺陷，且与手机上的 ChatVM 创建崩溃高度一致；由于原始日志在回滚旧包后无法完整取回，不能把它描述为由完整 `Caused by` 日志绝对证明的唯一根因。**
+
+崩溃日志**未能取得**：`adb devices` 为空，LDPlayer 模拟器进程未运行，5554/5555 均被拒绝，
+在跑的 `adb.exe`（PID 7432）是 2026-09-17 遗留的 server。未卸载、未清数据、未改数据库。
+
+### 19.2 只读追踪的解析路径
+
+```
+ChatVM            (chatService: ChatService)
+  └─ ChatService  (providerManager: ProviderManager, ChatService.kt:602)
+       └─ ProviderManager 的 single（DataSourceModule 内 get<ClaudePDevicePairingRepository>()）
+            └─ ClaudePDevicePairingRepository 的 single
+                 ├─ tombstoneStore  = get()   ← 无定义
+                 └─ settingsGateway = get()   ← 无定义
+```
+
+`ChatVM` 在打开聊天页时构造，与"进入聊天页立即崩溃"吻合。
+
+### 19.3 缺陷
+
+`DataSourceModule` 只注册了**具体类**：
+
+```kotlin
+single { FileClaudePCleanupTombstoneStore(context = get()) }
+single { SettingsClaudePPairingGateway(settingsStore = get()) }
+```
+
+而 Repository 请求的是**接口**。Koin 不会自动把实现绑定到接口。
+
+### 19.4 修复
+
+两处改为 `single<接口> { ... }`。**不建立重复实例**，不额外注册第二套 singleton。
+**具体类型消费者扫描结果：无** —— 两个类名仅出现在各自文件与 DI 注册处，因此不需要受控别名绑定
+（加了反而会造出本修复要避免的第二份状态对象）。
+
+未改动协议、wire format、credential、DataStore schema、Keystore alias、配对状态或依赖版本。
+
+### 19.5 测试与门禁
+
+`app/src/androidTest/.../ClaudePKoinGraphTest.kt`（**7 条，instrumentation**）：加载**真实生产 Koin 图**，
+**不 override** 被测的两个接口。覆盖：两接口解析为预期实现；重复解析为同一 singleton；
+`ClaudePDevicePairingRepository` 构造完成；Repository 为 single；沿崩溃链解析到 `ProviderManager`。
+
+**测试止于 `ProviderManager`。** `ChatVM` 需要运行时参数、只能在聊天页构造，**未被验证，也不得声称已验证**。
+
+**为什么不是 JVM 测试**：两个定义分别需要 Android `Context`（读 `noBackupFilesDir`）与 DataStore 的
+`SettingsStore`；JVM 造不出，除非引入 Robolectric 或 mock 框架 —— 本轮禁止。因此没有新增依赖，
+也没有复制一套简化 module。
+
+**workflow 门禁**：`migration-instrumentation.yml` 用**显式类名白名单**（`-Pandroid...class=$CLASSES`），
+新类若不加入就会"编译但不执行"。已加入该列表；并新增 step
+`Verify required Claude P Koin graph tests executed`，按 XML 中的 `name=` 断言该类确实执行，
+缺失即 `exit 1`。这与 JVM 侧的白名单陷阱是同一类问题。
+
+### 19.6 本机执行与未执行
+
+| 项 | 状态 |
+|---|---|
+| 本地 harness（239 条） | **全绿** |
+| 静态追踪 ChatVM 解析路径 | **已执行**（只读） |
+| `ClaudePKoinGraphTest` 编译 / 执行 | **未执行** —— 需 managed-device instrumentation |
+| `:app` 编译（含本次修复） | **未执行** —— 本机无 Android SDK；需下一次 CI |
+
+### 19.7 状态
+
+- 分支 `codex/claudep-cp1b-local`，**未 push**；未触发普通 CI，未触发 instrumentation；未创建 PR。
+- 工作区洁净，`git diff --check` 通过；依赖零变更。
+- **停在静态复审点。**
