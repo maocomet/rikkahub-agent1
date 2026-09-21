@@ -1,6 +1,6 @@
 # CP1-B｜安全联网传输与一次性配对 — 本地实施报告
 
-状态：**CP1-B 本地返修完成，Android CI 待验证**
+状态：**CP1-B 生产接线已完成；Android CI 待验证**
 日期：2026-09-20
 分支：`codex/claudep-cp1b-local`（**未 push**）
 Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1b`
@@ -23,7 +23,8 @@ PR / Tag / Release / master：**均未触碰**
 | 本阶段基线 | `876a814bdee3687039d8c48832d3701b31d69354` |
 | **R0 最终 HEAD（旧）** | `10ad17ba2e485030c02ec74603417d47494f0960` |
 | **R1 代码最终 HEAD** | `059fc2f3`（`fix(claudep): serialize pairing and revocation`，见 §14） |
-| **R1 最终 HEAD（含本报告）** | `0efbc7d6` |
+| **R1 最终 HEAD（含报告）** | `0efbc7d6` |
+| **R1.1–R1.4（生产接线 + 测试 + 本报告）** | `25f47633` / 见 §15 |
 | 工作区 | **洁净**（`git status --porcelain` 为空） |
 | `git diff --check` | **通过** |
 
@@ -504,3 +505,114 @@ CP1-B 新增分模块：`ClaudePWssTransportTest` 36、`ClaudePEndpointTest` 33�
 - 工作区洁净，`git diff --check` 通过。
 - 依赖**零变更**。
 - **停在静态复审点，等待 CI 授权。**
+
+
+---
+
+## 15. R1.1–R1.4：生产接线、UI 与最终静态复审准备
+
+R1 之后又进行了四轮返修。**§14 的 R1 结论已被本节取代**；§6.2 的「163 tests」、§14.3 的「176 tests」
+均只属于各自的 HEAD，不得沿用。
+
+### 15.1 生产接线现已完成
+
+`ClaudePPairingCoordinator` 是 **pair / unpair / retryCleanup 的唯一生命周期编排者**。
+Repository 中原有的第二套撤销、补偿、密钥删除与状态切换实现**已被删除**（不是弃用），因此不存在
+可以独立漂移的第二条路径。Repository 现在只负责 coordinator 不该管的：transport 生命周期、
+派生 UI 状态、以及决定"能否存在 transport"的一致性校验。
+
+`gatewayClientOrNull()` 首先检查 `mustNotDispatch()`：REVOKED、任何非 `Absent` 的 tombstone
+（含 malformed / 未知版本）一律**不建立也不返回 client**。
+
+### 15.2 Android 实现
+
+| 文件 | 内容 |
+|---|---|
+| `FileClaudePCleanupTombstoneStore` | `noBackupFilesDir` 私有目录；`Files.move(ATOMIC_MOVE, REPLACE_EXISTING)`；**不自行判断**，只把字节交给 codec 并返回其结论 |
+| `SettingsClaudePPairingGateway` | Claude P settings 的**唯一写入者**；`REVOKED + enabled=false` 先于破坏性步骤；`NOT_PAIRED` 仅在全部删除 + tombstone 确认后写 |
+| `ClaudePCleanupTombstoneCodec`（`ai`） | 编码、校验、判定；记录长度、版本、字段集合、alias 形状与长度 |
+
+**数据存储的事务性**：DataStore 与 Keystore/文件系统之间**没有跨介质事务**。这一点在代码与提交中
+都写明，没有伪称原子。替代方案是"每一步都安全"的顺序 —— 任何时刻崩溃都停在 REVOKED + tombstone，
+下次启动可恢复。
+
+### 15.3 干净设备语义
+
+`settings=NOT_PAIRED` + 无 credential + 无 tombstone + 无可定位 key 时，unpair/retry **幂等成功**，
+保持 `NOT_PAIRED`，不返回 `DEVICE_KEY_ALIAS_UNKNOWN`。但只要存在 REVOKED、**任何** tombstone 记录
+（含不可解析的）或 credential 残留，就绕不过清理。
+
+### 15.4 UI
+
+`SettingProviderDetailPage` 不再忽略 unpair 结果：部分失败显示脱敏提示、提供 "Retry cleanup"、
+尝试期间禁用按钮防重复点击、清理未完成时禁止扫码。异常或取消**不会**重新启用任何东西。
+不渲染 alias、路径、异常正文、credential 或内部枚举。`hasPendingCleanup()` 读持久状态，
+所以重试入口**跨进程重启仍在**。
+
+### 15.5 本机实际执行的测试（最终 HEAD）
+
+在最终 HEAD 上重新完整执行：
+
+```
+bash /c/Users/hp/.claudep-buildcheck/run.sh
+JUnit version 4.13.2
+OK (222 tests)
+```
+
+| 类别 | 执行 | 通过 | 失败 | 跳过 |
+|---|---:|---:|---:|---:|
+| CP1-A **真正复跑**（`ClaudePProtocolTest` + `ClaudePRequestFingerprintTest` + `ClaudePFakeGatewayTest`） | 41 | 41 | 0 | 0 |
+| CP1-B 新增（`ai`，harness 可编译） | 181 | 181 | 0 | 0 |
+| **合计** | **222** | **222** | **0** | **0** |
+
+CP1-B 新增分模块：`ClaudePWssTransportTest` 36、`ClaudePEndpointTest` 33、
+`ClaudePPairingCoordinatorTest` 24、`ClaudePPairingFlowTest` 25、
+`ClaudePCleanupTombstoneCodecTest` 17、`ClaudePCredentialStoreTest` 21、
+`ClaudePUiStatusTest` 14、`ClaudePOkHttpTest` 7、`ClaudePRevocationTest` 7。
+
+### 15.6 本机**未**编译的测试（不得计入）
+
+| 项 | 数量 | 原因 |
+|---|---:|---|
+| `ClaudePImportSanitizerTest` | 5 | 依赖 `ProviderSetting` → `androidx.compose.runtime`，超出本地 harness 编译集合；`compile.sh` 已按显式文件列表排除并写明原因 |
+| CP1-A `ClaudePProviderStreamTest` / `ClaudePProviderCancellationTest` / `ClaudePSettingTest` / `ProviderManagerClaudePTest` | 49 | 需要 `:ai` 全模块（Compose） |
+| CP1-A `ClaudePBackgroundExclusionTest` / `ClaudePProviderConfigureTest`（`:app`） | 11 | `:app` 未编译 |
+
+**CP1-A 的 101 条中真正复跑 41 条，未运行 60 条。**
+
+### 15.7 尚未编写 / 未执行的测试（如实标注）
+
+本轮**没有**编写以下测试（用户 R1.4 清单中要求）：
+
+- Repository 委托同一 coordinator 的行为测试；
+- DI 构造图 / 绑定测试；
+- Android 文件 store 与 DataStore gateway 的测试；
+- Compose UI 五态测试。
+
+**原因是本轮上下文预算耗尽**，不是这些测试不重要或无法编写。它们**并非"已写待 CI 执行"** ——
+**它们不存在**。请勿把本节理解为"已覆盖，只是没跑"。
+
+### 15.8 高风险编译点的静态核对结果
+
+这些点是**静态阅读**结论，**不是编译通过**，且 `:app` 从未被编译过。
+
+| 检查点 | 结论 |
+|---|---|
+| Repository 构造签名 ↔ DI call site | 已核对：DI 传 `credentialStore` / `deviceKeyStore` / `tombstoneStore` / `settingsGateway` / `scope` / `appVersion`，与签名一致 |
+| `LaunchedEffect` 内 suspend 调用 | 已核对：`pairingRepository.hasPendingCleanup()` 在 `LaunchedEffect`（协程作用域）内调用，合法 |
+| `hasPendingCleanup()` 取消处理 | 它是普通 suspend 函数，由 Compose 作用域承载；取消随作用域传播 |
+| kotlinx.serialization 注解 | `@Serializable` / `@SerialName` 在 `ai` 与 `app` 均可用（`ai` 提供 `api(libs.kotlinx.serialization.json)`，`app` 已依赖） |
+| `Files.move` / `java.nio.file` 在 minSdk 26 | **已核对但需注意**：`java.nio.file` 自 **API 26** 起可用，项目 `minSdk = 26`，因此**无需 API guard**。若未来下调 minSdk，此处会静默失效 —— 已在代码注释中标注 |
+| DataStore `update` 返回/异常类型 | 已核对：`SettingsStore.update(fn: (Settings) -> Settings)` 为 suspend、返回 Unit；调用点已用 try/catch 包裹 |
+| Compose 文案 / 按钮状态 / imports | 已核对 `Button`/`OutlinedButton`/`MaterialTheme` 等 import 存在；**未编译核实** |
+
+### 15.9 依赖
+
+**零变更。** `gradle/`、`*.gradle.kts`、`settings.gradle.kts` 相对 CP1-A 基线无改动。
+
+### 15.10 状态
+
+- 分支 `codex/claudep-cp1b-local`，**未 push**；CI **未触发**；PR / tag / master 未触碰。
+- 工作区洁净，`git diff --check` 通过。
+- **`:app` 仍无任何真实 Android 编译证据。**
+- **停在静态复审点，等待是否消耗唯一 Android CI。**
