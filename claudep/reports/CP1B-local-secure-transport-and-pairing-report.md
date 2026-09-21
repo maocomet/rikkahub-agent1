@@ -1,6 +1,6 @@
 # CP1-B｜安全联网传输与一次性配对 — 本地实施报告
 
-状态：**CP1-B 生产接线已完成，CI 前收口完成；Android CI 待授权**
+状态：**CP1-B 生产接线与 CI 门禁已完成；Android CI 待授权**
 日期：2026-09-20
 分支：`codex/claudep-cp1b-local`（**未 push**）
 Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1b`
@@ -701,3 +701,84 @@ OK (235 tests)
 - 工作区洁净，`git diff --check` 通过；依赖零变更；未修改任何 workflow。
 - **`:app` 仍无任何真实 Android 编译证据。**
 - **停在最终静态复审点，等待是否消耗唯一 Android CI。**
+
+
+---
+
+## 17. R1.6：生产 adapter 测试与 CI 精确门禁
+
+### 17.1 纠正 §16.1 的宽泛表述
+
+§16.1 说「`:app:testDebugUnitTest` 会编译整个 test 源集」是对的，但「Claude P 的 app 测试会被执行」
+**只有在类名出现在 `--tests` 白名单里时才成立**。此前该白名单只列了两个既有 app 类，新增 app 测试
+**只会被编译、不会被执行**。本节把这件事写清楚，并已修正白名单。
+
+### 17.2 新增 `:app` JVM 测试
+
+| 文件 | 内容 |
+|---|---|
+| `app/.../data/claudep/ClaudePDevicePairingRepositoryTest.kt` | 直接实例化**生产** Repository，经真实 `pair` / `unpair` / `retryCleanup` 驱动 |
+
+关键前提：`ClaudePDevicePairingRepository` **没有任何 Android import** —— 它只经由接口访问
+settings、credential、key 与 tombstone，因此可以在 `:app` 的普通 JVM 单元测试中构造。
+
+为使其可测，新增两个**生产缺省** seam（不是测试专用分支）：
+
+- `FileClaudePCleanupTombstoneStore`：私有构造接受 base directory；**生产构造仍只取 `context.noBackupFilesDir`**。
+- `ClaudePDevicePairingRepository`：`pairingTransportFor` / `webSocketConnectorFor`，缺省即真实的 OkHttp 实现。
+
+覆盖：未配对 / REVOKED / 有效 tombstone / malformed tombstone / 未知版本 tombstone 一律不返回 client；
+pair/unpair/retry 走 coordinator 状态机；部分清理后不可调度；重建 Repository（模拟重启）仍阻止 dispatch
+且可完成 retry；干净设备重复 unpair 幂等；settings 或 credential 写失败绝不进入 paired。
+**删除 coordinator 委托或恢复第二条清理路径会使这些测试失败。**
+
+### 17.3 CI 白名单与门禁
+
+- `ClaudePDevicePairingRepositoryTest` 已加入 `:app:testDebugUnitTest --tests` 列表。
+  **未扩大为全量测试**，未改动触发条件、签名、构建、上传步骤。
+- XML 门禁由「至少找到一个 ClaudeP XML」改为**逐项确认**：列出全部 **21 个必需类**，
+  按每个 XML 自身的 `name=` 属性比对（不是文件名），缺任何一个即 `exit 1`。
+  理由：`--tests` 只在**组合过滤整体为空**时才报错，单个类被改名或被删掉是静默的。
+
+### 17.4 本机实际执行（最终 HEAD）
+
+```
+bash /c/Users/hp/.claudep-buildcheck/run.sh
+JUnit version 4.13.2
+OK (235 tests)
+```
+
+| 类别 | 执行 | 通过 |
+|---|---:|---:|
+| CP1-A 真正复跑 | 41 | 41 |
+| CP1-B 新增（`ai`，harness 可编译） | 194 | 194 |
+| **合计** | **235** | **235** |
+
+### 17.5 只能由 Android CI 验证的类
+
+| 类 | `@Test` | 本机状态 |
+|---|---:|---|
+| `app:...ClaudePDevicePairingRepositoryTest` | 13 | **已写，从未编译或运行** |
+| `app:...ClaudePProviderConfigureTest`（CP1-A） | 5 | 同上 |
+| `app:...ClaudePBackgroundExclusionTest`（CP1-A） | 6 | 同上 |
+| `ai:...ClaudePImportSanitizerTest` | 5 | 已写；harness 排除，**CI 会执行** |
+| `ai:...ClaudePProviderStreamTest` / `ClaudePProviderCancellationTest` / `ClaudePSettingTest` / `ProviderManagerClaudePTest` | 49 | CP1-A，需 `:ai` 全模块 |
+
+### 17.6 未编写：准确阻塞
+
+`FileClaudePCleanupTombstoneStore` 的 JVM 文件测试**未编写**。原因：
+该类的失败路径调用 `android.util.Log`，在普通 JVM 单元测试中会抛
+`Method w in android.util.Log not mocked`，除非启用
+`testOptions.unitTests.isReturnDefaultValues`。这是**构建配置决定**，不是可以单方面更改的；
+因此**没有写一个注定失败的测试**。
+
+`SettingsClaudePPairingGateway` 依赖 DataStore，同样需要 Android runtime。
+
+两者的**判定规则**已由 `ClaudePCleanupTombstoneCodec`（17 条）覆盖；**Android 实现本身仍无自动化证据**。
+
+### 17.7 状态
+
+- 分支 `codex/claudep-cp1b-local`，**未 push**；CI **未触发**；PR / tag / master 未触碰。
+- 工作区洁净，`git diff --check` 通过；依赖零变更。
+- **`:app` 仍无任何真实 Android 编译证据。** 新增的 13 条 app 测试首次得到编译与运行证据将是 CI。
+- **停在最终 CI 授权点。**
