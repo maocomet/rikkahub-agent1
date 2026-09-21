@@ -1,6 +1,6 @@
 # CP1-B｜安全联网传输与一次性配对 — 本地实施报告
 
-状态：**CP1-B 生产接线已完成；Android CI 待验证**
+状态：**CP1-B 生产接线已完成，CI 前收口完成；Android CI 待授权**
 日期：2026-09-20
 分支：`codex/claudep-cp1b-local`（**未 push**）
 Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1b`
@@ -616,3 +616,88 @@ CP1-B 新增分模块：`ClaudePWssTransportTest` 36、`ClaudePEndpointTest` 33�
 - 工作区洁净，`git diff --check` 通过。
 - **`:app` 仍无任何真实 Android 编译证据。**
 - **停在静态复审点，等待是否消耗唯一 Android CI。**
+
+
+---
+
+## 16. R1.5：CI 前收口
+
+**§15 中「§15.7 尚未编写的测试」一节仅对该 HEAD 有效**；本轮新增了 UI 状态测试并完成了 CI 可执行性核对。
+
+### 16.1 CI 可执行性核对（未触发 workflow，只读取）
+
+| 项 | 结论 |
+|---|---|
+| `build-debug-apk.yml` 是否编译 `:app` | **是**（`assembleDebug`） |
+| 是否编译 `:ai` | **是**（新增 step 显式运行 `:ai:testDebugUnitTest`） |
+| 是否编译新增 Android unit test | **是**（`:app:testDebugUnitTest` 会编译整个 test 源集） |
+| **`ClaudePImportSanitizerTest` 是否进入 CI** | **是。无需修改 workflow** —— CI 使用 `--tests "me.rerere.ai.provider.claudep.*"`，该测试与 CP1-A/CP1-B 其余测试同包，已被通配符覆盖。它被排除的只是**本地 harness**，不是 Android CI |
+| 是否运行 instrumentation | **`build-debug-apk.yml` 明确不运行**，且它的注释说明了原因。另有独立的 `migration-instrumentation.yml` 使用 managed device 运行 androidTest |
+| 本轮是否新增 workflow 任务 | **否**。未修改任何 workflow |
+
+**结论：唯一一次 CI 已足以覆盖 `:ai`/`:app` 编译与全部 Claude P JVM 测试，无需改动 workflow。**
+
+### 16.2 本轮新增（本地实际运行）
+
+`ClaudePConfigureUi` + `ClaudePConfigureUiTest`：13 条测试，全部由本地 harness 实际执行。
+Compose 页面改为渲染该受测状态，不再自行推导规则 —— 原先 `cleanupPending || unpairCleanupFailures.isNotEmpty()`
+就是第二套判断。
+
+**最终 HEAD 本机实际执行：**
+
+```
+bash /c/Users/hp/.claudep-buildcheck/run.sh
+JUnit version 4.13.2
+OK (235 tests)
+```
+
+| 类别 | 执行 | 通过 | 失败 | 跳过 |
+|---|---:|---:|---:|---:|
+| CP1-A 真正复跑 | 41 | 41 | 0 | 0 |
+| CP1-B 新增（harness 可编译） | 194 | 194 | 0 | 0 |
+| **合计** | **235** | **235** | **0** | **0** |
+
+### 16.3 本机**未运行**的测试（逐项列表）
+
+| 文件 | `@Test` | 状态 |
+|---|---:|---|
+| `ai/.../claudep/ClaudePImportSanitizerTest.kt` | 5 | **已写，本地未编译**（需 `ProviderSetting` → `androidx.compose.runtime`）。**Android CI 会执行它** |
+| `ai/.../providers/ClaudePProviderStreamTest.kt` | 17 | CP1-A，本地未运行（需 `:ai` 全模块） |
+| `ai/.../providers/ClaudePProviderCancellationTest.kt` | 13 | 同上 |
+| `ai/.../provider/ClaudePSettingTest.kt` | 11 | 同上 |
+| `ai/.../provider/ProviderManagerClaudePTest.kt` | 8 | 同上 |
+| `app/.../background/ClaudePBackgroundExclusionTest.kt` | 6 | CP1-A，`:app` 未编译 |
+| `app/.../setting/components/ClaudePProviderConfigureTest.kt` | 5 | 同上 |
+| **合计** | **65** | |
+
+### 16.4 本轮**未编写**的测试 —— 技术阻塞（如实报告）
+
+用户 R1.5 要求的三组测试中，以下两组**无法在现有测试框架下构造**，属于真实技术阻塞，**不是**"已写待 CI"：
+
+**（一）Repository 测试。** `ClaudePDevicePairingRepository` 位于 `:app`。它虽然只依赖接口，
+但其实现路径要经由 Android（`android.util.Log` 等），且构造它需要 Koin 作用域。
+本机无 Android SDK，无法编译或运行 `:app` 的任何 JVM 测试。
+**没有以 fake 冒充**：我没有写"只测 fake coordinator 自己"的替代品。
+
+**（二）Android tombstone store 与 Settings gateway / DI 测试。** 分别依赖
+`Context`、`noBackupFilesDir`、DataStore 与 Koin 装配，同样需要 Android SDK。
+
+**已做的替代（有限的、已标注的）**：把这两者中**可以脱离 Android 的判定逻辑**提取到 `ai` 并测试 ——
+即 `ClaudePCleanupTombstoneCodec`（17 条）与 `ClaudePConfigureUi`（13 条）。
+它们覆盖的是**规则**，不是 Android 实现本身；`FileClaudePCleanupTombstoneStore` 的文件 I/O、
+原子替换与 `noBackupFilesDir` 位置，以及 `SettingsClaudePPairingGateway` 的 DataStore 写入，
+**仍然没有任何自动化证据**。
+
+### 16.5 静态复审
+
+上述新增测试均在 `ai`，由 harness 实际执行；其断言在回退对应生产接线后会失败（例如
+`canScanPairingQr` 若不再考虑 `cleanupIncomplete`，`a pending cleanup blocks scanning` 立即失败）。
+
+**生产代码本轮只做了一处非测试改动**：Compose 页面改为消费受测 reducer。未发现需要修复的真实缺陷。
+
+### 16.6 状态
+
+- 分支 `codex/claudep-cp1b-local`，**未 push**；CI **未触发**；PR / tag / master 未触碰。
+- 工作区洁净，`git diff --check` 通过；依赖零变更；未修改任何 workflow。
+- **`:app` 仍无任何真实 Android 编译证据。**
+- **停在最终静态复审点，等待是否消耗唯一 Android CI。**
