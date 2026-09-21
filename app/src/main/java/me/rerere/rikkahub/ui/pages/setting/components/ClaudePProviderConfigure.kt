@@ -8,8 +8,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,29 +20,43 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import me.rerere.ai.provider.ProviderSetting
-import me.rerere.ai.provider.claudep.ClaudePPairingState
+import me.rerere.ai.provider.claudep.ClaudePPairingFailure
+import me.rerere.ai.provider.claudep.ClaudePUiStatus
+import me.rerere.ai.provider.claudep.allowsDispatch
+import me.rerere.ai.provider.claudep.offersPairing
+import me.rerere.ai.provider.claudep.offersUnpair
 
 /**
  * Settings surface for the Claude P provider.
  *
- * This is deliberately a skeleton. It reports state and explains what the provider cannot do yet;
- * it does not offer a pairing button, a QR scanner, an OAuth flow or a connection test, because
- * none of those exist in this milestone. A fake "Connected" badge is the specific failure this
- * screen is written to avoid — the user must never be told a VPS is reachable when no pairing
- * mechanism has run.
+ * ### What this screen must never contain
  *
- * There is intentionally no API key field and no editable base URL. Claude P does not use an API
- * key at all (it holds a revocable device identity), and its origin is learned from a pairing
- * handshake rather than typed, so `claudep/01-architecture-and-trust-boundaries.md` §4 forbids
- * letting a user paste an arbitrary endpoint here.
+ * No API-key field, no Claude OAuth entry point, and no editable base URL. Claude P holds a
+ * revocable *device* identity rather than an API key, its origin is learned from a pairing QR rather
+ * than typed (`claudep/01-architecture-and-trust-boundaries.md` §4 forbids pasting an arbitrary
+ * endpoint), and Claude credentials live only on the user's own VPS. There is deliberately no
+ * control here that could put any of those on the device.
+ *
+ * ### What it must never claim
+ *
+ * A device that cannot authenticate is never shown as usable. [status] is derived by
+ * `ClaudePUiStatusMapper` from the pairing record, the encrypted credential store and the live
+ * connection — never from this screen's own state — and only `PAIRED`/`ONLINE` enable the provider,
+ * so an offline or unpaired provider cannot be turned on and left to fail at request time.
  */
 @Composable
 fun ClaudePProviderConfigure(
     provider: ProviderSetting.ClaudeP,
     onEdit: (ProviderSetting.ClaudeP) -> Unit,
+    /** Derived status. Defaults to the honest "not paired" for previews and tests. */
+    status: ClaudePUiStatus = ClaudePUiStatus.NOT_PAIRED,
+    /** Most recent pairing failure, or `null` when the last attempt succeeded or none was made. */
+    pairingFailure: ClaudePPairingFailure? = null,
+    /** Opens the QR scanner. The caller owns the launcher; this screen owns only the copy. */
+    onScanPairingQr: () -> Unit = {},
+    /** Ends the pairing: credential, device key and socket. */
+    onUnpair: () -> Unit = {},
 ) {
-    val paired = provider.pairingState == ClaudePPairingState.PAIRED
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -58,38 +75,26 @@ fun ClaudePProviderConfigure(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    text = when (provider.pairingState) {
-                        ClaudePPairingState.PAIRED -> "Paired"
-                        ClaudePPairingState.REVOKED -> "Access revoked"
-                        ClaudePPairingState.NOT_PAIRED -> "Not yet paired"
-                    },
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text(
-                    text = "This build contains the local provider skeleton only. Device pairing, " +
-                        "the gateway connection and the model catalog arrive in the next milestone, " +
-                        "so no request can be sent yet.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        StatusCard(status = status, pairingFailure = pairingFailure)
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(text = "Gateway", style = MaterialTheme.typography.titleMedium)
-                LabeledValue("Origin", provider.pairedOrigin ?: "Not paired")
-                LabeledValue("Fingerprint", provider.gatewayFingerprint ?: "Not paired")
-                LabeledValue("Claude Code", provider.claudeCodeVersion ?: "Unavailable")
+        PairingCard(
+            status = status,
+            onScanPairingQr = onScanPairingQr,
+            onUnpair = onUnpair,
+        )
+
+        if (status.offersUnpair) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(text = "Gateway", style = MaterialTheme.typography.titleMedium)
+                    LabeledValue("Origin", provider.pairedOrigin ?: "Unavailable")
+                    LabeledValue("Fingerprint", provider.gatewayFingerprint ?: "Unavailable")
+                    LabeledValue("Claude Code", provider.claudeCodeVersion ?: "Unavailable")
+                    LabeledValue("Device", provider.device.displayName.ifBlank { "This device" })
+                }
             }
         }
 
@@ -105,17 +110,21 @@ fun ClaudePProviderConfigure(
                     Text(text = "Enabled", style = MaterialTheme.typography.titleMedium)
                     Text(
                         // Enabling is blocked rather than merely discouraged: an enabled provider
-                        // that fails every request at the pairing check is worse than one the user
-                        // cannot turn on yet.
-                        text = "Available after pairing is implemented.",
+                        // that fails every request at the connection check is worse than one the
+                        // user cannot turn on yet.
+                        text = if (status.allowsDispatch) {
+                            "Available to assistants."
+                        } else {
+                            "Available once this device is paired and reachable."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Switch(
-                    checked = provider.enabled,
+                    checked = provider.enabled && status.allowsDispatch,
                     onCheckedChange = { onEdit(provider.copy(enabled = it)) },
-                    enabled = paired,
+                    enabled = status.allowsDispatch,
                 )
             }
         }
@@ -126,7 +135,8 @@ fun ClaudePProviderConfigure(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(text = "Capabilities", style = MaterialTheme.typography.titleMedium)
-                // Stated so a missing attachment picker reads as a known limit rather than a bug.
+                // Stated so a missing attachment picker and a missing tool approval read as known
+                // limits rather than as bugs.
                 LabeledValue("Supported", "Text, reasoning summary")
                 LabeledValue(
                     "Not supported yet",
@@ -135,6 +145,125 @@ fun ClaudePProviderConfigure(
             }
         }
     }
+}
+
+@Composable
+private fun StatusCard(status: ClaudePUiStatus, pairingFailure: ClaudePPairingFailure?) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = when (status) {
+            ClaudePUiStatus.ONLINE -> CardDefaults.cardColors()
+            ClaudePUiStatus.PROTOCOL_ERROR,
+            ClaudePUiStatus.CREDENTIAL_INVALID,
+            -> CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+
+            else -> CardDefaults.cardColors()
+        },
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = when (status) {
+                    ClaudePUiStatus.NOT_PAIRED -> "Not paired"
+                    ClaudePUiStatus.PAIRING -> "Pairing…"
+                    ClaudePUiStatus.PAIRED -> "Paired"
+                    ClaudePUiStatus.CONNECTING -> "Connecting…"
+                    ClaudePUiStatus.ONLINE -> "Online"
+                    ClaudePUiStatus.OFFLINE -> "Offline"
+                    ClaudePUiStatus.PROTOCOL_ERROR -> "Gateway protocol error"
+                    ClaudePUiStatus.CREDENTIAL_INVALID -> "Device credential invalid"
+                },
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = status.explanation(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // Only a bounded enum is ever shown. A gateway's raw error text is never rendered,
+            // because it is untrusted remote input that could quote a prompt or a path.
+            pairingFailure?.let { failure ->
+                Text(
+                    text = "Pairing failed: ${failure.name.lowercase()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PairingCard(
+    status: ClaudePUiStatus,
+    onScanPairingQr: () -> Unit,
+    onUnpair: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(text = "This device", style = MaterialTheme.typography.titleMedium)
+
+            if (status.offersPairing) {
+                Text(
+                    text = "Generate a pairing code on your Gateway server, then scan it here. " +
+                        "The code is single-use and expires in minutes.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(
+                    onClick = onScanPairingQr,
+                    enabled = status != ClaudePUiStatus.PAIRING,
+                ) {
+                    Text("Scan pairing QR code")
+                }
+            }
+
+            if (status.offersUnpair) {
+                Text(
+                    text = "Unpairing removes this device's credential and key from the phone. " +
+                        "It does not sign you out of Claude on the server.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = onUnpair) {
+                    Text("Unpair this device")
+                }
+            }
+        }
+    }
+}
+
+/** The one-sentence explanation shown under each status. Bounded vocabulary, no remote text. */
+private fun ClaudePUiStatus.explanation(): String = when (this) {
+    ClaudePUiStatus.NOT_PAIRED ->
+        "No device credential is stored, so no request can be sent."
+
+    ClaudePUiStatus.PAIRING ->
+        "Exchanging the pairing code with your gateway."
+
+    ClaudePUiStatus.PAIRED ->
+        "Paired. The connection opens when a request is made."
+
+    ClaudePUiStatus.CONNECTING ->
+        "Opening the secure connection and signing the handshake."
+
+    ClaudePUiStatus.ONLINE ->
+        "Connected to your gateway."
+
+    ClaudePUiStatus.OFFLINE ->
+        "Paired, but the gateway is not reachable right now."
+
+    ClaudePUiStatus.PROTOCOL_ERROR ->
+        "The gateway replied in a way this app cannot safely interpret. Update the app or the " +
+            "gateway so both speak the same protocol version."
+
+    ClaudePUiStatus.CREDENTIAL_INVALID ->
+        "This device's credential is missing, expired or revoked. Pair again to continue."
 }
 
 @Composable

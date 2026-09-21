@@ -121,6 +121,10 @@ import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.ui.pages.assistant.detail.CustomBodies
 import me.rerere.rikkahub.ui.pages.assistant.detail.CustomHeaders
+import androidx.activity.compose.rememberLauncherForActivityResult
+import io.github.g00fy2.quickie.QRResult
+import io.github.g00fy2.quickie.ScanQRCode
+import me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository
 import me.rerere.rikkahub.ui.pages.setting.components.ProviderConfigure
 import me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigure
 import me.rerere.rikkahub.ui.pages.setting.components.CodexProviderConfigure
@@ -280,9 +284,34 @@ private fun SettingProviderConfigPage(
         return
     }
     if (provider is ProviderSetting.ClaudeP) {
+        // Claude P owns its own pairing lifecycle, so this screen renders derived state rather than
+        // holding any of its own. Nothing here can put a credential, a ticket or an endpoint into
+        // the provider setting — the pairing repository is the only writer.
+        val pairingRepository = koinInject<ClaudePDevicePairingRepository>()
+        val pairingStatus by pairingRepository.status.collectAsStateWithLifecycle()
+        val pairingFailure by pairingRepository.lastFailure.collectAsStateWithLifecycle()
+        val pairingScope = rememberCoroutineScope()
+
+        val scanPairingCode = rememberLauncherForActivityResult(ScanQRCode()) { result ->
+            val payload = (result as? QRResult.QRSuccess)?.content?.rawValue
+                ?: return@rememberLauncherForActivityResult
+            pairingScope.launch {
+                // Parsing and validation happen inside the repository, so a rejected code surfaces
+                // as `lastFailure` on the status card rather than as a half-applied pairing.
+                pairingRepository.pair(
+                    invitationPayload = payload,
+                    deviceName = android.os.Build.MODEL ?: "Android device",
+                )
+            }
+        }
+
         ClaudePProviderConfigure(
             provider = provider,
             onEdit = { onEdit(it) },
+            status = pairingStatus,
+            pairingFailure = pairingFailure,
+            onScanPairingQr = { scanPairingCode.launch(null) },
+            onUnpair = { pairingScope.launch { pairingRepository.unpair() } },
         )
         return
     }

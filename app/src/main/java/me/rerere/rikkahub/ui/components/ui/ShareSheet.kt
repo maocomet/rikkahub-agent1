@@ -26,6 +26,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.claudep.ClaudePDeviceDescriptor
+import me.rerere.ai.provider.claudep.ClaudePPairingState
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Share03
 import me.rerere.rikkahub.R
@@ -108,7 +110,41 @@ fun decodeProviderSetting(value: String): ProviderSetting {
     val jsonBytes = Base64.decode(base64Str)
     val jsonStr = jsonBytes.decodeToString()
 
-    return JsonInstant.decodeFromString<ProviderSetting>(jsonStr)
+    return JsonInstant.decodeFromString<ProviderSetting>(jsonStr).sanitizedAfterImport()
+}
+
+/**
+ * Strips everything from an imported provider that must never be trusted from the wire.
+ *
+ * A provider string is untrusted input: it arrives from a QR code or a pasted blob, and it is
+ * decoded polymorphically into any `ProviderSetting` subtype. Without this step a crafted payload
+ * could produce an *enabled* Claude P provider claiming to be paired with an origin and fingerprint
+ * the user never chose — the CP1-A report recorded exactly this gap
+ * (`claudep/reports/CP1A-local-provider-skeleton-report.md` §9 #8).
+ *
+ * Claude P is the one type where "imported settings" and "paired device" are genuinely different
+ * things: its authority is a Keystore key and an encrypted credential that a QR code cannot carry.
+ * So an imported Claude P is always reset to *unpaired and disabled*, and the user has to scan a
+ * real pairing code. This mirrors `claudep/00-scope-and-product-contract.md` §4 — the phone must
+ * never accept a gateway endpoint it did not pair with.
+ *
+ * Other provider types are returned unchanged: they carry their own credentials in their own fields,
+ * and silently rewriting them here would break ordinary provider sharing.
+ */
+private fun ProviderSetting.sanitizedAfterImport(): ProviderSetting = when (this) {
+    is ProviderSetting.ClaudeP -> copy(
+        enabled = false,
+        pairingState = ClaudePPairingState.NOT_PAIRED,
+        pairedOrigin = null,
+        gatewayFingerprint = null,
+        gatewayInstallationId = null,
+        device = ClaudePDeviceDescriptor(),
+        cachedModels = emptyList(),
+        catalogCachedAt = null,
+        claudeCodeVersion = null,
+    )
+
+    else -> this
 }
 
 class ShareSheetState {
