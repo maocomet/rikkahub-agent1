@@ -323,4 +323,12 @@ enum class ClaudePPairingFailure {
      * gateway just issued has been destroyed, and the ticket that produced it is spent.
      */
     PAIRING_NOT_PERSISTED,
+
+    /**
+     * A previous cleanup is unresolved — a tombstone exists that this build cannot interpret.
+     *
+     * Distinct from a generic failure because the remedy is different: the user must resolve the
+     * cleanup (or reinstall) rather than simply retry pairing.
+     */
+    CLEANUP_PENDING,
 }

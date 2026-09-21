@@ -62,6 +62,13 @@ class ClaudePPairingCoordinator(
      */
     suspend fun pair(invitationPayload: String, deviceName: String): ClaudePPairingOutcome =
         lifecycleMutex.withLock {
+            // An unreadable tombstone means material may remain that this build cannot even name.
+            // Pairing over it would leave that key permanently undeletable, so it is refused until
+            // the record is resolved rather than silently overwritten.
+            if (tombstoneStore.read() is ClaudePTombstoneRead.Unusable) {
+                return@withLock ClaudePPairingOutcome.Rejected(ClaudePPairingFailure.CLEANUP_PENDING)
+            }
+
             val invitation = when (val parsed = ClaudePPairingInvitationParser.parse(invitationPayload)) {
                 is ClaudePPairingResult.Rejected ->
                     return@withLock ClaudePPairingOutcome.Rejected(parsed.reason.toPairingFailure())
@@ -90,12 +97,13 @@ class ClaudePPairingCoordinator(
             return ClaudePPairingOutcome.Rejected(ClaudePPairingFailure.PAIRING_NOT_PERSISTED)
         }
 
-        // A successful pairing supersedes any pending cleanup: the stale alias belongs to a key no
-        // credential will ever reference again, so it is destroyed once, best-effort, and the
-        // tombstone is retired. This is what keeps a retry from damaging the *new* pairing.
-        tombstoneStore.read()?.let { stale ->
-            if (stale.deviceKeyAlias != device.keyAlias) {
-                deviceKeyStore.delete(stale.deviceKeyAlias)
+        // A successful pairing supersedes a *usable* pending cleanup: the stale alias belongs to a
+        // key no credential will ever reference again, so it is destroyed once and the record is
+        // retired. This is what keeps a retry from damaging the *new* pairing. An unusable record is
+        // never cleared here — `pair` refuses to run at all in that state.
+        (tombstoneStore.read() as? ClaudePTombstoneRead.Valid)?.let { stale ->
+            if (stale.tombstone.deviceKeyAlias != device.keyAlias) {
+                deviceKeyStore.delete(stale.tombstone.deviceKeyAlias)
             }
             tombstoneStore.clear()
         }
@@ -140,8 +148,9 @@ class ClaudePPairingCoordinator(
 
         // 3. The alias must be known *and recorded before* anything is destroyed.
         val existingTombstone = tombstoneStore.read()
+        val recordedAlias = (existingTombstone as? ClaudePTombstoneRead.Valid)?.tombstone?.deviceKeyAlias
         val alias = (credentialStore.read() as? ClaudePCredentialRead.Present)?.device?.keyAlias
-            ?: existingTombstone?.deviceKeyAlias
+            ?: recordedAlias
 
         if (alias != null) {
             // Rewritten on every attempt so a retry after a restart still knows what to remove.
@@ -159,10 +168,14 @@ class ClaudePPairingCoordinator(
         if (alias != null && !deviceKeyStore.delete(alias)) {
             failures += ClaudePUnpairFailure.DEVICE_KEY_NOT_DELETED
         }
-        // An unnamable key is only a *finding* if there was something to revoke. Unpairing a device
-        // that was never paired has nothing to clean, and reporting a failure there would leave a
-        // clean device stuck in REVOKED with a retry that could never succeed.
-        if (alias == null && (hadPairing || existingTombstone != null)) {
+        // An unnamable key is a *finding* whenever there is evidence something may be left: a
+        // previous pairing, or any tombstone record at all. Unpairing a device that was never
+        // paired has nothing to clean, and reporting a failure there would leave a clean device
+        // stuck in REVOKED behind a retry that could never succeed.
+        //
+        // An *unreadable* tombstone counts as evidence precisely because it cannot be ruled out.
+        val hasEvidence = hadPairing || existingTombstone !is ClaudePTombstoneRead.Absent
+        if (alias == null && hasEvidence) {
             failures += ClaudePUnpairFailure.DEVICE_KEY_ALIAS_UNKNOWN
         }
 
@@ -196,7 +209,11 @@ class ClaudePPairingCoordinator(
      * not finish, and a device in that condition has no business dispatching.
      */
     suspend fun mustNotDispatch(): Boolean =
-        settings.pairingState() == ClaudePPairingState.REVOKED || tombstoneStore.read() != null
+        settings.pairingState() == ClaudePPairingState.REVOKED ||
+            tombstoneStore.read() !is ClaudePTombstoneRead.Absent
+
+    /** The tombstone verdict, for callers that need to distinguish "none" from "unusable". */
+    suspend fun tombstoneState(): ClaudePTombstoneRead = tombstoneStore.read()
 }
 
 /** Maps a credential-store failure onto the revocation vocabulary. */

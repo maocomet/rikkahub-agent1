@@ -1484,10 +1484,7 @@ val dataSourceModule = module {
     // format version and a device key alias and nothing else. It is what makes an interrupted
     // cleanup recoverable after a restart.
     single {
-        me.rerere.rikkahub.data.claudep.FileClaudePCleanupTombstoneStore(
-            context = get(),
-            json = get(),
-        )
+        me.rerere.rikkahub.data.claudep.FileClaudePCleanupTombstoneStore(context = get())
     }
 
     // The settings half of the pairing lifecycle. The coordinator reaches settings only through

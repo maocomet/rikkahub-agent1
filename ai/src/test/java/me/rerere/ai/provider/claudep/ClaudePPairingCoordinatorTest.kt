@@ -359,6 +359,62 @@ class ClaudePPairingCoordinatorTest {
     }
 
     // ---------------------------------------------------------------------------------------
+    // Unusable tombstones
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    fun `an unreadable tombstone blocks dispatch and is never treated as absent`() = runBlocking<Unit> {
+        val harness = Harness()
+        harness.pairSuccessfully("Pixel")
+        harness.credentials.clearFailures = listOf(ClaudePCredentialStoreFailure.FILE_DELETE_FAILED)
+        harness.keys.deleteFails = true
+        harness.coordinator.unpair()
+        // The record survives but can no longer be parsed — a corrupt file, or a format from a
+        // future build.
+        harness.tombstones.readRejection = ClaudePTombstoneRejection.MALFORMED
+
+        assertTrue("an unreadable tombstone is still evidence", harness.coordinator.mustNotDispatch())
+        assertEquals(ClaudePPairingState.REVOKED, harness.settings.state)
+    }
+
+    @Test
+    fun `pairing is refused while an unreadable tombstone exists`() = runBlocking<Unit> {
+        val harness = Harness()
+        harness.tombstones.readRejection = ClaudePTombstoneRejection.UNKNOWN_VERSION
+
+        val outcome = harness.coordinator.pair(invitationJson(), "Pixel")
+
+        // Pairing over an unresolved cleanup would leave the old key permanently undeletable.
+        assertEquals(
+            ClaudePPairingOutcome.Rejected(ClaudePPairingFailure.CLEANUP_PENDING),
+            outcome,
+        )
+        assertEquals(0, harness.transport.sendCount)
+    }
+
+    @Test
+    fun `an unreadable tombstone keeps the device non-dispatchable after a restart`() = runBlocking<Unit> {
+        val harness = Harness()
+        harness.pairSuccessfully("Pixel")
+        harness.keys.deleteFails = true
+        harness.coordinator.unpair()
+        harness.tombstones.readRejection = ClaudePTombstoneRejection.MALFORMED
+
+        val restarted = Harness(
+            credentials = harness.credentials,
+            keys = harness.keys,
+            tombstones = harness.tombstones,
+            settings = harness.settings,
+        )
+
+        assertTrue(restarted.coordinator.mustNotDispatch())
+        // And a retry still does not claim a clean device it cannot prove.
+        val retry = restarted.coordinator.retryCleanup()
+        assertFalse(retry.isComplete)
+        assertEquals(ClaudePPairingState.REVOKED, restarted.settings.state)
+    }
+
+    // ---------------------------------------------------------------------------------------
     // Harness
     // ---------------------------------------------------------------------------------------
 

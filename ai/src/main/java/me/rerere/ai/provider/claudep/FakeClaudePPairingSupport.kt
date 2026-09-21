@@ -31,7 +31,14 @@ class InMemoryClaudePCleanupTombstoneStore : ClaudePCleanupTombstoneStore {
     /** When set, [write] suspends here — used to pause an unpair before any destructive step. */
     var writeGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
-    override suspend fun read(): ClaudePCleanupTombstone? = stored
+    /** When set, every read reports this rejection instead — including the record's absence. */
+    @Volatile
+    var readRejection: ClaudePTombstoneRejection? = null
+
+    override suspend fun read(): ClaudePTombstoneRead {
+        readRejection?.let { return ClaudePTombstoneRead.Unusable(it) }
+        return stored?.let { ClaudePTombstoneRead.Valid(it) } ?: ClaudePTombstoneRead.Absent
+    }
 
     override suspend fun write(tombstone: ClaudePCleanupTombstone): Boolean {
         writeGate?.await()

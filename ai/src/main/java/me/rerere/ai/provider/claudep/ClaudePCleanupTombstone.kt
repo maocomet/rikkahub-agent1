@@ -52,13 +52,16 @@ data class ClaudePCleanupTombstone(
  */
 interface ClaudePCleanupTombstoneStore {
     /**
-     * Reads the pending cleanup, or `null` when there is none.
+     * Reads the pending cleanup.
      *
-     * Implementations must return `null` for an unreadable, corrupt or unknown-version record rather
-     * than throwing: a tombstone is a hint about leftover material, and failing to parse it must not
-     * take down the provider.
+     * Returns [ClaudePTombstoneRead.Absent] **only** when no record exists. A record that exists but
+     * cannot be parsed must be reported as [ClaudePTombstoneRead.Unusable] — never as absent, which
+     * would silently discard the only pointer to a key that may still exist.
+     *
+     * Implementations must not throw for a corrupt record: a tombstone is a hint about leftover
+     * material, and failing to parse it must not take down the provider.
      */
-    suspend fun read(): ClaudePCleanupTombstone?
+    suspend fun read(): ClaudePTombstoneRead
 
     /** Atomically persists [tombstone]. Returns `false` when it could not be stored durably. */
     suspend fun write(tombstone: ClaudePCleanupTombstone): Boolean
