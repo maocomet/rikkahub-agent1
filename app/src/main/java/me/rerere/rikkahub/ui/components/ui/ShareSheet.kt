@@ -110,35 +110,47 @@ fun decodeProviderSetting(value: String): ProviderSetting {
     val jsonBytes = Base64.decode(base64Str)
     val jsonStr = jsonBytes.decodeToString()
 
+    // The decoded value is untrusted: a QR code or a pasted blob can name any subtype with any
+    // fields, so it is normalised before anything else sees it.
     return JsonInstant.decodeFromString<ProviderSetting>(jsonStr).sanitizedAfterImport()
 }
 
 /**
  * Strips everything from an imported provider that must never be trusted from the wire.
  *
- * A provider string is untrusted input: it arrives from a QR code or a pasted blob, and it is
- * decoded polymorphically into any `ProviderSetting` subtype. Without this step a crafted payload
- * could produce an *enabled* Claude P provider claiming to be paired with an origin and fingerprint
- * the user never chose — the CP1-A report recorded exactly this gap
- * (`claudep/reports/CP1A-local-provider-skeleton-report.md` §9 #8).
+ * A provider string arrives from a QR code or a pasted blob and is decoded polymorphically into any
+ * `ProviderSetting` subtype. Without this step a crafted payload could produce an *enabled* Claude P
+ * claiming to be paired with an origin and fingerprint the user never chose — the gap recorded in the
+ * CP1-A report (`claudep/reports/CP1A-local-provider-skeleton-report.md` §9 #8).
  *
  * Claude P is the one type where "imported settings" and "paired device" are genuinely different
- * things: its authority is a Keystore key and an encrypted credential that a QR code cannot carry.
- * So an imported Claude P is always reset to *unpaired and disabled*, and the user has to scan a
- * real pairing code. This mirrors `claudep/00-scope-and-product-contract.md` §4 — the phone must
- * never accept a gateway endpoint it did not pair with.
+ * things: its authority is a Keystore-held key and an encrypted credential, and a QR code can carry
+ * neither. So an imported Claude P is always reset to **unpaired and disabled**, and the user must
+ * scan a real pairing code. That follows `claudep/00-scope-and-product-contract.md` §4 — the phone
+ * never accepts a gateway endpoint it did not pair with.
  *
- * Other provider types are returned unchanged: they carry their own credentials in their own fields,
+ * Other provider types are returned unchanged. They carry their own credentials in their own fields,
  * and silently rewriting them here would break ordinary provider sharing.
+ *
+ * **Test coverage note:** this rule is verified by static review only. It cannot be exercised by a
+ * plain JVM unit test because the import path decodes with `android.util.Base64`, which is an Android
+ * API with no JVM implementation, and this repository has neither Robolectric nor instrumented tests
+ * for this file. Lifting it into the `ai` module was attempted and reverted: `ProviderSetting` pulls
+ * in Compose types, which put it outside the local compile harness. See the CP1-B report, "未执行".
  */
 private fun ProviderSetting.sanitizedAfterImport(): ProviderSetting = when (this) {
     is ProviderSetting.ClaudeP -> copy(
+        // Never enabled on import: an enabled provider with no credential fails at request time,
+        // which is indistinguishable from a broken app.
         enabled = false,
         pairingState = ClaudePPairingState.NOT_PAIRED,
+        // The endpoint is *derived from pairing*, never from imported text.
         pairedOrigin = null,
         gatewayFingerprint = null,
         gatewayInstallationId = null,
         device = ClaudePDeviceDescriptor(),
+        // Catalog caches and the reported CLI version come from a gateway this device has not
+        // talked to, so they are stale by construction.
         cachedModels = emptyList(),
         catalogCachedAt = null,
         claudeCodeVersion = null,
