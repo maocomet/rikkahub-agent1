@@ -524,11 +524,51 @@ class ClaudePWssTransportTest {
 
     @Test
     fun `an unusable device key fails closed without opening a socket`() =
-        withClient(keyStore = { InMemoryClaudePDeviceKeyStore().apply { loadFails = true } }) { client, connector ->
+        withClient(configureKeyStore = { it.loadFails = true }) { client, connector ->
             gatewayFailure { hello(helloRequest()) }
 
             assertEquals(0, connector.connectCount)
             assertEquals(ClaudePConnectionState.CREDENTIAL_INVALID, client.connectionState.value)
+        }
+
+    @Test
+    fun `a credential whose device key is gone never connects and never mints a replacement`() =
+        runBlocking {
+            val keyStore = InMemoryClaudePDeviceKeyStore()
+            val fakeConnector = FakeClaudePWebSocketConnector()
+            val scope = CoroutineScope(Dispatchers.Unconfined)
+
+            // The credential survived (a restore, say) but the private key did not: `keyStore` is
+            // deliberately left empty.
+            val client = WssClaudePGatewayClient(
+                connector = fakeConnector,
+                endpoint = ENDPOINT,
+                accessProvider = { now ->
+                    ClaudePDeviceAccess("device-1", ClaudePAccessCredential("credential-value"), now + 3600)
+                },
+                deviceKeyStore = keyStore,
+                keyAlias = KEY_ALIAS,
+                scope = scope,
+                appVersion = "1.0-test",
+                reconnectPolicy = ClaudePReconnectPolicy(maxAttempts = 0),
+                sleeper = { },
+            )
+
+            val failure = try {
+                client.hello(helloRequest())
+                throw AssertionError("expected the handshake to fail closed")
+            } catch (expected: ClaudePGatewayException) {
+                expected
+            }
+
+            assertEquals(ClaudePErrorCode.DEVICE_REVOKED, failure.code)
+            // The three properties that matter, together: no socket, no credential on the wire, and
+            // no key manufactured to paper over the missing one.
+            assertEquals(0, fakeConnector.connectCount)
+            assertEquals(0, fakeConnector.connectRequests.size)
+            assertEquals(0, keyStore.createCount)
+            assertTrue(keyStore.aliases.isEmpty())
+            scope.cancel()
         }
 
     // ---------------------------------------------------------------------------------------
@@ -543,7 +583,12 @@ class ClaudePWssTransportTest {
      */
     private fun withClient(
         connector: () -> FakeClaudePWebSocketConnector = { FakeClaudePWebSocketConnector() },
-        keyStore: () -> ClaudePDeviceKeyStore = { InMemoryClaudePDeviceKeyStore() },
+        keyStore: InMemoryClaudePDeviceKeyStore = InMemoryClaudePDeviceKeyStore(),
+        /**
+         * Applied *after* the pairing-created key is staged, so a test can break it — a wiped
+         * Keystore, a device-credential invalidation — without also removing it.
+         */
+        configureKeyStore: (InMemoryClaudePDeviceKeyStore) -> Unit = {},
         accessProvider: (Long) -> ClaudePDeviceAccess? = { now ->
             ClaudePDeviceAccess("device-1", ClaudePAccessCredential("credential-value"), now + 3600)
         },
@@ -552,12 +597,17 @@ class ClaudePWssTransportTest {
     ) = runBlocking {
         val fakeConnector = connector()
         val scope = CoroutineScope(Dispatchers.Unconfined)
+        // The runtime handshake may only *load* a key. Staging the key that pairing would have
+        // created is what makes these tests exercise the real path rather than a store that quietly
+        // mints whatever is asked for.
+        keyStore.createFresh(KEY_ALIAS)
+        configureKeyStore(keyStore)
         val client = WssClaudePGatewayClient(
             connector = fakeConnector,
             endpoint = ENDPOINT,
             accessProvider = { now -> accessProvider(now) },
-            deviceKeyStore = keyStore(),
-            keyAlias = "test-key",
+            deviceKeyStore = keyStore,
+            keyAlias = KEY_ALIAS,
             scope = scope,
             appVersion = "1.0-test",
             reconnectPolicy = reconnectPolicy,
@@ -622,6 +672,9 @@ class ClaudePWssTransportTest {
     )
 
     private companion object {
+        /** The alias pairing would have recorded in the credential for this device. */
+        const val KEY_ALIAS = "test-key"
+
         val ENDPOINT: ClaudePEndpoint =
             (ClaudePEndpoint.parse("https://gateway.example.com") as ClaudePEndpointResult.Accepted)
                 .endpoint

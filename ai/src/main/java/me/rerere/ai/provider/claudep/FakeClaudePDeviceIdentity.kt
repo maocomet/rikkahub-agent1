@@ -23,23 +23,49 @@ class InMemoryClaudePDeviceKeyStore : ClaudePDeviceKeyStore {
     private val lock = Any()
     private val keys = mutableMapOf<String, InMemoryClaudePDeviceKey>()
 
-    /** When set, every load reports "the key is gone", as a wiped Keystore would. */
+    /** When set, every operation reports "the key is gone", as a wiped Keystore would. */
     @Volatile
     var loadFails: Boolean = false
 
-    /** Aliases created so far, oldest first — lets a test assert teardown removed the key. */
+    /** When set, creation fails — a Keystore that refuses to mint a key. */
+    @Volatile
+    var createFails: Boolean = false
+
+    /** When set, deletion reports failure, so the unpair path has to handle a stuck key. */
+    @Volatile
+    var deleteFails: Boolean = false
+
+    /** Aliases present, oldest first — lets a test assert teardown removed the key. */
     val aliases: List<String>
         get() = synchronized(lock) { keys.keys.toList() }
 
-    override suspend fun loadOrCreate(keyAlias: String): ClaudePDeviceKey? {
-        if (loadFails) return null
-        return synchronized(lock) {
-            keys.getOrPut(keyAlias) { InMemoryClaudePDeviceKey(keyAlias) }
+    /** Keys minted by [createFresh]. A runtime [loadExisting] never increments this. */
+    @Volatile
+    var createCount: Int = 0
+        private set
+
+    override suspend fun createFresh(keyAlias: String): ClaudePDeviceKey? {
+        if (createFails) return null
+        val key = InMemoryClaudePDeviceKey(keyAlias)
+        synchronized(lock) {
+            createCount += 1
+            // Replacing is explicit here: this is the one operation allowed to supersede an identity.
+            keys[keyAlias] = key
         }
+        return key
     }
 
-    override suspend fun delete(keyAlias: String) {
+    override suspend fun loadExisting(keyAlias: String): ClaudePDeviceKey? {
+        if (loadFails) return null
+        // Deliberately `get`, not `getOrPut`: loading must never mint a key. A test that breaks the
+        // real key and then sees a healthy store still fail closed is testing exactly this.
+        return synchronized(lock) { keys[keyAlias] }
+    }
+
+    override suspend fun delete(keyAlias: String): Boolean {
+        if (deleteFails) return false
         synchronized(lock) { keys.remove(keyAlias) }
+        return synchronized(lock) { !keys.containsKey(keyAlias) }
     }
 }
 
@@ -115,15 +141,37 @@ class InMemoryClaudePDeviceCredentialStore : ClaudePDeviceCredentialStore {
         return stored?.let { ClaudePCredentialRead.Present(it) } ?: ClaudePCredentialRead.Absent
     }
 
-    override suspend fun write(device: ClaudePPairedDevice) {
+    /** When set, [write] reports these failures and stores nothing. */
+    @Volatile
+    var writeFailures: List<ClaudePCredentialStoreFailure> = emptyList()
+
+    /** When set, [clear] reports these failures (and, like the real store, may leave data behind). */
+    @Volatile
+    var clearFailures: List<ClaudePCredentialStoreFailure> = emptyList()
+
+    /** When true, [clear] reports a failure *and* keeps the record — a stuck deletion. */
+    @Volatile
+    var clearKeepsData: Boolean = false
+
+    override suspend fun write(device: ClaudePPairedDevice): List<ClaudePCredentialStoreFailure> {
+        if (writeFailures.isNotEmpty()) return writeFailures
         writeCount += 1
         readFailure = null
         stored = device
+        return emptyList()
     }
 
-    override suspend fun clear() {
+    override suspend fun clear(): List<ClaudePCredentialStoreFailure> {
+        if (clearFailures.isNotEmpty()) {
+            if (!clearKeepsData) {
+                stored = null
+                readFailure = null
+            }
+            return clearFailures
+        }
         stored = null
         readFailure = null
+        return emptyList()
     }
 }
 

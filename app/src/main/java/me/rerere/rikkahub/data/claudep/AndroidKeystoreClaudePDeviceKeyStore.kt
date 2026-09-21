@@ -19,54 +19,86 @@ import me.rerere.ai.provider.claudep.ClaudePDeviceKeyStore
  *
  * `claudep/01-architecture-and-trust-boundaries.md` §4 allows either. Ed25519 is only available in
  * the Android Keystore from API 33, and this module's `minSdk` is 26, so P-256 is the choice that
- * actually holds across the supported range. `Signature.getInstance("SHA256withECDSA")` verifies
- * on any JVM or server runtime without a special provider.
+ * actually holds across the supported range. `Signature.getInstance("SHA256withECDSA")` verifies on
+ * any JVM or server runtime without a special provider.
+ *
+ * ### Creation and loading are separate, deliberately
+ *
+ * [createFresh] is the only method that mints a key, and only the pairing path calls it.
+ * [loadExisting] never creates one. The runtime handshake uses the latter, so a device whose private
+ * key is gone — after a restore, a Keystore invalidation, or a wipe — fails closed instead of quietly
+ * generating a replacement and presenting it next to a credential the gateway issued for a different
+ * identity.
  *
  * ### Fail-closed, everywhere
  *
- * Every method returns `null` rather than throwing when the key is missing, unreadable or
+ * Every method returns `null`/`false` rather than throwing when the key is missing, unreadable or
  * unusable. A Keystore key can be permanently invalidated by a device-credential change, and a
  * device restore can leave an alias present but undecryptable. Those are ordinary states, and the
- * only safe mapping for them is "this device is not paired" — never an exception a caller might
- * swallow and continue past.
+ * only safe mapping for them is "this device cannot prove its identity" — never an exception a caller
+ * might swallow and continue past.
  */
 class AndroidKeystoreClaudePDeviceKeyStore : ClaudePDeviceKeyStore {
 
-    override suspend fun loadOrCreate(keyAlias: String): ClaudePDeviceKey? {
+    override suspend fun createFresh(keyAlias: String): ClaudePDeviceKey? {
         if (keyAlias.isBlank()) return null
         return try {
-            val entry = loadKeyStore().getEntry(keyAlias, null)
+            val keyStore = loadKeyStore()
+            // Explicit replacement. `createFresh` is the one operation permitted to supersede an
+            // identity, and pairing only calls it with a fresh per-attempt alias.
+            if (keyStore.containsAlias(keyAlias)) keyStore.deleteEntry(keyAlias)
+            generateKeyPair(keyAlias)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Claude P device key creation failed: ${t::class.java.simpleName}")
+            null
+        }
+    }
+
+    override suspend fun loadExisting(keyAlias: String): ClaudePDeviceKey? {
+        if (keyAlias.isBlank()) return null
+        return try {
+            val keyStore = loadKeyStore()
+            // Checked explicitly so a missing alias is a definite `null` rather than relying on the
+            // provider's behaviour — and so no code path here can ever fall through to generating.
+            if (!keyStore.containsAlias(keyAlias)) return null
+
+            val entry = keyStore.getEntry(keyAlias, null)
             if (entry is KeyStore.PrivateKeyEntry) {
                 // The Keystore stores a self-signed certificate alongside an asymmetric key pair;
                 // its public key is how the public half is recovered for the pairing request and for
                 // the handshake transcript.
                 AndroidKeystoreDeviceKey(keyAlias, entry.privateKey, entry.certificate?.publicKey)
-            } else if (entry != null) {
-                // Something else is sitting under our alias. Refusing is the only safe answer: it is
-                // not our key, and overwriting it could destroy another feature's material.
+            } else {
+                // Something else is under our alias. Refusing is the only safe answer: it is not our
+                // key, and an earlier revision would have overwritten it here.
                 Log.w(TAG, "Claude P key alias holds a non-private-key entry; refusing to use it")
                 null
-            } else {
-                generateKeyPair(keyAlias)
             }
         } catch (t: Throwable) {
-            // Covers UnrecoverableKeyException, KeyPermanentlyInvalidatedException, provider
-            // failures and a corrupt keystore alike. The distinction is not actionable here; the
-            // outcome is the same and the message may name key material.
+            // UnrecoverableKeyException, KeyPermanentlyInvalidatedException, provider failures and a
+            // corrupt keystore all land here. The distinction is not actionable; the message may
+            // name key material, so only the class name is logged.
             Log.w(TAG, "Claude P device key unavailable: ${t::class.java.simpleName}")
             null
         }
     }
 
-    override suspend fun delete(keyAlias: String) {
-        try {
-            loadKeyStore().apply { deleteEntry(keyAlias) }
-        } catch (t: Throwable) {
-            Log.w(TAG, "Claude P device key deletion failed: ${t::class.java.simpleName}")
-        }
+    /**
+     * Deletes the key and reports whether it is actually gone.
+     *
+     * `false` is a real outcome, not a warning: an unpair that could not remove the private key has
+     * not removed the device's ability to authenticate.
+     */
+    override suspend fun delete(keyAlias: String): Boolean = try {
+        val keyStore = loadKeyStore()
+        if (keyStore.containsAlias(keyAlias)) keyStore.deleteEntry(keyAlias)
+        !keyStore.containsAlias(keyAlias)
+    } catch (t: Throwable) {
+        Log.w(TAG, "Claude P device key deletion failed: ${t::class.java.simpleName}")
+        false
     }
 
-    private fun generateKeyPair(keyAlias: String): ClaudePDeviceKey? {
+    private fun generateKeyPair(keyAlias: String): ClaudePDeviceKey {
         val generator = KeyPairGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_EC,
             ANDROID_KEYSTORE,

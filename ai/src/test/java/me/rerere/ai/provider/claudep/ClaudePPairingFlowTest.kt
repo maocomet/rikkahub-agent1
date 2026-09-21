@@ -27,7 +27,7 @@ class ClaudePPairingFlowTest {
     fun `a valid invitation produces a device identity bound to the scanned gateway`() = runBlocking {
         val keyStore = InMemoryClaudePDeviceKeyStore()
         val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT)
-        val client = ClaudePPairingClient(transport, keyStore, APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
 
         val outcome = client.pair(invitation(), "Pixel", NOW)
 
@@ -45,7 +45,7 @@ class ClaudePPairingFlowTest {
     fun `the device key survives a successful pairing`() = runBlocking {
         val keyStore = InMemoryClaudePDeviceKeyStore()
         val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT)
-        val client = ClaudePPairingClient(transport, keyStore, APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
 
         client.pair(invitation(), "Pixel", NOW)
 
@@ -55,7 +55,7 @@ class ClaudePPairingFlowTest {
     @Test
     fun `the gateway can verify the possession proof the client sent`() = runBlocking {
         val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT)
-        val client = ClaudePPairingClient(transport, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
 
         client.pair(invitation(), "Pixel", NOW)
 
@@ -74,7 +74,7 @@ class ClaudePPairingFlowTest {
             gatewayFingerprint = FINGERPRINT,
             expectedOrigin = "https://evil.example.com",
         )
-        val client = ClaudePPairingClient(transport, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
 
         val outcome = client.pair(invitation(), "Pixel", NOW)
 
@@ -90,7 +90,7 @@ class ClaudePPairingFlowTest {
     fun `an expired ticket is refused locally without contacting the gateway`() = runBlocking {
         val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT)
         val keyStore = InMemoryClaudePDeviceKeyStore()
-        val client = ClaudePPairingClient(transport, keyStore, APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
 
         val outcome = client.pair(invitation(expiresAt = NOW - 1), "Pixel", NOW)
 
@@ -107,7 +107,7 @@ class ClaudePPairingFlowTest {
     @Test
     fun `a ticket that already produced a pairing cannot be used again`() = runBlocking {
         val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT)
-        val client = ClaudePPairingClient(transport, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
 
         val first = client.pair(invitation(), "Pixel", NOW)
         val second = client.pair(invitation(), "Pixel", NOW)
@@ -128,7 +128,7 @@ class ClaudePPairingFlowTest {
             gatewayFingerprint = FINGERPRINT,
             gate = gate,
         )
-        val client = ClaudePPairingClient(transport, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
         val shared = invitation()
 
         // The first exchange is held open mid-flight, so the second genuinely overlaps it.
@@ -156,7 +156,7 @@ class ClaudePPairingFlowTest {
             allowTicketReuse = false,
         )
         val client = ClaudePPairingClient(
-            transport,
+            { transport },
             InMemoryClaudePDeviceKeyStore(),
             APP_VERSION,
             // A guard that has forgotten everything, so the *server* is what refuses.
@@ -186,7 +186,7 @@ class ClaudePPairingFlowTest {
             stateTransform = { "not-the-state-we-sent" },
         )
         val keyStore = InMemoryClaudePDeviceKeyStore()
-        val client = ClaudePPairingClient(transport, keyStore, APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
 
         val outcome = client.pair(invitation(), "Pixel", NOW)
 
@@ -201,7 +201,7 @@ class ClaudePPairingFlowTest {
             fingerprintOverride = OTHER_FINGERPRINT,
         )
         val keyStore = InMemoryClaudePDeviceKeyStore()
-        val client = ClaudePPairingClient(transport, keyStore, APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
 
         val outcome = client.pair(invitation(), "Pixel", NOW)
 
@@ -215,7 +215,7 @@ class ClaudePPairingFlowTest {
             gatewayFingerprint = FINGERPRINT,
             protocolId = "rikkahub.claude-p.v2",
         )
-        val client = ClaudePPairingClient(transport, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
 
         val outcome = client.pair(invitation(), "Pixel", NOW)
 
@@ -228,7 +228,7 @@ class ClaudePPairingFlowTest {
             gatewayFingerprint = FINGERPRINT,
             rawBody = """{"protocol":"rikkahub.claude-p.v1"}""",
         )
-        val client = ClaudePPairingClient(transport, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
 
         val outcome = client.pair(invitation(), "Pixel", NOW)
 
@@ -241,7 +241,7 @@ class ClaudePPairingFlowTest {
             gatewayFingerprint = FINGERPRINT,
             httpStatus = 403,
         )
-        val client = ClaudePPairingClient(transport, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, InMemoryClaudePDeviceKeyStore(), APP_VERSION)
 
         val outcome = client.pair(invitation(), "Pixel", NOW)
 
@@ -255,7 +255,7 @@ class ClaudePPairingFlowTest {
             failure = ClaudePPairingTransportFailure.TLS,
         )
         val keyStore = InMemoryClaudePDeviceKeyStore()
-        val client = ClaudePPairingClient(transport, keyStore, APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
 
         val outcome = client.pair(invitation(), "Pixel", NOW)
 
@@ -266,13 +266,81 @@ class ClaudePPairingFlowTest {
     @Test
     fun `an unavailable device key fails closed without contacting the gateway`() = runBlocking {
         val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT)
-        val keyStore = InMemoryClaudePDeviceKeyStore().apply { loadFails = true }
-        val client = ClaudePPairingClient(transport, keyStore, APP_VERSION)
+        // Pairing *creates* an identity, so the failure it must survive is a Keystore that refuses
+        // to mint one. A `loadFails` store is irrelevant here — pairing never loads.
+        val keyStore = InMemoryClaudePDeviceKeyStore().apply { createFails = true }
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
 
         val outcome = client.pair(invitation(), "Pixel", NOW)
 
         assertEquals(ClaudePPairingOutcome.Rejected(ClaudePPairingFailure.KEY_UNAVAILABLE), outcome)
         assertEquals(0, transport.sendCount)
+    }
+
+    @Test
+    fun `a device whose key cannot be signed with never reaches the gateway`() = runBlocking {
+        val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT)
+        val keyStore = object : ClaudePDeviceKeyStore by InMemoryClaudePDeviceKeyStore() {
+            override suspend fun createFresh(keyAlias: String): ClaudePDeviceKey? =
+                (InMemoryClaudePDeviceKeyStore().createFresh(keyAlias) as InMemoryClaudePDeviceKey)
+                    .apply { signFails = true }
+        }
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
+
+        val outcome = client.pair(invitation(), "Pixel", NOW)
+
+        assertEquals(ClaudePPairingOutcome.Rejected(ClaudePPairingFailure.KEY_UNAVAILABLE), outcome)
+        // No proof could be produced, so nothing was presented — and the attempt's key was cleaned up.
+        assertEquals(0, transport.sendCount)
+    }
+
+    @Test
+    fun `a failed attempt never destroys a key belonging to another attempt`() = runBlocking {
+        val keyStore = InMemoryClaudePDeviceKeyStore()
+        val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT)
+
+        // One pairing succeeds and leaves its key in place.
+        val good = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
+        val paired = good.pair(invitation(), "Pixel", NOW) as ClaudePPairingOutcome.Paired
+        val survivorAlias = paired.device.keyAlias
+        assertTrue(keyStore.deleteFails == false)
+        assertTrue(keyStore.aliases.contains(survivorAlias))
+
+        // A second, failing attempt must not remove it. A fixed shared alias would have.
+        val failing = ClaudePPairingClient(
+            { transport },
+            keyStore,
+            APP_VERSION,
+            consumedTickets = object : ClaudePConsumedTicketGuard {
+                override fun isConsumed(ticketDigest: String) = false
+                override fun consume(ticketDigest: String) = Unit
+            },
+            keyAliasPrefix = "other-attempt-prefix-",
+        )
+        val rejected = failing.pair(invitation(), "Pixel", NOW)
+
+        assertTrue(rejected is ClaudePPairingOutcome.Rejected)
+        assertTrue(
+            "the successful attempt's key must survive another attempt's cleanup",
+            keyStore.aliases.contains(survivorAlias),
+        )
+    }
+
+    @Test
+    fun `a key that could not be cleaned up is reported rather than swallowed`() = runBlocking {
+        val transport = FakeClaudePPairingTransport(
+            gatewayFingerprint = FINGERPRINT,
+            // The exchange is refused, so the attempt's key must be destroyed and the failure reported.
+            stateTransform = { "not-the-state-we-sent" },
+        )
+        val keyStore = InMemoryClaudePDeviceKeyStore().apply { deleteFails = true }
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
+
+        val outcome = client.pair(invitation(), "Pixel", NOW) as ClaudePPairingOutcome.Rejected
+
+        assertEquals(ClaudePPairingFailure.STATE_MISMATCH, outcome.reason)
+        // Reporting success here would tell the user the attempt left nothing behind.
+        assertEquals(listOf(ClaudePPairingCleanupFailure.KEY_NOT_DELETED), outcome.cleanupFailures)
     }
 
     // ---------------------------------------------------------------------------------------
@@ -284,7 +352,7 @@ class ClaudePPairingFlowTest {
         val gate = CompletableDeferred<Unit>()
         val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT, gate = gate)
         val keyStore = InMemoryClaudePDeviceKeyStore()
-        val client = ClaudePPairingClient(transport, keyStore, APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
 
         val pending = async(Dispatchers.Unconfined) { client.pair(invitation(), "Pixel", NOW) }
         // The exchange is in flight; the user backs out.
@@ -300,7 +368,7 @@ class ClaudePPairingFlowTest {
         val gate = CompletableDeferred<Unit>()
         val transport = FakeClaudePPairingTransport(gatewayFingerprint = FINGERPRINT, gate = gate)
         val keyStore = InMemoryClaudePDeviceKeyStore()
-        val client = ClaudePPairingClient(transport, keyStore, APP_VERSION)
+        val client = ClaudePPairingClient({ transport }, keyStore, APP_VERSION)
         val shared = invitation()
 
         val pending = async(Dispatchers.Unconfined) { client.pair(shared, "Pixel", NOW) }

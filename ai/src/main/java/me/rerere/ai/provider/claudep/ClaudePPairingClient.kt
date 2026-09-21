@@ -30,15 +30,21 @@ import kotlinx.serialization.decodeFromString
  * `ClaudePDevicePairingRepository`, which is the single owner of paired state.
  */
 class ClaudePPairingClient(
-    private val transport: ClaudePPairingTransport,
+    /**
+     * Builds the transport for a specific gateway.
+     *
+     * A factory rather than a ready transport because the endpoint is only known once the QR has been
+     * parsed — and because one client instance must outlive a single exchange. That is what makes the
+     * mutex and the consumed-ticket guard in this class actually serialise concurrent attempts: an
+     * earlier revision constructed a fresh client per call, so each one had its own mutex and its own
+     * empty guard, and two taps on the same QR could both reach the gateway.
+     */
+    private val transportFor: (ClaudePEndpoint) -> ClaudePPairingTransport,
     private val keyStore: ClaudePDeviceKeyStore,
     private val appVersion: String,
     private val consumedTickets: ClaudePConsumedTicketGuard = InMemoryConsumedTicketGuard(),
-    /**
-     * Alias for the device key. Must be stable for the lifetime of a pairing, and must be
-     * *different* for a re-pairing so a revoked identity cannot be silently reused.
-     */
-    private val keyAlias: String = DEFAULT_KEY_ALIAS,
+    /** Prefix for the per-attempt device key alias. */
+    private val keyAliasPrefix: String = KEY_ALIAS_PREFIX,
 ) {
     private val pairingMutex = Mutex()
 
@@ -62,10 +68,15 @@ class ClaudePPairingClient(
             return@withLock ClaudePPairingOutcome.Rejected(ClaudePPairingFailure.TICKET_ALREADY_USED)
         }
 
-        val key = keyStore.loadOrCreate(keyAlias)
+        // A **new** identity for every attempt. Reusing a fixed alias would mean two attempts share
+        // one key, so a failing attempt's cleanup could delete the key a concurrently-succeeding
+        // attempt just registered — and a re-pairing could silently resurrect a revoked identity.
+        val attemptAlias = "$keyAliasPrefix${ClaudePRandom.base64Url(ClaudePRandom.randomBytes(ATTEMPT_ID_BYTES))}"
+
+        val key = keyStore.createFresh(attemptAlias)
             ?: return@withLock ClaudePPairingOutcome.Rejected(ClaudePPairingFailure.KEY_UNAVAILABLE)
-        val publicKey = key.publicKeyDer()
-            ?: return@withLock ClaudePPairingOutcome.Rejected(ClaudePPairingFailure.KEY_UNAVAILABLE)
+        val publicKey = key.publicKeyDer() ?: return@withLock ClaudePPairingOutcome
+            .Rejected(ClaudePPairingFailure.KEY_UNAVAILABLE, cleanupAttempt(attemptAlias))
 
         val state = ClaudePRandom.nonce()
         val challenge = ClaudePRandom.nonce()
@@ -79,8 +90,8 @@ class ClaudePPairingClient(
             challenge = challenge,
             appVersion = appVersion,
         )
-        val proof = key.sign(transcript)
-            ?: return@withLock ClaudePPairingOutcome.Rejected(ClaudePPairingFailure.KEY_UNAVAILABLE)
+        val proof = key.sign(transcript) ?: return@withLock ClaudePPairingOutcome
+            .Rejected(ClaudePPairingFailure.KEY_UNAVAILABLE, cleanupAttempt(attemptAlias))
 
         val request = ClaudePPairingWireRequest(
             protocol = ClaudePProtocol.PROTOCOL_ID,
@@ -93,28 +104,44 @@ class ClaudePPairingClient(
             proof = ClaudePRandom.base64Url(proof),
         )
 
-        // From here on, any exit other than a completed pairing destroys the key. A half-finished
-        // pairing must not leave a private key behind for a gateway that never authorised it.
+        // From here on, any exit other than a completed pairing destroys *this attempt's* key. A
+        // half-finished pairing must not leave a private key behind, and it must not touch any other
+        // attempt's key.
         var paired = false
+        var cleaned = false
         try {
-            val response = transport.send(request)
-            val outcome = response.toOutcome(invitation, deviceName, keyAlias, state)
+            val response = transportFor(invitation.endpoint).send(request)
+            val outcome = response.toOutcome(invitation, deviceName, attemptAlias, state)
             if (outcome is ClaudePPairingOutcome.Paired) {
                 paired = true
                 consumedTickets.consume(ticketDigest)
+                return@withLock outcome
             }
-            return@withLock outcome
+            val failures = cleanupAttempt(attemptAlias)
+            cleaned = true
+            return@withLock (outcome as ClaudePPairingOutcome.Rejected).copy(cleanupFailures = failures)
         } finally {
-            if (!paired) {
-                // `NonCancellable` because this cleanup runs on the cancellation path too: a user
-                // who cancels pairing must still get their key material destroyed, and a suspending
-                // cleanup would otherwise be skipped exactly when it matters.
-                withContext(NonCancellable) {
-                    runCatching { keyStore.delete(keyAlias) }
-                }
+            if (!paired && !cleaned) {
+                // Reached only when the exchange threw or was cancelled. `NonCancellable` because a
+                // user who cancels pairing must still get their key material destroyed, and a
+                // suspending cleanup would otherwise be skipped exactly when it matters.
+                withContext(NonCancellable) { cleanupAttempt(attemptAlias) }
             }
         }
     }
+
+    /**
+     * Destroys one attempt's key, reporting — rather than swallowing — a failure.
+     *
+     * A key that could not be deleted is inert on its own (no credential references this alias), but
+     * silently ignoring the failure would make an unpair look complete when material remains.
+     */
+    private suspend fun cleanupAttempt(alias: String): List<ClaudePPairingCleanupFailure> =
+        if (keyStore.delete(alias)) {
+            emptyList()
+        } else {
+            listOf(ClaudePPairingCleanupFailure.KEY_NOT_DELETED)
+        }
 
     private suspend fun ClaudePPairingTransportResult.toOutcome(
         invitation: ClaudePPairingInvitation,
@@ -175,16 +202,30 @@ class ClaudePPairingClient(
         )
     }
 
-    private companion object {
+    companion object {
         /**
-         * Fixed alias rather than a random one.
+         * Prefix for per-attempt device key aliases.
          *
-         * A re-pairing must replace the previous identity, and the Keystore replaces a key stored
-         * under the same alias — which is exactly the behaviour wanted here. A random alias per
-         * attempt would silently accumulate orphaned private keys.
+         * A random suffix per attempt, rather than one fixed alias, so that:
+         *
+         * - a failed or cancelled attempt can only ever destroy its *own* key, never the key a
+         *   concurrently-succeeding attempt just registered;
+         * - a re-pairing cannot silently reuse a revoked identity.
+         *
+         * The suffix is persisted in the paired-device record, so the runtime side can load exactly
+         * the key that pairing created.
          */
-        const val DEFAULT_KEY_ALIAS = "rikkahub_claude_p_device_key_v1"
+        const val KEY_ALIAS_PREFIX = "rikkahub_claude_p_device_key_v1_"
+
+        /** 72 bits of attempt id: enough that two attempts cannot collide in practice. */
+        private const val ATTEMPT_ID_BYTES = 9
     }
+}
+
+/** Something that should have been destroyed and, as far as the device can tell, was not. */
+enum class ClaudePPairingCleanupFailure {
+    /** The attempt's device key could not be deleted. */
+    KEY_NOT_DELETED,
 }
 
 /**
@@ -235,7 +276,14 @@ class InMemoryConsumedTicketGuard(
 sealed interface ClaudePPairingOutcome {
     data class Paired(val device: ClaudePPairedDevice) : ClaudePPairingOutcome
 
-    data class Rejected(val reason: ClaudePPairingFailure) : ClaudePPairingOutcome
+    /**
+     * [cleanupFailures] is non-empty when something the attempt created could not be destroyed.
+     * Callers must surface it rather than treat the attempt as cleanly abandoned.
+     */
+    data class Rejected(
+        val reason: ClaudePPairingFailure,
+        val cleanupFailures: List<ClaudePPairingCleanupFailure> = emptyList(),
+    ) : ClaudePPairingOutcome
 }
 
 /** Why pairing did not produce a device. Stable enum — safe to show and to log. */
@@ -266,4 +314,13 @@ enum class ClaudePPairingFailure {
 
     /** The exchange never completed. */
     TRANSPORT_FAILED,
+
+    /**
+     * The exchange succeeded but the result could not be stored durably.
+     *
+     * A distinct code because it is the one failure where the gateway *did* authorise this device and
+     * the app threw the result away. It is recoverable only by pairing again — the credential the
+     * gateway just issued has been destroyed, and the ticket that produced it is spent.
+     */
+    PAIRING_NOT_PERSISTED,
 }

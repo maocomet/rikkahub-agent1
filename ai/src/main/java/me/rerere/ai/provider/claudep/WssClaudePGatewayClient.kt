@@ -127,7 +127,7 @@ class WssClaudePGatewayClient(
      */
     override suspend fun hello(request: ClaudePClientHelloBody): ClaudePServerHelloBody {
         val ready = ensureSession()
-        val key = deviceKeyStore.loadOrCreate(keyAlias)
+        val key = deviceKeyStore.loadExisting(keyAlias)
             ?: throw failClosed(
                 ClaudePConnectionState.CREDENTIAL_INVALID,
                 ClaudePErrorCode.DEVICE_REVOKED,
@@ -463,7 +463,7 @@ class WssClaudePGatewayClient(
                 ClaudePConnectionState.CREDENTIAL_INVALID,
                 ClaudePErrorCode.AUTHENTICATION_REQUIRED,
             )
-        val key = deviceKeyStore.loadOrCreate(keyAlias)
+        val key = deviceKeyStore.loadExisting(keyAlias)
             ?: return failConnect(
                 ClaudePConnectionState.CREDENTIAL_INVALID,
                 ClaudePErrorCode.DEVICE_REVOKED,

@@ -1473,6 +1473,14 @@ val dataSourceModule = module {
         )
     }
 
+    // Claude P gets its **own** OkHttp client, built from a fresh builder rather than derived from
+    // the shared one. `newBuilder()` copies interceptor lists, so deriving would have carried the
+    // shared request-logging, debug header-logging and AI interceptors onto credential-bearing
+    // traffic — the `Authorization` header, the pairing ticket and the possession proof.
+    // `ClaudePOkHttp.newIsolated()` has no interceptors at all, and the connectors strip them again
+    // defensively. See `ai/.../claudep/ClaudePOkHttp.kt` and `ClaudePOkHttpTest`.
+    single(named("claude_p")) { me.rerere.ai.provider.claudep.ClaudePOkHttp.newIsolated() }
+
     // Claude P pairing state. Declared before the ProviderManager block so the provider below can
     // resolve its transport from a real instance rather than through a late `get()`.
     single {
@@ -1483,7 +1491,7 @@ val dataSourceModule = module {
                 json = get(),
             ),
             deviceKeyStore = me.rerere.rikkahub.data.claudep.AndroidKeystoreClaudePDeviceKeyStore(),
-            okHttpClient = get(),
+            okHttpClient = get(named("claude_p")),
             scope = get(),
             appVersion = me.rerere.rikkahub.BuildConfig.VERSION_NAME,
         )

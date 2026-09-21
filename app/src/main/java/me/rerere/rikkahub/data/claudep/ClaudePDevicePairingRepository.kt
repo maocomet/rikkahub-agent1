@@ -2,6 +2,7 @@ package me.rerere.rikkahub.data.claudep
 
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,9 +19,10 @@ import me.rerere.ai.provider.claudep.ClaudePDeviceDescriptor
 import me.rerere.ai.provider.claudep.ClaudePDeviceKeyStore
 import me.rerere.ai.provider.claudep.ClaudePEndpoint
 import me.rerere.ai.provider.claudep.ClaudePEndpointResult
+import me.rerere.ai.provider.claudep.ClaudePGatewayClient
+import me.rerere.ai.provider.claudep.ClaudePPairedDevice
 import me.rerere.ai.provider.claudep.ClaudePPairingClient
 import me.rerere.ai.provider.claudep.ClaudePPairingFailure
-import me.rerere.ai.provider.claudep.ClaudePPairingInvitation
 import me.rerere.ai.provider.claudep.ClaudePPairingInvitationParser
 import me.rerere.ai.provider.claudep.ClaudePPairingOutcome
 import me.rerere.ai.provider.claudep.ClaudePPairingRejection
@@ -40,15 +42,21 @@ import okhttp3.OkHttpClient
  * ### Why this class exists
  *
  * Paired state is split across three places that can disagree: `ProviderSetting.ClaudeP` in ordinary
- * settings JSON, the access credential in an encrypted store, and the Keystore-held device key. Any
- * code that reads one of those directly will eventually read a stale one. Everything else in the app
- * therefore asks this repository, which reconciles them through [ClaudePUiStatusMapper] and never
- * answers from a single source.
+ * settings JSON, the access credential in an encrypted store, and the Keystore-held device key. Code
+ * that reads one of them directly will eventually read a stale one. Everything else asks this
+ * repository, which reconciles all three and never answers from a single source.
  *
- * ### What it does not do
+ * ### What it owns, and why ownership matters
  *
- * It does not build prompts, map chunks or talk to a model. It pairs, unpairs, and hands out a
- * transport. The provider above it owns generation semantics.
+ * - **Pairing serialisation.** Exactly one [ClaudePPairingClient] instance exists for the lifetime of
+ *   the repository, so its mutex and its consumed-ticket guard span every call. An earlier revision
+ *   built a fresh client per `pair()`, which gave each call its own mutex and its own empty guard —
+ *   so two taps on one QR could both reach the gateway.
+ * - **Transport lifetime.** At most one [WssClaudePGatewayClient] exists, keyed to the exact device
+ *   identity it was built for. A change of credential, key or origin destroys it rather than letting
+ *   a socket keep authenticating with state the app no longer believes.
+ * - **Revocation authority.** [unpair] moves the logical state to a non-dispatchable one *before*
+ *   touching any storage, so a cleanup failure can never leave a dispatchable device behind.
  */
 class ClaudePDevicePairingRepository(
     private val settingsStore: SettingsStore,
@@ -61,33 +69,50 @@ class ClaudePDevicePairingRepository(
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
     private val _pairingInFlight = MutableStateFlow(false)
-
-    /**
-     * The live transport, once a gateway client has been built for the current pairing.
-     *
-     * Rebuilt whenever the pairing changes: a credential that changes must not leave a socket
-     * authenticated with the old one (`claudep/03-security-and-operations.md` §10).
-     */
-    private var gatewayClient: WssClaudePGatewayClient? = null
-
     private val _connectionState = MutableStateFlow(ClaudePConnectionState.DISCONNECTED)
+    private val _status = MutableStateFlow(ClaudePUiStatus.NOT_PAIRED)
+    private val _lastFailure = MutableStateFlow<ClaudePPairingFailure?>(null)
+    private val _lastCleanupFailures = MutableStateFlow<List<ClaudePPairingCleanupFailure>>(emptyList())
 
     /** Connection lifecycle of the current transport, or `DISCONNECTED` when there is none. */
     val connectionState: StateFlow<ClaudePConnectionState> = _connectionState.asStateFlow()
 
-    private val _status = MutableStateFlow(ClaudePUiStatus.NOT_PAIRED)
-
     /** The status the settings screen renders. Derived; never written from the UI. */
     val status: StateFlow<ClaudePUiStatus> = _status.asStateFlow()
-
-    private val _lastFailure = MutableStateFlow<ClaudePPairingFailure?>(null)
 
     /** The last pairing failure, for a one-shot message. */
     val lastFailure: StateFlow<ClaudePPairingFailure?> = _lastFailure.asStateFlow()
 
+    /** Failures from the most recent unattempted-cleanup, non-empty only when something leaked. */
+    val lastCleanupFailures: StateFlow<List<ClaudePPairingCleanupFailure>> =
+        _lastCleanupFailures.asStateFlow()
+
+    /**
+     * The one pairing client. Built once and reused, which is what makes its mutex and its
+     * consumed-ticket guard span calls.
+     */
+    private val pairingClient: ClaudePPairingClient by lazy {
+        ClaudePPairingClient(
+            // Endpoint is only known after the QR is parsed, so the transport is built per attempt —
+            // but the *client* stays, and it is the client that serialises.
+            transportFor = { endpoint -> OkHttpClaudePPairingTransport(okHttpClient, endpoint) },
+            keyStore = deviceKeyStore,
+            appVersion = appVersion,
+        )
+    }
+
+    /** The live transport, with the exact identity it was built for. */
+    private var cachedClient: CachedGatewayClient? = null
+
+    /** Last device id seen from a readable credential; used for the request fingerprint. */
+    @Volatile
+    private var lastKnownDeviceId: String? = null
+
+    /** Last device key alias seen; lets [unpair] clean up even if the credential became unreadable. */
+    @Volatile
+    private var lastKnownKeyAlias: String? = null
+
     init {
-        // Recomputed on every settings change so the screen follows a pairing made elsewhere
-        // (an import, a restore) without needing to be reopened.
         scope.launch {
             settingsStore.settingsFlow.collect { refresh() }
         }
@@ -100,80 +125,154 @@ class ClaudePDevicePairingRepository(
     /**
      * Runs a pairing exchange from a scanned QR payload.
      *
-     * Persistence happens **only** after the credential store has accepted the record, so a failure
-     * part-way through leaves settings claiming `NOT_PAIRED` rather than claiming a pairing that was
-     * never stored.
+     * ### Compensation
+     *
+     * A successful exchange is not a successful pairing. If the credential cannot be stored
+     * durably, or the settings write fails afterwards, everything this attempt created is destroyed
+     * and the outcome is reported as a failure — because a credential that exists without settings
+     * agreeing, or settings that claim a pairing with no credential, both leave the user with a
+     * provider that cannot work and cannot explain why.
      */
     suspend fun pair(invitationPayload: String, deviceName: String): ClaudePPairingOutcome {
         _pairingInFlight.value = true
         _lastFailure.value = null
+        _lastCleanupFailures.value = emptyList()
+        refreshStatus()
         try {
             val invitation = when (val parsed = ClaudePPairingInvitationParser.parse(invitationPayload)) {
-                is ClaudePPairingResult.Rejected -> {
-                    val failure = parsed.reason.toPairingFailure()
-                    _lastFailure.value = failure
-                    return ClaudePPairingOutcome.Rejected(failure)
-                }
-
+                is ClaudePPairingResult.Rejected -> return reject(parsed.reason.toPairingFailure())
                 is ClaudePPairingResult.Accepted -> parsed.invitation
             }
 
-            val client = ClaudePPairingClient(
-                transport = OkHttpClaudePPairingTransport(okHttpClient, invitation.endpoint),
-                keyStore = deviceKeyStore,
-                appVersion = appVersion,
-            )
-
-            val outcome = client.pair(invitation, deviceName, nowEpochSeconds())
+            val outcome = pairingClient.pair(invitation, deviceName, nowEpochSeconds())
             when (outcome) {
-                is ClaudePPairingOutcome.Paired -> persistPairing(outcome, invitation)
-                is ClaudePPairingOutcome.Rejected -> _lastFailure.value = outcome.reason
+                is ClaudePPairingOutcome.Rejected -> {
+                    _lastCleanupFailures.value = outcome.cleanupFailures
+                    if (outcome.cleanupFailures.isNotEmpty()) {
+                        Log.w(TAG, "Claude P pairing cleanup incomplete: ${outcome.cleanupFailures}")
+                    }
+                    return reject(outcome.reason)
+                }
+
+                is ClaudePPairingOutcome.Paired -> return persist(outcome.device)
             }
-            refresh()
-            return outcome
         } finally {
             _pairingInFlight.value = false
             refresh()
         }
     }
 
-    /**
-     * Ends the pairing: destroys the credential, the device key, and the socket.
-     *
-     * Order matters. The credential file and the Keystore key go first, so that even if the settings
-     * write fails the device can no longer authenticate; then the transport is dropped; then settings
-     * are updated to match.
-     */
-    suspend fun unpair() {
-        gatewayClient?.shutdown()
-        gatewayClient = null
-        credentialStore.clear()
-        updateSettings { it.copy(pairingState = ClaudePPairingState.NOT_PAIRED) }
-        refresh()
+    private suspend fun persist(device: ClaudePPairedDevice): ClaudePPairingOutcome {
+        val writeFailures = credentialStore.write(device)
+        if (writeFailures.isNotEmpty()) {
+            Log.w(TAG, "Claude P credential not stored: $writeFailures")
+            compensate(device)
+            return reject(ClaudePPairingFailure.PAIRING_NOT_PERSISTED)
+        }
+
+        val settingsWritten = try {
+            updateSettings {
+                it.copy(
+                    pairingState = ClaudePPairingState.PAIRED,
+                    pairedOrigin = device.pairedOrigin,
+                    gatewayFingerprint = device.gatewayFingerprint,
+                    gatewayInstallationId = device.gatewayInstallationId,
+                    device = ClaudePDeviceDescriptor(
+                        deviceId = device.deviceId,
+                        displayName = device.deviceName,
+                        lastConnectedAt = null,
+                    ),
+                    // Only non-secret fields are persisted. The credential and the private key stay
+                    // in their own stores, so a QR export of these settings is harmless.
+                    cachedModels = emptyList(),
+                    catalogCachedAt = null,
+                    claudeCodeVersion = null,
+                )
+            }
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "Claude P settings write failed: ${t::class.java.simpleName}")
+            false
+        }
+
+        if (!settingsWritten) {
+            // The credential is on disk but nothing points at it. Destroy it rather than leave a
+            // usable credential for a pairing the app does not believe happened.
+            compensate(device)
+            return reject(ClaudePPairingFailure.PAIRING_NOT_PERSISTED)
+        }
+
+        // A new identity supersedes the old one: a socket built for the previous credential must not
+        // survive it.
+        closeCachedClient()
+        _lastFailure.value = null
+        Log.i(TAG, "Claude P paired")
+        return ClaudePPairingOutcome.Paired(device)
     }
 
-    private suspend fun persistPairing(outcome: ClaudePPairingOutcome.Paired, invitation: ClaudePPairingInvitation) {
-        credentialStore.write(outcome.device)
-        updateSettings {
-            it.copy(
-                pairingState = ClaudePPairingState.PAIRED,
-                pairedOrigin = outcome.device.pairedOrigin,
-                gatewayFingerprint = outcome.device.gatewayFingerprint,
-                gatewayInstallationId = outcome.device.gatewayInstallationId,
-                device = ClaudePDeviceDescriptor(
-                    deviceId = outcome.device.deviceId,
-                    displayName = outcome.device.deviceName,
-                    lastConnectedAt = null,
-                ),
-                // Only non-secret fields are persisted. The credential and the private key stay in
-                // their own stores; a QR export of these settings is harmless by construction.
-                cachedModels = emptyList(),
-                catalogCachedAt = null,
-                claudeCodeVersion = null,
-            )
+    /** Best-effort destruction of everything an unsuccessful persistence attempt created. */
+    private suspend fun compensate(device: ClaudePPairedDevice) {
+        val failures = buildList {
+            addAll(credentialStore.clear())
+            if (!deviceKeyStore.delete(device.keyAlias)) add(ClaudePPairingCleanupFailure.KEY_NOT_DELETED)
         }
-        // The invitation is deliberately not retained: a ticket is single-use and has just been used.
-        Log.i(TAG, "Claude P paired to ${invitation.endpoint.origin}")
+        if (failures.isNotEmpty()) {
+            _lastCleanupFailures.value = failures
+            Log.w(TAG, "Claude P pairing compensation incomplete: $failures")
+        }
+    }
+
+    private fun reject(reason: ClaudePPairingFailure): ClaudePPairingOutcome {
+        _lastFailure.value = reason
+        return ClaudePPairingOutcome.Rejected(reason)
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Revocation
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * Ends the pairing.
+     *
+     * ### Ordering is the safety property
+     *
+     * 1. **Logical state first.** Settings move to `REVOKED` and the provider is disabled *before*
+     *    any storage is touched. [gatewayClientOrNull] only ever builds a transport for a device whose
+     *    settings say `PAIRED`, so from this instant nothing can dispatch — even if every physical
+     *    deletion below fails.
+     * 2. **Then the socket**, so an in-flight generation is not left talking to the gateway.
+     * 3. **Then the storage**, collecting failures rather than swallowing them.
+     * 4. **Then `NOT_PAIRED`**, the honest resting state once the attempt is over.
+     *
+     * The returned failures mean "something remains on this device". They are surfaced to the caller
+     * because an unpair that could not delete a private key has not finished, and reporting success
+     * would be a lie the user acts on.
+     */
+    suspend fun unpair(): ClaudePUnpairResult {
+        val alias = lastKnownKeyAlias
+            ?: (credentialStore.read() as? ClaudePCredentialRead.Present)?.device?.keyAlias
+
+        updateSettings { it.copy(pairingState = ClaudePPairingState.REVOKED, enabled = false) }
+        closeCachedClient()
+        refreshStatus()
+
+        val failures = mutableListOf<ClaudePUnpairFailure>()
+        credentialStore.clear().forEach { failures += it.toUnpairFailure() }
+
+        if (alias != null) {
+            if (!deviceKeyStore.delete(alias)) {
+                failures += ClaudePUnpairFailure.DEVICE_KEY_NOT_DELETED
+            }
+        } else {
+            // Nothing readable told us which alias to destroy. Reported rather than assumed away.
+            failures += ClaudePUnpairFailure.DEVICE_KEY_ALIAS_UNKNOWN
+        }
+
+        updateSettings { it.copy(pairingState = ClaudePPairingState.NOT_PAIRED) }
+        lastKnownDeviceId = null
+        lastKnownKeyAlias = null
+        refresh()
+        return ClaudePUnpairResult(failures)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -181,53 +280,132 @@ class ClaudePDevicePairingRepository(
     // -----------------------------------------------------------------------------------------
 
     /**
-     * The gateway client for the current pairing, or `null` when there is none.
+     * The gateway client for the current pairing, or `null` when any part of the identity is not
+     * provable.
      *
-     * Returns `null` rather than a fail-open stand-in: a caller that gets `null` cannot accidentally
-     * send a request, whereas a stand-in that "works" is how an unpaired device ends up in a model
-     * picker.
+     * This is the **only** way to obtain a transport. It re-derives the device through
+     * [resolveDevice] on every call, so a credential that expired, a key that was wiped, or settings
+     * that drifted from the stored record all collapse to `null` — and a `null` caller cannot send
+     * anything, where a fail-open stand-in would.
      */
-    suspend fun gatewayClientOrNull(): WssClaudePGatewayClient? {
-        val device = (credentialStore.read() as? ClaudePCredentialRead.Present)?.device ?: return null
-        val endpoint = (ClaudePEndpoint.parse(device.pairedOrigin) as? ClaudePEndpointResult.Accepted)
-            ?.endpoint ?: return null
+    suspend fun gatewayClientOrNull(): ClaudePGatewayClient? {
+        val device = resolveDevice() ?: run {
+            closeCachedClient()
+            return null
+        }
 
-        gatewayClient?.let { return it }
+        val identity = identityOf(device)
+        cachedClient?.let { cached ->
+            if (cached.identity == identity) return cached.client
+            // The device changed underneath the socket. Destroy it rather than let it keep
+            // authenticating with a credential the app no longer holds.
+            closeCachedClient()
+        }
 
-        return WssClaudePGatewayClient(
+        val endpoint = device.endpointOrNull() ?: return null
+
+        val client = WssClaudePGatewayClient(
             connector = OkHttpClaudePWebSocketConnector(okHttpClient),
             endpoint = endpoint,
             accessProvider = ClaudePDeviceAccessProvider { now ->
-                val current = (credentialStore.read() as? ClaudePCredentialRead.Present)?.device
-                current?.let {
-                    ClaudePDeviceAccess(
-                        deviceId = it.deviceId,
-                        credential = ClaudePAccessCredential(it.accessCredential),
-                        expiresAtEpochSeconds = it.accessExpiresAtEpochSeconds,
-                    )
-                }
+                // Re-read on every connection rather than closing over the credential captured above,
+                // so a revoked device cannot keep refreshing a socket with a stale secret.
+                val current = resolveDevice() ?: return@ClaudePDeviceAccessProvider null
+                ClaudePDeviceAccess(
+                    deviceId = current.deviceId,
+                    credential = ClaudePAccessCredential(current.accessCredential),
+                    expiresAtEpochSeconds = current.accessExpiresAtEpochSeconds,
+                ).takeIf { now < it.expiresAtEpochSeconds }
             },
             deviceKeyStore = deviceKeyStore,
             keyAlias = device.keyAlias,
             scope = scope,
             appVersion = appVersion,
-        ).also { client ->
-            gatewayClient = client
-            scope.launch {
-                client.connectionState.collect { _connectionState.value = it }
+        )
+
+        val stateJob = scope.launch {
+            client.connectionState.collect { state ->
+                // Only the *current* client may move the displayed state. Without this guard a client
+                // that was replaced by a re-pair could publish a late event over the new device's
+                // status.
+                if (cachedClient?.client !== client) return@collect
+                _connectionState.value = state
+                refreshStatus()
             }
         }
+
+        cachedClient = CachedGatewayClient(identity, client, stateJob)
+        return client
+    }
+
+    /**
+     * The one authoritative reading of "this device is paired", or `null`.
+     *
+     * Every condition is checked because each one independently means the identity is not provable:
+     * `claudep/03-security-and-operations.md` §10 requires revocation to invalidate the connection,
+     * and a credential that disagrees with settings is the signature of a partial write or a
+     * tampered record.
+     */
+    private suspend fun resolveDevice(): ClaudePPairedDevice? {
+        val setting = currentClaudePSetting() ?: return null
+
+        // Only `PAIRED` may reach a gateway. `NOT_PAIRED` and `REVOKED` are both non-dispatchable,
+        // which is what makes revocation effective even when physical deletion failed.
+        if (setting.pairingState != ClaudePPairingState.PAIRED) return null
+
+        val device = (credentialStore.read() as? ClaudePCredentialRead.Present)?.device ?: return null
+        if (device.isExpiredInternal(nowEpochSeconds())) return null
+
+        // Settings and the stored record must agree. A mismatch means one of them is stale or
+        // forged, and there is no safe way to pick a winner.
+        if (setting.pairedOrigin != device.pairedOrigin) return null
+        if (setting.gatewayFingerprint != device.gatewayFingerprint) return null
+        if (setting.gatewayInstallationId != device.gatewayInstallationId) return null
+        if (setting.device.deviceId != device.deviceId) return null
+        if (device.keyAlias.isBlank()) return null
+
+        // The device key must load. `loadExisting` never creates one, so a wiped or invalidated key
+        // ends here rather than becoming a fresh identity behind a credential that never matched it.
+        val key = deviceKeyStore.loadExisting(device.keyAlias) ?: return null
+        if (key.publicKeyDer() == null) return null
+
+        lastKnownDeviceId = device.deviceId
+        lastKnownKeyAlias = device.keyAlias
+        return device
+    }
+
+    private fun identityOf(device: ClaudePPairedDevice): String =
+        "${device.deviceId}|${device.keyAlias}|${device.pairedOrigin}|${device.accessCredential}"
+
+    private fun closeCachedClient() {
+        cachedClient?.let { cached ->
+            cached.stateJob.cancel()
+            scope.launch { cached.client.shutdown() }
+        }
+        cachedClient = null
+        _connectionState.value = ClaudePConnectionState.DISCONNECTED
     }
 
     // -----------------------------------------------------------------------------------------
     // State
     // -----------------------------------------------------------------------------------------
 
-    /** Recomputes [status] from the three sources of truth. */
+    /** The paired device id, or `null` when there is none. Used for the request fingerprint. */
+    fun currentDeviceIdOrNull(): String? = lastKnownDeviceId
+
+    /**
+     * Re-reads the credential store and recomputes [status].
+     *
+     * The single place status is derived from. Both the settings collector and the connection-state
+     * collector funnel through here, so there is exactly one mapping and no way for the two to drift.
+     */
     suspend fun refresh() {
         val setting = currentClaudePSetting()
         val read = credentialStore.read()
-        lastKnownDeviceId = (read as? ClaudePCredentialRead.Present)?.device?.deviceId
+        (read as? ClaudePCredentialRead.Present)?.device?.let {
+            lastKnownDeviceId = it.deviceId
+            lastKnownKeyAlias = it.keyAlias
+        }
         _status.value = ClaudePUiStatusMapper.map(
             settingsState = setting?.pairingState ?: ClaudePPairingState.NOT_PAIRED,
             credentialRead = read,
@@ -237,18 +415,7 @@ class ClaudePDevicePairingRepository(
         )
     }
 
-    /**
-     * The paired device id, or `null` when there is none.
-     *
-     * Read synchronously from the last observed credential-store result so the provider can bind it
-     * into the request fingerprint without making that path suspend. A `null` answer means the
-     * fingerprint falls back to the provider's placeholder, which is safe: without a device id the
-     * request cannot be dispatched anyway.
-     */
-    @Volatile
-    private var lastKnownDeviceId: String? = null
-
-    fun currentDeviceIdOrNull(): String? = lastKnownDeviceId
+    private suspend fun refreshStatus() = refresh()
 
     private fun currentClaudePSetting(): ProviderSetting.ClaudeP? =
         settingsStore.settingsFlow.value.providers
@@ -265,26 +432,63 @@ class ClaudePDevicePairingRepository(
         }
     }
 
+    /** The transport plus the identity it was built for, and the collector watching its state. */
+    private data class CachedGatewayClient(
+        val identity: String,
+        val client: WssClaudePGatewayClient,
+        val stateJob: Job,
+    )
+
     private companion object {
         const val TAG = "ClaudePPairing"
     }
 }
 
-/** Maps a QR-level rejection onto the bounded pairing failure the UI reports. */
-private fun ClaudePPairingRejection.toPairingFailure(): ClaudePPairingFailure =
+/** What remained after an unpair attempt. An empty list means nothing is left. */
+data class ClaudePUnpairResult(val failures: List<ClaudePUnpairFailure>) {
+    val isComplete: Boolean get() = failures.isEmpty()
+}
+
+/** Something an unpair was supposed to remove and did not. */
+enum class ClaudePUnpairFailure {
+    CREDENTIAL_FILE_NOT_DELETED,
+    CREDENTIAL_WRAPPING_KEY_NOT_DELETED,
+    DEVICE_KEY_NOT_DELETED,
+    /** No readable record named the key to destroy, so it could not even be attempted. */
+    DEVICE_KEY_ALIAS_UNKNOWN,
+}
+
+private fun me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.toUnpairFailure() =
     when (this) {
-        ClaudePPairingRejection.MISSING_EXPIRY ->
-            ClaudePPairingFailure.MALFORMED_RESPONSE
+        me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.FILE_DELETE_FAILED ->
+            ClaudePUnpairFailure.CREDENTIAL_FILE_NOT_DELETED
 
-        ClaudePPairingRejection.PROTOCOL_MISMATCH ->
-            ClaudePPairingFailure.PROTOCOL_MISMATCH
+        me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.WRAPPING_KEY_DELETE_FAILED ->
+            ClaudePUnpairFailure.CREDENTIAL_WRAPPING_KEY_NOT_DELETED
 
-        ClaudePPairingRejection.EMPTY_PAYLOAD,
-        ClaudePPairingRejection.PAYLOAD_TOO_LARGE,
-        ClaudePPairingRejection.MALFORMED_PAYLOAD,
-        ClaudePPairingRejection.INVALID_ORIGIN,
-        ClaudePPairingRejection.INVALID_FINGERPRINT,
-        ClaudePPairingRejection.MISSING_TICKET,
-        ClaudePPairingRejection.MALFORMED_TICKET,
-        -> ClaudePPairingFailure.MALFORMED_RESPONSE
+        // A staged-file failure during `clear` means the ciphertext itself went; nothing to report.
+        me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.TEMP_WRITE_FAILED,
+        me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure.REPLACE_FAILED,
+        -> ClaudePUnpairFailure.CREDENTIAL_FILE_NOT_DELETED
     }
+
+private fun ClaudePPairedDevice.endpointOrNull(): ClaudePEndpoint? =
+    (ClaudePEndpoint.parse(pairedOrigin) as? ClaudePEndpointResult.Accepted)?.endpoint
+
+private fun ClaudePPairedDevice.isExpiredInternal(nowEpochSeconds: Long): Boolean =
+    accessExpiresAtEpochSeconds <= 0 || nowEpochSeconds >= accessExpiresAtEpochSeconds
+
+/** Maps a QR-level rejection onto the bounded pairing failure the UI reports. */
+private fun ClaudePPairingRejection.toPairingFailure(): ClaudePPairingFailure = when (this) {
+    ClaudePPairingRejection.PROTOCOL_MISMATCH -> ClaudePPairingFailure.PROTOCOL_MISMATCH
+
+    ClaudePPairingRejection.EMPTY_PAYLOAD,
+    ClaudePPairingRejection.PAYLOAD_TOO_LARGE,
+    ClaudePPairingRejection.MALFORMED_PAYLOAD,
+    ClaudePPairingRejection.INVALID_ORIGIN,
+    ClaudePPairingRejection.INVALID_FINGERPRINT,
+    ClaudePPairingRejection.MISSING_TICKET,
+    ClaudePPairingRejection.MALFORMED_TICKET,
+    ClaudePPairingRejection.MISSING_EXPIRY,
+    -> ClaudePPairingFailure.MALFORMED_RESPONSE
+}

@@ -197,21 +197,16 @@ class ClaudePCredentialStoreTest {
 
     @Test
     fun `a device key can sign, and a different key cannot reproduce the signature`() = runBlocking {
-        val key = InMemoryClaudePDeviceKeyStore().loadOrCreate("alias")!!
-        val other = InMemoryClaudePDeviceKeyStore().loadOrCreate("alias")!!
+        val key = InMemoryClaudePDeviceKeyStore().createFresh("alias") as InMemoryClaudePDeviceKey
+        val other = InMemoryClaudePDeviceKeyStore().createFresh("alias") as InMemoryClaudePDeviceKey
         val payload = "transcript".toByteArray()
 
-        val signature = key.sign(payload)
-        val otherSignature = other.sign(payload)
-
-        assertTrue(key is InMemoryClaudePDeviceKey)
-        assertTrue(other is InMemoryClaudePDeviceKey)
-        key as InMemoryClaudePDeviceKey
-        other as InMemoryClaudePDeviceKey
+        val signature = key.sign(payload)!!
+        val otherSignature = other.sign(payload)!!
 
         // Each key verifies its own signature...
-        assertTrue(key.verify(payload, signature!!))
-        assertTrue(other.verify(payload, otherSignature!!))
+        assertTrue(key.verify(payload, signature))
+        assertTrue(other.verify(payload, otherSignature))
         // ...and neither can speak for the other. Two devices must not be interchangeable.
         assertFalse(other.verify(payload, signature))
         assertFalse(key.verify(payload, otherSignature))
@@ -219,7 +214,7 @@ class ClaudePCredentialStoreTest {
 
     @Test
     fun `an unavailable key reports null rather than throwing`() = runBlocking {
-        val key = InMemoryClaudePDeviceKeyStore().loadOrCreate("alias") as InMemoryClaudePDeviceKey
+        val key = InMemoryClaudePDeviceKeyStore().createFresh("alias") as InMemoryClaudePDeviceKey
         key.signFails = true
         key.publicKeyFails = true
 
@@ -229,18 +224,61 @@ class ClaudePCredentialStoreTest {
         assertNull(key.publicKeyDer())
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Creation and loading are separate operations
+    // ---------------------------------------------------------------------------------------
+
     @Test
-    fun `delete removes the key so a cleared pairing cannot sign`() = runBlocking {
+    fun `loading an absent key returns null and never creates one`() = runBlocking {
         val store = InMemoryClaudePDeviceKeyStore()
-        store.loadOrCreate("alias")
 
-        store.delete("alias")
+        val loaded = store.loadExisting("alias")
 
+        // The runtime handshake uses `loadExisting`. If it could mint a key, a device whose private
+        // key was wiped would silently acquire a new identity while still presenting the credential
+        // the gateway issued for the old one.
+        assertNull(loaded)
+        assertEquals(0, store.createCount)
         assertTrue(store.aliases.isEmpty())
-        // Loading again creates a *new* key, which is why the alias must be stable within a pairing
-        // and why a re-pairing has to go through the gateway again.
-        val recreated = store.loadOrCreate("alias")
-        assertTrue(recreated is InMemoryClaudePDeviceKey)
+    }
+
+    @Test
+    fun `createFresh mints a key that loadExisting can then find`() = runBlocking {
+        val store = InMemoryClaudePDeviceKeyStore()
+
+        store.createFresh("alias")
+        val loaded = store.loadExisting("alias")
+
+        assertEquals(1, store.createCount)
+        assertTrue(loaded is InMemoryClaudePDeviceKey)
+    }
+
+    @Test
+    fun `a broken key still loads as absent rather than being replaced`() = runBlocking {
+        val store = InMemoryClaudePDeviceKeyStore()
+        store.createFresh("alias")
+        store.loadFails = true
+
+        assertNull(store.loadExisting("alias"))
+        // Still exactly one creation: the failure did not trigger a replacement.
+        assertEquals(1, store.createCount)
+        assertEquals(listOf("alias"), store.aliases)
+    }
+
+    @Test
+    fun `delete reports whether the key is actually gone`() = runBlocking {
+        val store = InMemoryClaudePDeviceKeyStore()
+        store.createFresh("alias")
+
+        assertTrue("a successful delete must report success", store.delete("alias"))
+        assertTrue(store.aliases.isEmpty())
+
+        store.deleteFails = true
+        store.createFresh("alias")
+        // An unpair that cannot remove the private key has not finished, so this must not be
+        // reported as success.
+        assertFalse("a failed delete must report failure", store.delete("alias"))
+        assertEquals(listOf("alias"), store.aliases)
     }
 
     @Test

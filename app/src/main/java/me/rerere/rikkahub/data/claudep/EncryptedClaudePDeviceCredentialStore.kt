@@ -17,6 +17,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import me.rerere.ai.provider.claudep.ClaudePCredentialFailure
 import me.rerere.ai.provider.claudep.ClaudePCredentialRead
+import me.rerere.ai.provider.claudep.ClaudePCredentialStoreFailure
 import me.rerere.ai.provider.claudep.ClaudePDeviceCredentialStore
 import me.rerere.ai.provider.claudep.ClaudePPairedDevice
 
@@ -25,20 +26,26 @@ import me.rerere.ai.provider.claudep.ClaudePPairedDevice
  *
  * ### Placement
  *
- * The ciphertext lives in `noBackupFilesDir` — the same location the Codex credential store uses,
- * and for the same reason: `claudep/03-security-and-operations.md` §8 requires that a Claude P
- * credential never enters a WebDAV backup or a device transfer. `noBackupFilesDir` is the
- * platform-level guarantee, so this holds even if the app's backup rules are later edited by
- * mistake; the rules in `res/xml/data_extraction_rules.xml` remain as a second, explicit layer.
+ * The ciphertext lives in `noBackupFilesDir` — the same location the Codex credential store uses, and
+ * for the same reason: `claudep/03-security-and-operations.md` §8 requires that a Claude P credential
+ * never enters a WebDAV backup or a device transfer. `noBackupFilesDir` is the platform-level
+ * guarantee, so this holds even if the app's backup rules are later edited by mistake; the rules in
+ * `res/xml/data_extraction_rules.xml` remain as a second, explicit layer.
  *
- * ### Fail-closed
+ * ### Fail-closed reads
  *
  * Every failure mode — a missing file, a truncated file, a GCM tag that does not authenticate, a
  * Keystore key that has been invalidated — becomes [ClaudePCredentialRead.Unusable] or
  * [ClaudePCredentialRead.Absent], never a partially-populated record and never an exception a caller
- * could swallow. `claudep/03-security-and-operations.md` §10 requires a restored device to be
- * recognised as *not* paired; reporting "unusable" rather than pretending a pairing exists is how
- * that requirement is met at the storage layer.
+ * could swallow.
+ *
+ * ### Fail-closed writes and deletions
+ *
+ * [write] and [clear] **return** their failures instead of throwing or swallowing them, because both
+ * have a caller that must compensate. An earlier revision wrote through `copyTo` (which truncates the
+ * destination and is not atomic) and swallowed deletion errors, so a crash mid-write could leave a
+ * half-record, and a failed unpair could leave a working credential on the device while reporting
+ * success.
  *
  * This mirrors `CodexCredentialStore`'s AES/GCM-AndroidKeystore scheme deliberately rather than
  * introducing `androidx.security-crypto`, which the project does not depend on and which CP1-B may
@@ -49,11 +56,10 @@ class EncryptedClaudePDeviceCredentialStore(
     private val json: Json,
     /** Keystore alias for the AES key that wraps the credential. */
     private val encryptionKeyAlias: String = DEFAULT_ENCRYPTION_KEY_ALIAS,
-    /** Keystore alias of the *device signing key*, deleted alongside the credential on unpair. */
-    private val deviceKeyAlias: String = DEFAULT_DEVICE_KEY_ALIAS,
 ) : ClaudePDeviceCredentialStore {
 
     private val file = File(context.noBackupFilesDir, FILE_NAME)
+    private val temporaryFile = File(context.noBackupFilesDir, "$FILE_NAME.tmp")
 
     override suspend fun read(): ClaudePCredentialRead {
         if (!file.exists()) return ClaudePCredentialRead.Absent
@@ -90,54 +96,100 @@ class EncryptedClaudePDeviceCredentialStore(
         return ClaudePCredentialRead.Present(device)
     }
 
-    override suspend fun write(device: ClaudePPairedDevice) {
-        val plaintext = json.encodeToString(
-            StoredDeviceRecord(
-                deviceId = device.deviceId,
-                deviceName = device.deviceName,
-                keyAlias = device.keyAlias,
-                accessCredential = device.accessCredential,
-                accessExpiresAtEpochSeconds = device.accessExpiresAtEpochSeconds,
-                gatewayFingerprint = device.gatewayFingerprint,
-                gatewayInstallationId = device.gatewayInstallationId,
-                pairedOrigin = device.pairedOrigin,
-            ),
-        )
+    /**
+     * Stages the ciphertext beside the real file and moves it into place atomically.
+     *
+     * `renameTo` within one directory is an atomic replace on the filesystems Android uses, so a
+     * process death either leaves the old record or the new one — never a truncated mix. If the move
+     * fails, the staged file is removed and **the existing record is left untouched**; the caller is
+     * told, and compensates. Overwriting in place would have destroyed a possibly-valid old pairing
+     * to make room for one that never landed.
+     */
+    override suspend fun write(device: ClaudePPairedDevice): List<ClaudePCredentialStoreFailure> {
+        val plaintext = json.encodeToString(device.toRecord())
 
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, loadOrCreateEncryptionKey())
-        val ciphertext = cipher.doFinal(plaintext.encodeToByteArray())
+        val staged = try {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, loadOrCreateEncryptionKey())
+            val ciphertext = cipher.doFinal(plaintext.encodeToByteArray())
+            temporaryFile.writeBytes(cipher.iv + ciphertext)
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "Claude P credential staging failed: ${t::class.java.simpleName}")
+            false
+        }
 
-        // Written through a temporary file and renamed, so a process death mid-write cannot leave a
-        // half-record that would later read as a corrupt-but-present pairing.
-        val temporary = File(file.parentFile, "$FILE_NAME.tmp")
-        temporary.writeBytes(cipher.iv + ciphertext)
-        temporary.copyTo(file, overwrite = true)
-        temporary.delete()
+        if (!staged) {
+            clearTemporaryFile()
+            return listOf(ClaudePCredentialStoreFailure.TEMP_WRITE_FAILED)
+        }
+
+        val replaced = try {
+            temporaryFile.renameTo(file)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Claude P credential replace threw: ${t::class.java.simpleName}")
+            false
+        }
+
+        if (!replaced) {
+            // The old record is still in place and still valid. Report rather than escalate to a
+            // destructive fallback.
+            clearTemporaryFile()
+            return listOf(ClaudePCredentialStoreFailure.REPLACE_FAILED)
+        }
+
+        // Success: the staged name is gone. Cleanup is still called, because a failed rename on some
+        // filesystems can leave a stale entry behind.
+        clearTemporaryFile()
+        return emptyList()
     }
 
     /**
-     * Removes the credential **and** the device signing key.
+     * Removes the ciphertext **and** the Keystore wrapping key.
      *
-     * Both halves matter: leaving the private key behind after an unpair would leave material that a
-     * later, differently-configured pairing could silently reuse under the same alias, which is
-     * exactly what `claudep/03-security-and-operations.md` §10 means by "撤销后 … 全部失效".
+     * Both matter. Deleting only the ciphertext leaves the AES key, so a later `write` reuses it and
+     * anything that recovered the old bytes could still decrypt them. Ordering is chosen so that the
+     * failure modes are safe: the ciphertext goes first, so even if the key deletion fails, the
+     * credential is no longer readable through this app.
      */
-    override suspend fun clear() {
-        runCatching { file.delete() }
-            .onFailure { Log.w(TAG, "Claude P credential file deletion failed: ${it::class.java.simpleName}") }
-        deleteKey(deviceKeyAlias)
+    override suspend fun clear(): List<ClaudePCredentialStoreFailure> {
+        val failures = mutableListOf<ClaudePCredentialStoreFailure>()
+
+        clearTemporaryFile()
+
+        try {
+            if (file.exists() && !file.delete()) {
+                Log.w(TAG, "Claude P credential file could not be deleted")
+                failures += ClaudePCredentialStoreFailure.FILE_DELETE_FAILED
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Claude P credential file deletion threw: ${t::class.java.simpleName}")
+            failures += ClaudePCredentialStoreFailure.FILE_DELETE_FAILED
+        }
+
+        if (!deleteKeyStoreEntry(encryptionKeyAlias)) {
+            failures += ClaudePCredentialStoreFailure.WRAPPING_KEY_DELETE_FAILED
+        }
+
+        return failures
     }
 
-    /** Destroys the device signing key. Separate so it can be re-used by the unpair path. */
-    fun deleteDeviceKey(alias: String = deviceKeyAlias) = deleteKey(alias)
-
-    private fun deleteKey(alias: String) {
+    /** Removes a staged file if one is lying around. Best-effort by design; never throws. */
+    private fun clearTemporaryFile() {
         try {
-            KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(alias)
+            if (temporaryFile.exists()) temporaryFile.delete()
         } catch (t: Throwable) {
-            Log.w(TAG, "Claude P keystore entry deletion failed: ${t::class.java.simpleName}")
+            Log.w(TAG, "Claude P temporary file cleanup failed: ${t::class.java.simpleName}")
         }
+    }
+
+    private fun deleteKeyStoreEntry(alias: String): Boolean = try {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        if (keyStore.containsAlias(alias)) keyStore.deleteEntry(alias)
+        !keyStore.containsAlias(alias)
+    } catch (t: Throwable) {
+        Log.w(TAG, "Claude P keystore entry deletion failed: ${t::class.java.simpleName}")
+        false
     }
 
     private fun isKeyProblem(t: Throwable): Boolean =
@@ -174,7 +226,6 @@ class EncryptedClaudePDeviceCredentialStore(
          * credential.
          */
         const val DEFAULT_ENCRYPTION_KEY_ALIAS = "rikkahub_claude_p_credential_v1"
-        const val DEFAULT_DEVICE_KEY_ALIAS = "rikkahub_claude_p_device_key_v1"
 
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
@@ -208,9 +259,21 @@ private data class StoredDeviceRecord(
             "gatewayFingerprint=<redacted>, gatewayInstallationId=<redacted>, pairedOrigin=<redacted>)"
 }
 
+private fun ClaudePPairedDevice.toRecord(): StoredDeviceRecord = StoredDeviceRecord(
+    deviceId = deviceId,
+    deviceName = deviceName,
+    keyAlias = keyAlias,
+    accessCredential = accessCredential,
+    accessExpiresAtEpochSeconds = accessExpiresAtEpochSeconds,
+    gatewayFingerprint = gatewayFingerprint,
+    gatewayInstallationId = gatewayInstallationId,
+    pairedOrigin = pairedOrigin,
+)
+
 /** Returns `null` when the record is structurally present but not a usable device identity. */
 private fun StoredDeviceRecord.toDomain(): ClaudePPairedDevice? {
     if (deviceId.isBlank() || accessCredential.isBlank() || pairedOrigin.isBlank()) return null
+    if (keyAlias.isBlank()) return null
     return ClaudePPairedDevice(
         deviceId = deviceId,
         deviceName = deviceName,
