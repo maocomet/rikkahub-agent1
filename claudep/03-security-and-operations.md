@@ -33,6 +33,12 @@
 
 ## 3. Claude Worker 启动策略
 
+> ⚠ **本节的两处假设已被 `08-cp1c-gateway-worker-adr.md` §11.2.1 修正。**
+> `--setting-sources ""` 的空值语义**未经官方文档确认**，且存在被当作"未设置"（即加载全部）
+> 的失败模式；settings 中的 hooks / `apiKeyHelper` 会**执行命令**。
+> `--allowedTools` 是**自动批准名单**而非可见性白名单。
+> 实现时以 `08` §11.2 为准，本节保留为 Phase 0 时点的原始设计记录，**不回溯修改**。
+
 最终 argv 必须由单一纯函数构造并经过结构化测试。Phase 1 预期安全形态：
 
 - 固定绝对 binary 路径；

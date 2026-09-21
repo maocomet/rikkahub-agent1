@@ -1,13 +1,17 @@
 # CP1-B｜安全联网传输与一次性配对 — 本地实施报告
 
-状态：**CP1-B R2 返修完成；等待第二次 Android CI 授权**
-日期：2026-09-20
-分支：`codex/claudep-cp1b-local`（**未 push**）
+状态：**CP1-B R4 收口 —— 两关 CI 全绿 + 真机复验通过**（见 §20）
+日期：2026-09-20（§20 于 2026-09-21 追加）
+分支：`codex/claudep-cp1b-local`（本地与远端一致，**本轮未 push**）
 Worktree：`D:\rikkahub-agent1.worktrees\claudep-cp1b`
-CI：**未触发**（授权冻结，等待人工复审后另行授权）
+CI：R1–R4 共 7 个 run 已执行（逐轮结果见 `CP1B-ci-evidence.md`）
 PR / Tag / Release / master：**均未触碰**
 
-> 本报告不使用「CP1-B 已完成」这一表述。`:app` 从未在本机编译过，Android CI 从未运行。
+> §1–§19 是**按当时时点**写的阶段记录，其「未触发 / 未验证」表述在当时为真，
+> 一律保留不回填。最终状态以 §20 与 `CP1B-ci-evidence.md` §7–§8 为准。
+>
+> 本报告**仍不使用**「CP1-B 已完成 Gateway 配对」或「Claude P 可对话」这类表述：
+> 本仓库内不存在 Gateway 服务端，也没有发生过任何模型调用。
 
 ---
 
@@ -973,3 +977,90 @@ single { SettingsClaudePPairingGateway(settingsStore = get()) }
 - 分支 `codex/claudep-cp1b-local`，**未 push**；未触发普通 CI，未触发 instrumentation；未创建 PR。
 - 工作区洁净，`git diff --check` 通过；依赖零变更。
 - **停在静态复审点。**
+
+
+---
+
+## 20. R3.1 / R3.2 / R4 收口（2026-09-21 追加）
+
+本节关闭 §19 的静态复审点。§19 当时列出的「未执行」项，其最终结果如下。
+
+### 20.1 R3.1：测试方法名与 DEX 合法性
+
+run 35601743353 因 D8 拒绝含空格的 DEX 方法名而**未能编译** —— 这是**编译期**失败，
+连「未执行」都算不上：`ClaudePKoinGraphTest` 的测试方法名必须满足 `\w` 字符集。
+R3.1 提交 `486bce24 test(claudep): give the Koin graph tests DEX-legal method names` 重命名后，
+该类才第一次**真正在设备上执行**。
+
+### 20.2 R3.2：第三个「按接口请求、按具体类注册」缺陷
+
+run 35610800900 在 managed device 上真实执行 `ClaudePKoinGraphTest`：
+`tests=7 failures=3 errors=0 skipped=0`。3 条失败的共同根因是：
+
+```
+InstanceCreationException: Could not create instance for '[Singleton: ClaudePDevicePairingRepository]'
+Caused by: NoDefinitionFoundException:
+  No definition found for type 'kotlinx.coroutines.CoroutineScope' on scope '_root_'
+```
+
+`AppModule` 注册的是具体类 `single { AppScope() }`，而 `ClaudePDevicePairingRepository` 的
+调用点按接口 `CoroutineScope` 取值。修复只改 DI 调用点一处：`scope = get()` → `scope = get<AppScope>()`。
+**未**新增宽泛的 `single<CoroutineScope>`，**未**新增第二个 scope，**未**改生命周期 ——
+依据是全仓生产 module 有 **9 处** `get<AppScope>()` 而**零处** `get<CoroutineScope>()`。
+
+§19 已经指出：R3 的修复**必要但不充分**，`ChatVM` 当时仍会崩溃。R3.2 之后才补齐。
+
+### 20.3 R4：两关串行验证（同一精确 SHA）
+
+| 关 | Run | 结论 |
+|---|---|---|
+| 普通 CI（`Build Debug APK`） | [35613938145](https://github.com/maocomet/rikkahub-agent1/actions/runs/35613938145) | **success** |
+| managed-device instrumentation | [35614890304](https://github.com/maocomet/rikkahub-agent1/actions/runs/35614890304) | **success** |
+
+两 run 同为 `head_sha = 95624b6db94bd6c03f6b505096e161d35231020c`、同分支
+`codex/claudep-cp1b-local`、均 `workflow_dispatch`、均 `run_attempt = 1`（**无 rerun**）。
+
+`ClaudePKoinGraphTest`：**`tests=7 failures=0 errors=0 skipped=0`**，7 条逐条 PASS，
+整份日志 `FAIL` 出现 0 次。逐项取证记录见 `CP1B-ci-evidence.md` §8.2。
+
+### 20.4 真机覆盖安装复验（用户执行）
+
+用户在实体手机上覆盖安装 debug APK 后实际操作：
+
+| 检查项 | 结果 |
+|---|---|
+| 覆盖安装后原有数据保留 | 通过 |
+| 目标聊天页首次进入 | 正常 |
+| 返回后二次进入 | 正常 |
+| 冷启动后再次进入 | 正常 |
+| Claude P 设置页 | 正常 |
+| 崩溃 / 白屏 / 错误页 | 均未出现 |
+
+这一层补上了自动化无法覆盖的部分：CI 与 managed-device **都没有构造 `ChatVM`**，
+真机才是「用户点进聊天页不崩」的第一个直接证据。取证等级与其局限见
+`CP1B-ci-evidence.md` §8.3。
+
+### 20.5 结论（按要求措辞）
+
+- R3 `ChatVM` / Koin 启动崩溃返修：**完成**。
+- Android 端 CP1-B 的**编译、测试、真实 Koin 图与启动真机复验**：**完成**。
+
+### 20.6 明确不得声称
+
+- **未**完成真实 Gateway 配对；
+- **未**完成 Claude P 文本生成；
+- **未**通过 Gate CP1；
+- **未**验证 CP2 连续会话、CP3 工具、CP4 附件。
+
+### 20.7 下一阶段
+
+服务端（Gateway + Worker）的仓库归属、语言、权限边界、存储与协议兼容矩阵，
+由 `claudep/08-cp1c-gateway-worker-adr.md` 决策；文件级任务与验收标准见
+`claudep/reports/CP1C0-server-implementation-plan.md`。
+**本轮不写服务端生产代码。**
+
+### 20.8 R4 边界
+
+- 本轮仅追加文档：未改动任何 `.kt` / `.kts` / `.yml`，未改依赖，未改协议、凭证或线格式。
+- **未 push**；未触发任何 CI；未创建 PR / tag / Release；`master` 未触碰。
+- 模型调用数 **0**；真实 Gateway 连接数 **0**。

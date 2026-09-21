@@ -1,10 +1,14 @@
 # RikkaHub Claude P 集成：Phase 0 设计包
 
-状态：Phase 0 设计冻结（待实现）
+状态：Phase 0 设计冻结；Android 端 CP1-A / CP1-B 已完成（CI + 真机），
+**服务端（CP1-C）待用户确认 ADR 后开始**
 
 设计基线：`c00f6f3d`（以提交为准；分支名不作为协议依据）
 
-最后更新：2026-09-20
+最后更新：2026-09-21
+
+> Gate CP1 **尚未通过**。本仓库内**不存在** Gateway/Worker 服务端，也未发生过任何模型调用。
+> Android 侧的完成范围与证据见 `reports/CP1B-ci-evidence.md` §8。
 
 本目录定义如何把 Claude Code 非交互模式（下称 Claude P）作为 RikkaHub Agent1 的独立 Provider 接入。Phase 0 只冻结架构、协议、安全边界和验收门禁，不包含生产代码、VPS 部署、Claude 登录或模型调用。
 
@@ -28,6 +32,8 @@
 - [05-实施阶段与验收门禁](./05-implementation-gates.md)
 - [06-决策记录与未决部署参数](./06-decisions-and-open-items.md)
 - [07-设计依据与实施复核清单](./07-sources-and-revalidation.md)
+- [08-CP1-C 服务端 ADR：Gateway 与 Worker](./08-cp1c-gateway-worker-adr.md)（2026-09-21 追加，**待用户确认**）
+- [CP1-C0 服务端分阶段实施计划](./reports/CP1C0-server-implementation-plan.md)（2026-09-21 追加）
 
 ## Phase 0 完成定义
 

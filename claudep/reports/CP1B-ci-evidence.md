@@ -1,8 +1,11 @@
 # CP1-B｜Android CI 证据
 
-状态：**CI 全绿**（run 5）
-日期：2026-09-21
+状态：**CI 全绿 + managed-device 全绿 + 真机复验通过**（详见 §8）
+日期：2026-09-21（§8 于 2026-09-21 追加）
 分支：`codex/claudep-cp1b-local`（未合并、未创建 PR）
+
+> §1–§6 为 R2 时点，§7 为 R3.2 两关串行验证，§8 为 R4 真机复验与本轮收口。
+> 早期失败段落一律保留，不回填历史。
 
 ---
 
@@ -321,3 +324,95 @@ me.rerere.rikkahub.data.claudep.ClaudePKoinGraphTest: tests=7 failures=0 errors=
 
 两者都是「按接口请求、按具体类注册」。R3 的修复**必要但不充分** —— 这一点在 R3.2 之前
 已由真机证据证实，而不是事后推断。
+
+
+---
+
+## 8. R4：真机覆盖安装复验（本轮追加，2026-09-21）
+
+### 8.1 为什么还差这一层
+
+前七节的全部验证都止步于自动化：
+
+- **普通 CI** 证明能编译、能跑 JVM 单测，但既不编译也不运行 `androidTest`；
+- **managed-device** 证明真实 Koin 图能解析到 `ProviderManager`，但如 §7 所述，
+  **测试止于 `ProviderManager`，没有构造完整 `ChatVM`**，也没有打开过聊天页。
+
+两者都**没有回答**「用户点进聊天页会不会崩」。R4 补的正是这一层。
+
+### 8.2 交叉核验的自动化证据（本轮重新取证，未采信旧摘要）
+
+以下不是复述既有报告，而是本轮重新查询 GitHub API 与本地 Git 得到的结果。
+
+| 项 | 值 | 取证方式 |
+|---|---|---|
+| 精确 SHA | `95624b6db94bd6c03f6b505096e161d35231020c` | `git cat-file -t` → `commit` |
+| 提交标题 | `docs(claudep): record R3.1/R3.2 evidence and the scope fix` | `git log -1` |
+| 是否为当前 HEAD 的祖先 | **是**（`git merge-base --is-ancestor` 退出码 0） | 本地 |
+| 该 SHA 之后到 HEAD 的提交 | **1 个**：`1bed6399 docs(claudep): record the R3.2 two-gate verification` | 本地 |
+| 本地 HEAD 与 `origin/codex/claudep-cp1b-local` | `1bed6399…` **一致** | 本地 |
+| 第一关 Run | [35613938145](https://github.com/maocomet/rikkahub-agent1/actions/runs/35613938145) `Build Debug APK` | API |
+| — `head_sha` / 分支 / 结论 | `95624b6d…` / `codex/claudep-cp1b-local` / **success** | API |
+| — `event` / `run_attempt` | `workflow_dispatch` / **1**（无 rerun） | API |
+| — step 9/10/11/12/13/14/16 | 全部 **success**；step 15 为 `if: failure()` 的 skipped | API `jobs` |
+| — 门禁输出 | `All 23 required Claude P test classes executed.` | 日志逐行 |
+| — fixed signing key | 三个 APK 均为 `2f1965cf7447301f857ec222fb1996ac179b07c771d9b3a636bd0116fefffcc3` | 日志逐行 |
+| — Artifact | `rikkahub-agent-debug-apk`，id `10646485353`，353,554,784 bytes | API |
+| 第二关 Run | [35614890304](https://github.com/maocomet/rikkahub-agent1/actions/runs/35614890304) `Migration instrumentation (disposable emulator)` | API |
+| — `head_sha` / 分支 / 结论 | `95624b6d…` / `codex/claudep-cp1b-local` / **success** | API |
+| — `event` / `run_attempt` | `workflow_dispatch` / **1**（无 rerun） | API |
+| — 11 个执行步骤 | 全部 **success** | API `jobs` |
+| — 设备 | `p5DisposablePixel6Api35`：Pixel 6 / API 35 / `aosp-atd` / `x86_64` | 日志（`sed -n '/managedDevices/,/^        }/p'`） |
+| — `ClaudePKoinGraphTest` | `tests=7 failures=0 errors=0 skipped=0` | 日志逐行 |
+| — 门禁脚本 | `if total != expected: ::error`；`if failures or errors or skipped: ::error` | 日志中脚本正文 |
+
+7 条测试逐条 `PASS`：`tombstoneStoreResolvesThroughItsInterface`、
+`pairingSettingsGatewayResolvesThroughItsInterface`、`bothInterfacesResolveToTheSameInstance`、
+`repositoryDefinitionCompletesConstruction`、`repositoryIsASingle`、`graphResolvesUpToProviderManager`、
+`graphResolvesRepositoryCollaborators`。整份日志中 `FAIL` 出现 **0** 次。
+
+`tests=7` 不是自报数字：门禁脚本把解析出的条目数与 `expected` 比对，不等即 `exit 1`。
+
+### 8.3 真机结果（用户执行）
+
+用户在实体手机上**覆盖安装** debug APK 后实际操作并报告：
+
+| 检查项 | 结果 |
+|---|---|
+| 覆盖安装后原有数据保留 | 通过 |
+| 目标聊天页首次进入 | 正常 |
+| 返回后二次进入 | 正常 |
+| 冷启动后再次进入 | 正常 |
+| Claude P 设置页 | 正常 |
+| 崩溃 / 白屏 / 错误页 | 均未出现 |
+
+**取证等级声明**：这是用户真机人工操作观察，**不是自动化断言**。本轮没有取得截图、logcat、
+设备端日志或崩溃报告作为附件，也没有在设备上跑 `am instrument`。按
+`claudep/07-sources-and-revalidation.md` §4 的证据分级，它属于第 6 级「实体手机跨网络真机闭环」的
+**人工子集**，且**不跨网络**（未连接任何 Gateway）。如实记录，不作升级表述。
+
+### 8.4 本节证明了什么
+
+- **R3 / R3.2 `ChatVM` / Koin 启动崩溃返修：完成。**
+  R3.1 的真机 stack trace 曾证实 `ClaudePDevicePairingRepository` 因
+  `NoDefinitionFoundException: CoroutineScope` 无法构造，因而 `ChatVM` 的构造必然失败；
+  R3.2 修复后，真机**实际打开聊天页**不再崩溃。这是该缺陷链的最终确认，
+  而不是从「Koin 图解析到 `ProviderManager`」外推的结论。
+- **Android 端 CP1-B 的编译、测试、真实 Koin 图与启动真机复验：完成。**
+
+### 8.5 本节**没有**证明什么（范围硬边界）
+
+以下各项本轮**均未**验证，任何后续文档不得据此声称：
+
+- **未**完成真实 Gateway 配对 —— 本仓库内**不存在** Gateway 服务端（见
+  `claudep/08-cp1c-gateway-worker-adr.md` §2 的只读审计）；
+- **未**完成 Claude P 文本生成 —— 无 Worker、无 Claude Code 进程、模型调用数 **0**；
+- **未**通过 Gate CP1 —— CP1 还缺 Gateway/Worker 最小实现与零模型 VPS smoke；
+- **未**验证 CP2 连续会话、CP3 工具、CP4 附件；
+- 真机验证期间 Claude P Provider **未配置任何可达 Gateway**，走的仍是 fail-closed 的未配对路径。
+
+### 8.6 本轮边界
+
+- 零模型调用、零真实 Gateway/VPS 连接、零真实 Claude 凭证。
+- `master` 未触碰；未 push；未触发任何 CI；未创建 PR / tag / Release。
+- 依赖零变更；未改动任何 `.kt`、`.kts`、`.yml` 或协议/凭证/线格式，仅追加文档。
