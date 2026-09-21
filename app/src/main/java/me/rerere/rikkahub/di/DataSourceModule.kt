@@ -1511,7 +1511,13 @@ val dataSourceModule = module {
             deviceKeyStore = me.rerere.rikkahub.data.claudep.AndroidKeystoreClaudePDeviceKeyStore(),
             tombstoneStore = get(),
             settingsGateway = get(),
-            scope = get(),
+            // `get<AppScope>()`, not `get()`. The parameter is typed `CoroutineScope`, which Koin
+            // has no definition for — `AppScope` is registered under its concrete type, and every
+            // other call site in this repository requests it the same way (nine of them in
+            // AppModule alone). This is a call-site type alignment, not a new global binding:
+            // `AppScope` carries a specific lifecycle (SupervisorJob + Dispatchers.Main + a
+            // CoroutineExceptionHandler), so a broad `single<CoroutineScope>` would be wrong.
+            scope = get<me.rerere.rikkahub.AppScope>(),
             appVersion = me.rerere.rikkahub.BuildConfig.VERSION_NAME,
         )
     }
