@@ -39,11 +39,17 @@ import org.koin.core.context.GlobalContext
 @RunWith(AndroidJUnit4::class)
 class ClaudePKoinGraphTest {
 
+    // Method names are plain camelCase, not backticked. A backticked name contains spaces, and D8
+    // rejects spaces in a DEX method name below DEX version 040 — which is what this module's
+    // `minSdk = 26` produces. A JVM unit test would have accepted them; an instrumentation test
+    // cannot. Every other class in `androidTest` already follows this, so the naming is the
+    // repository's existing convention rather than a workaround.
+
     /** The graph the running app built in `RikkaHubApp.onCreate`. */
     private val koin get() = GlobalContext.get()
 
     @Test
-    fun `the tombstone store resolves through its interface`() {
+    fun tombstoneStoreResolvesThroughItsInterface() {
         val resolved = koin.get<ClaudePCleanupTombstoneStore>()
 
         assertTrue(
@@ -53,7 +59,7 @@ class ClaudePKoinGraphTest {
     }
 
     @Test
-    fun `the pairing settings gateway resolves through its interface`() {
+    fun pairingSettingsGatewayResolvesThroughItsInterface() {
         val resolved = koin.get<ClaudePPairingSettingsGateway>()
 
         assertTrue(
@@ -63,7 +69,7 @@ class ClaudePKoinGraphTest {
     }
 
     @Test
-    fun `both interfaces resolve to the same instance on every lookup`() {
+    fun bothInterfacesResolveToTheSameInstance() {
         // A `single` must hand back one object. Two instances would mean two writers of pairing
         // state, which is the failure the coordinator's single-owner design exists to prevent.
         assertSame(
@@ -77,7 +83,7 @@ class ClaudePKoinGraphTest {
     }
 
     @Test
-    fun `the repository definition completes construction`() {
+    fun repositoryDefinitionCompletesConstruction() {
         // The exact call the `ProviderManager` single makes. Under the old wiring this threw
         // `NoDefinitionFoundException` for `tombstoneStore`, and the app never opened a chat page.
         val repository = koin.get<ClaudePDevicePairingRepository>()
@@ -86,7 +92,7 @@ class ClaudePKoinGraphTest {
     }
 
     @Test
-    fun `the repository is a single, so the transport cache has one owner`() {
+    fun repositoryIsASingle() {
         assertSame(
             koin.get<ClaudePDevicePairingRepository>(),
             koin.get<ClaudePDevicePairingRepository>(),
@@ -94,7 +100,7 @@ class ClaudePKoinGraphTest {
     }
 
     @Test
-    fun `the graph resolves as far along the ChatVM path as a session-free test can reach`() {
+    fun graphResolvesUpToProviderManager() {
         // ChatVM -> ChatService -> ProviderManager is the chain that failed. This walks it in the
         // order it is actually constructed.
         //
@@ -110,7 +116,7 @@ class ClaudePKoinGraphTest {
     }
 
     @Test
-    fun `the graph resolves the collaborators the repository asks for`() {
+    fun graphResolvesRepositoryCollaborators() {
         // Named together because the failure mode was a *pair* of missing bindings: fixing one and
         // not the other would still fail here.
         val tombstone: ClaudePCleanupTombstoneStore = koin.get()
