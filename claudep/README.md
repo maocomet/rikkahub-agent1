@@ -32,8 +32,13 @@
 - [05-实施阶段与验收门禁](./05-implementation-gates.md)
 - [06-决策记录与未决部署参数](./06-decisions-and-open-items.md)
 - [07-设计依据与实施复核清单](./07-sources-and-revalidation.md)
-- [08-CP1-C 服务端 ADR：Gateway 与 Worker](./08-cp1c-gateway-worker-adr.md)（2026-09-21 追加，**待用户确认**）
-- [CP1-C0 服务端分阶段实施计划](./reports/CP1C0-server-implementation-plan.md)（2026-09-21 追加）
+- [08-CP1-C 服务端 ADR：Gateway 与 Worker](./08-cp1c-gateway-worker-adr.md)（2026-09-21 追加，**待用户确认**；§1.2/§2 部分结论已 SUPERSEDED）
+- [CP1-C0 服务端分阶段实施计划](./reports/CP1C0-server-implementation-plan.md)（2026-09-21 追加，**待按纠正审计复核**）
+- [CP1-C0 纠正审计：檐岚 CC Worker 的真实形态与最小安全复用边界](./reports/CP1C0-correction-audit-yanlan-worker-reuse.md)（2026-09-21 第二轮追加；**纠正 `08` §1.2/§2 的事实前提**）
+
+> **勘误提示**：`08` §1.2 的取证对象 `D:\yannan` 停在 Gate 6，
+> 曾据此得出「檐岚没有 Claude Code Worker」——该结论**已更正**。
+> 檐岚当前实现的正确依据是 `D:\yannan.worktrees\v0.2-gate5-gate6`（HEAD `5a221096`）。
 
 ## Phase 0 完成定义
 

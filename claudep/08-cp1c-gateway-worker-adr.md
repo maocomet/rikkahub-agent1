@@ -6,6 +6,67 @@
 配套计划：`claudep/reports/CP1C0-server-implementation-plan.md`
 本轮模型调用数：**0**；本轮服务端代码：**0 行**
 
+---
+
+## ⚠ Superseded after auditing the latest Yanlan integration worktree
+
+> 追加于 2026-09-21（第二轮）。**本节不删除、不改写下方任何历史结论**，
+> 只标注哪些已失效、哪些仍成立。
+> 完整证据见 `reports/CP1C0-correction-audit-yanlan-worker-reuse.md`。
+
+**失效原因**：下方 §1.2 的取证对象是 `D:\yannan`，而该检出停在 **Gate 6**（HEAD `4f7408b`，分支 `dev`），
+**不是**完成 Gate 7/8 的最新集成 worktree。
+正确的取证对象是 **`D:\yannan.worktrees\v0.2-gate5-gate6`**（HEAD `5a221096`，分支 `codex/v0.2-gate5-gate6-integration`）。
+
+**`D:\yannan` 不得再作为 Yanlan 当前实现依据。**
+
+### 已失效的结论（`SUPERSEDED`）
+
+| 位置 | 原文 | 现状 |
+|---|---|---|
+| §1.2 表头 | 「`D:\yannan`（檐岚）现状」 | 取证对象错误 |
+| §1.2 | 「是否已有 Claude Code Worker？= **没有**」 | **错误**。`src/cc-worker/` 存在（14 个文件）；`package.json:18` 有 `start:cc-worker` |
+| §1.2 | 「Unix socket 监听 = **没有**」 | **错误**。`server.ts:43-57` 已实现；`main.ts:64`；Gate 7 实测 socket `claude:yanlan 0660` |
+| §1.2 | 「可独立重写的安全思想（**不是代码**）」 | **部分失效**：执行核心（argv builder、NDJSON 解析、stderr 分类、状态机、进程生命周期）**可复用代码**，不只是思想 |
+| §2.1 表「与现有 Claude Worker 的复用」 | 「**无生产代码可复用**（檐岚根本没有 Worker）」 | **错误**。可复用但有边界，见纠正审计 §5.2 |
+| §2.1 表 C 列 | 「檐岚…**没有** Unix socket」 | **一半失效**：确无 WSS，但**有** Unix socket |
+| §11.1 隐含假设 | 檐岚已实现 SHA-256 门禁 | **未实现**。檐岚只做「固定路径 + 精确版本 + 目录不可写」（`main.ts:87-92`） |
+
+### 仍然成立的结论（`STANDS`）
+
+| 位置 | 结论 | 说明 |
+|---|---|---|
+| §1.2 | 檐岚**无任何许可证**（无 `LICENSE`/`COPYING`/`NOTICE`，`"private": true`，无 `license` 字段） | 本轮复验一致 |
+| §1.2 | 檐岚**没有 Gateway**（REST + SSE，无 WebSocket） | 复验一致 |
+| §1.2 | 主后端**已决定不放 Claude**（任务书写死） | 复验一致 |
+| §1.2 | **反模式两处**（`run-submodel.sh:9`、集成方案 `:232-241`）仍**不得借鉴** | 与 Gate 7 **修复后**的生产代码不同，两者不可混淆 |
+| §2.3 | **拒绝方案 C**：同进程 / 同库 / 同 origin / 违反檐岚自身决定 | **四条全部复验为真**（含 `load.ts:114` 限流默认关、`origin-check.ts:24-25` 非浏览器放行） |
+| §2.4 | **拒绝方案 A** | 不受本次纠正影响 |
+| §3.1 | **推荐独立仓库 `claude-p-server`** | **结论不变，但理由全部更换**：不再是「檐岚没有东西可复用」，而是「檐岚的 Worker 按构造总是挂载其 MCP 与工具面，且与后端共享 Postgres 依赖，因此不能整体复用」（纠正审计 §5.2、§6.1） |
+| §3.1 | 服务端许可证 **AGPL-3.0**（依 `06` D-012） | 不变；且檐岚侧「不复制 RikkaHub AGPL 源码」是明文约束（任务书 `:23`），方向不冲突 |
+| §7 | 公网协议与私有协议**不得混用** | 不变，且是拒绝「同一 Worker 双 profile」的核心依据 |
+| §9 | Secret / prompt / 回答 / stderr 的日志白名单规则 | 不变 |
+| §11.2.1 | 对 CLI flag 的两处修正（`--setting-sources ""` 语义未确认、`--allowedTools` 不是可见性白名单） | 不变，且**被檐岚现状印证**（檐岚正是用了 `--setting-sources ''` 且未做证伪实验） |
+| §11.2.2 | 禁用参数黑名单 | 不变；檐岚**未实施** `--disallowedTools` 纵深防御，复用时应补 |
+| §11.2.3 | env 白名单**构造**（不是继承后删除） | 不变；檐岚已按此实现（`main.ts:44-62`），但缺 4 个变量 |
+| §11.2.4 | cwd 与 session 的耦合 | 不变；且檐岚「单一固定 cwd」的实践给出另一种已验证形态，并证明 **cwd 是 session 命名空间的天然分隔符** |
+| §13 | 三方兼容矩阵 | 不变；Worker ABI 一轴需按檐岚实际形态（HTTP-over-Unix-socket + Bearer，无 `worker.hello` 握手）改写 |
+
+### 建议修订（`REVISE`）
+
+| 位置 | 建议 |
+|---|---|
+| §6 / §6.2 | 檐岚实测为**两层**（`claude` 用户直接 spawn，无 sudo launcher，unit `:8,12`）。建议采纳两层，**取消 setuid 让步**（不再需要「T2 不设 `NoNewPrivileges`」） |
+| §7 | `worker.hello` / `abi: "claude-p-worker/1"` 握手在檐岚中**不存在**（只有 `/healthz` 的 `version` 字符串）。ABI 协商需自行设计 |
+| §11.1 | SHA-256 清单校验要求**保留**，但须知檐岚未实现，**不可照抄现状** |
+| §15 未决项 3、12 | 见上一条，可直接回避 |
+
+**结论：本 ADR 的推荐方案（§3.1 方案 B / 独立仓库）与全部安全约束保持有效；
+失效的只有「檐岚没有 Worker，因此无代码可复用」这一组事实前提。
+方案选择本身不变，但复用边界必须按纠正审计 §5.2 的「抽取子集」清单重新界定。**
+
+---
+
 ## 0. 本 ADR 的地位与存放位置
 
 `claudep/06-decisions-and-open-items.md` 明确要求：
@@ -41,6 +102,19 @@
 **结论：本仓库没有任何服务端承载面，且它的构建、CI 与发布节奏全部围绕 Android APK 组织。**
 
 ### 1.2 `D:\yannan`（檐岚）现状（只读，未修改）
+
+> **⚠ 本节已 SUPERSEDED（2026-09-21 第二轮纠正审计）。请先读本文档顶部
+> 「Superseded after auditing the latest Yanlan integration worktree」小节。**
+>
+> 本节使用的取证对象 `D:\yannan` 停在 **Gate 6**（HEAD `4f7408b`，分支 `dev`），
+> 不是完成 Gate 7/8 的最新集成 worktree。
+> 下表中「是否已有 Claude Code Worker？= 没有」「Unix socket 监听 = 没有」两条**为事实错误**；
+> 「檐岚没有 Gateway」「无许可证」「技术栈」等条目**仍然成立**。
+>
+> 正确的取证对象：**`D:\yannan.worktrees\v0.2-gate5-gate6`**（HEAD `5a221096`）。
+> 逐条裁定见 `reports/CP1C0-correction-audit-yanlan-worker-reuse.md` §9。
+>
+> **以下原文保留不改，作为当时的记录。**
 
 | 问题 | 结论 | 证据 |
 |---|---|---|

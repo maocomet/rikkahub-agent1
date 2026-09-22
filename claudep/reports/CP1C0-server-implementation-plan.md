@@ -1,11 +1,30 @@
 # CP1-C0｜服务端分阶段实施计划（CP1-C1 → CP1-C4）
 
-状态：**计划冻结，未开始实现**
+状态：**计划冻结，未开始实现**（**待按 2026-09-21 第二轮纠正审计复核**）
 日期：2026-09-21
 上位决策：`claudep/08-cp1c-gateway-worker-adr.md`
 本轮模型调用数：**0**；服务端代码行数：**0**
 
 > 本文件只定义文件级任务与验收标准。**CP1-C0 不写任何 Gateway/Worker 生产代码。**
+
+> **⚠ 2026-09-21 第二轮纠正审计的交叉引用**
+> `08` §1.2/§2 中「檐岚没有 Claude Code Worker / 没有 Unix socket」为**事实错误**
+> （原取证对象 `D:\yannan` 停在 Gate 6）。
+> 檐岚**已有**一个经 Gate 7 真实验收的 CC Worker，其中相当一部分执行逻辑**可以复用**。
+> 详见 `claudep/reports/CP1C0-correction-audit-yanlan-worker-reuse.md`。
+>
+> **对本计划的影响（尚未落地为修订，需用户先确认）**：
+> - §3.2 与 §4.2 中 C1-22 / C2-1…C2-15 的**从零实现**假设可能需要改为「**抽取 + 裁剪**」，
+>   以免违反推荐架构的优先级第 3 条（不重复实现已验证逻辑）；
+> - C2-3 的 `preflight` **必须补 SHA-256**（檐岚未实现，不可照抄）；
+> - C2-4/C2-5 的 argv builder **必须**在结构上不存在 MCP 分支，且补 `--disallowedTools`；
+> - C2-6 的 env 白名单**必须**补 `CLAUDE_CODE_DISABLE_AUTO_MEMORY`、`DISABLE_TELEMETRY`、
+>   `DISABLE_ERROR_REPORTING`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`；
+> - `src/worker/` 中**不得**引入任何 PostgreSQL / Drizzle 依赖
+>   （檐岚的 `src/cc-worker/session-coordinator.ts` 即因依赖 DB 而**不可**整体复用）。
+>
+> **在上述修订完成前，本计划的 C1/C2 文件级任务不得开工。**
+> 停止点不变：仍停在**原 Codex 复审点**。
 
 ---
 

@@ -404,9 +404,12 @@ me.rerere.rikkahub.data.claudep.ClaudePKoinGraphTest: tests=7 failures=0 errors=
 
 以下各项本轮**均未**验证，任何后续文档不得据此声称：
 
-- **未**完成真实 Gateway 配对 —— 本仓库内**不存在** Gateway 服务端（见
-  `claudep/08-cp1c-gateway-worker-adr.md` §2 的只读审计）；
-- **未**完成 Claude P 文本生成 —— 无 Worker、无 Claude Code 进程、模型调用数 **0**；
+- **未**完成真实 Gateway 配对 —— 本仓库（`rikkahub-agent1`）内**不存在** Gateway 服务端。
+  服务端归属决策见 `claudep/08-cp1c-gateway-worker-adr.md` §3；
+  **注意**：`08` §1.2/§2 关于「檐岚没有 Claude Code Worker / 没有 Unix socket」的结论
+  已被 `claudep/reports/CP1C0-correction-audit-yanlan-worker-reuse.md` 更正为 **SUPERSEDED**
+  （原取证对象 `D:\yannan` 停在 Gate 6，不是最新集成 worktree）；
+- **未**完成 Claude P 文本生成 —— 本仓库无 Worker、无 Claude Code 进程、模型调用数 **0**；
 - **未**通过 Gate CP1 —— CP1 还缺 Gateway/Worker 最小实现与零模型 VPS smoke；
 - **未**验证 CP2 连续会话、CP3 工具、CP4 附件；
 - 真机验证期间 Claude P Provider **未配置任何可达 Gateway**，走的仍是 fail-closed 的未配对路径。
