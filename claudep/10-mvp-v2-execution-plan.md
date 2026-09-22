@@ -3,7 +3,8 @@
 - Status: APPROVED FOR EXECUTION
 - Scope: single-user personal software
 - Canonical execution plan: yes
-- Current authorized stage: M0 only
+- Current authorized stage: M1 only
+- M0 已完成并经 Codex review 通过（Linux CI run `35738291479`，SHA `be374b348dece8214b121eed00f19ba4a0bdb29f`，27/27 files，328/328 passed，0 failed，0 skipped，模型调用 0；见 `rikkahub-claude-p-server` 的 `docs/M0-baseline-exit-report.md`）。
 - DS 不得自行进入下一阶段。
 - 每个阶段完成后由 Codex review，再由猫猫决定是否授权下一阶段。
 - 旧 `claudep/` CP1/CP2 等文档仍作为历史设计与验证证据保留，但不再决定当前施工顺序。
@@ -446,4 +447,4 @@ Phase A 全绿后，由猫猫在手机完成预先规定的真实流程：
 
 **M0 → M1 → M2 → M3 → M4**
 
-当前只授权 **M0**。M0 完成并经 Codex review 后，必须由猫猫另行决定是否授权 M1。
+当前只授权 **M1**。M0 已完成并经 Codex review 通过。M1 完成并经 Codex review 后，必须由猫猫另行决定是否授权 M2。
