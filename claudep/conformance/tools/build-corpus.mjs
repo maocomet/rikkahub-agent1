@@ -22,6 +22,8 @@
  */
 
 import { createHash } from 'node:crypto';
+
+import { canonicalSpecDigest } from './canonical-hash.mjs';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -56,17 +58,33 @@ function readSpecRevision(text) {
   return match[1];
 }
 
+/**
+ * The digests are **canonical**, not raw-file, and the difference is the whole point.
+ *
+ * Hashing the working-tree bytes made the recorded value depend on the machine that ran
+ * this script: Git checks a text file out as CRLF under `core.autocrlf=true`, so a Windows
+ * run recorded the CRLF digest while CI recomputed the LF digest and could never match.
+ * That failure was real — it is what `corpus revision is bound to the specification it was
+ * derived from` reported on CI, and it could only ever have passed on one machine.
+ *
+ * `canonicalSpecDigest` decodes strictly as UTF-8, normalizes CRLF to LF, refuses a bare
+ * CR, and changes nothing else. See `canonical-hash.mjs` for the rule and `selftest.mjs`
+ * for the regression cases. Reading the file as bytes rather than as a decoded string
+ * matters: `readFileSync(path, 'utf8')` would silently replace invalid UTF-8, which is a
+ * lossy step this rule must not take.
+ */
 const SPEC_REVISION = {
   spec_revision: readSpecRevision(specText),
   protocol_spec: 'claudep/02-wire-protocol-v1.md',
-  protocol_spec_sha256: createHash('sha256').update(specText).digest('hex'),
+  protocol_spec_sha256: canonicalSpecDigest(readFileSync(SPEC_PATH)),
   trust_boundaries: 'claudep/01-architecture-and-trust-boundaries.md',
-  trust_boundaries_sha256: createHash('sha256')
-    .update(readFileSync(BOUNDARIES_PATH))
-    .digest('hex'),
+  trust_boundaries_sha256: canonicalSpecDigest(readFileSync(BOUNDARIES_PATH)),
   protocol_id: 'rikkahub.claude-p.v1',
   major_version: 1,
   android_corpus_origin: 'maocomet/rikkahub-agent1',
+  specification_digest_rule:
+    'sha256 over UTF-8 bytes after normalizing CRLF to LF; a bare CR is rejected; ' +
+    'nothing else is trimmed, reordered or rewritten. See claudep/conformance/tools/canonical-hash.mjs',
 };
 
 // ---------------------------------------------------------------------------------------------

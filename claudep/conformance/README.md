@@ -78,6 +78,36 @@ They are not interchangeable. An emoji is `2` under the first framing and `4` by
 the second. `handshake-astral-emoji` and `fingerprint-unicode` exist to catch exactly
 this.
 
+## Two different digests, for two different jobs
+
+This directory records hashes in two places and they are **not** computed the same way.
+Conflating them is what produced a real failure, so the distinction is stated here rather
+than left to the generator.
+
+| | `MANIFEST.sha256` | `SPEC_REVISION.json` → `*_sha256` |
+|---|---|---|
+| Hashes | the corpus files in this directory | `claudep/02-wire-protocol-v1.md` and `claudep/01-…md` |
+| Over | **raw bytes** | **canonical bytes** (CRLF normalized to LF, bare CR rejected) |
+| Verified by | `sha256sum -c` | the Android test, which recomputes the digest |
+| Purpose | pin the vendored copy byte-for-byte | say which specification text the vectors describe |
+
+**The specification digests are canonical** because hashing raw working-tree bytes made
+the recorded value depend on the machine that ran the generator: `core.autocrlf=true`
+checks text out as CRLF, so a Windows run recorded the CRLF digest while CI recomputed the
+LF digest and could never match. That failure was real — it is what
+`corpus revision is bound to the specification it was derived from` reported on CI, and it
+could only ever have passed on one machine. The rule is normative in
+`claudep/02-wire-protocol-v1.md` §12.11 and implemented in `tools/canonical-hash.mjs`.
+
+**The manifest stays raw**, because its job is byte-exactness and `sha256sum -c` compares
+raw bytes. Its stability across platforms comes from `.gitattributes` (`eol=lf`), which is
+a working-tree guard rather than a correctness argument — the canonical digests are
+correct with or without it.
+
+`tools/selftest.mjs` asserts the properties this section describes: LF and CRLF forms of
+one document hash identically, a bare CR and invalid UTF-8 are refused, and a real content
+change — including adding or removing a trailing newline — changes the digest.
+
 ## Changing the corpus
 
 A corpus change is a **protocol change**, and the protocol is frozen by review:

@@ -1,10 +1,11 @@
 {
-  "spec_revision": "v1-r2",
+  "spec_revision": "v1-r3",
   "protocol_spec": "claudep/02-wire-protocol-v1.md",
-  "protocol_spec_sha256": "bd83e4970da9a3e0b48dd7734ea5cf8f016204171cba5b5e19d680cff2f98151",
+  "protocol_spec_sha256": "8ff5e6a5a6e494b7fe7546a918d55567c918623853f5fa7367ddb23094ba3e85",
   "trust_boundaries": "claudep/01-architecture-and-trust-boundaries.md",
-  "trust_boundaries_sha256": "f9800a371dee274e9f9a15bf95632f93f16748c7947f0f981da8957d1ded1b2b",
+  "trust_boundaries_sha256": "a253465953e62586658c4067dbfb81a2942de309e21a299e1acb2783066a6d87",
   "protocol_id": "rikkahub.claude-p.v1",
   "major_version": 1,
-  "android_corpus_origin": "maocomet/rikkahub-agent1"
+  "android_corpus_origin": "maocomet/rikkahub-agent1",
+  "specification_digest_rule": "sha256 over UTF-8 bytes after normalizing CRLF to LF; a bare CR is rejected; nothing else is trimmed, reordered or rewritten. See claudep/conformance/tools/canonical-hash.mjs"
 }

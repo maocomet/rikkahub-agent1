@@ -11,7 +11,25 @@ vectors are derived twice, by two implementations, and only written once the two
 |---|---|
 | `gen-vectors.mjs` | Derives the transcript and fingerprint vectors in JavaScript. Cites the Kotlin source and line range each algorithm mirrors. |
 | `VerifyVectors.java` | Derives the **same** vectors on the JVM. |
+| `canonical-hash.mjs` | Canonical hashing of specification documents: strict UTF-8, CRLF normalized to LF, bare CR refused. |
+| `selftest.mjs` | Regression cases for the above. Run it: `node selftest.mjs`. |
 | `build-corpus.mjs` | Runs `gen-vectors.mjs`, adds the routing vectors, and writes `../` in full plus `MANIFEST.sha256`. |
+
+### Why the specification digest is canonical and the manifest is not
+
+`canonical-hash.mjs` exists because the first version of the spec binding hashed raw
+working-tree bytes. That value depended on the machine that ran the generator rather than
+on the document, so it passed on Windows with `core.autocrlf=true` and failed on every LF
+checkout — which is exactly what CI reported. Two digests in this directory, two rules:
+
+- **spec digests** (`SPEC_REVISION.json`) — canonical, so the value is a property of the
+  document rather than of a rendering of it;
+- **`MANIFEST.sha256`** — raw bytes, because its job is byte-exactness and `sha256sum -c`
+  compares what is on disk. Cross-platform stability there comes from `.gitattributes`.
+
+`selftest.mjs` is the executable statement of the rule. It constructs its inputs in
+memory rather than reading files, because a test that read a file would inherit the very
+checkout-dependence the rule exists to remove.
 
 ## Why the Java file is not redundant
 

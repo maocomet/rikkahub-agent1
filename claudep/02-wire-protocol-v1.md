@@ -1,11 +1,23 @@
 # 02｜线协议与状态机（v1）
 
-> **规范修订：`v1-r2`（2026-09-22）。**
-> r2 相对 r1 只做**补充**：新增 §12 字节级契约，把 transcript 与 request fingerprint
-> 的编码从「只存在于 Android 实现中」提升为规范正文（见 §12.0）。
-> **不改变任何既有语义**——新增文字描述的是已经冻结、且已被语料固定的行为。
+> **规范修订：`v1-r3`（2026-09-22）。**
+>
+> **r3 不改变任何线上语义。** wire framing、envelope、事件、错误枚举与 §12 的字节级契约
+> **逐字节未变**；`claudep/conformance/` 下的 vectors 内容也未变。r3 只新增两件事：
+>
+> 1. **§12.11 canonical 规范摘要规则**——`SPEC_REVISION.json` 里的 `*_sha256` 从此按
+>    行尾规范化后的字节计算，而不是按某个检出机器上的原始字节。r2 的做法
+>    （哈希工作区原始字节）**在任何 LF 检出上都不可能通过**：`core.autocrlf=true` 会把
+>    文本检出为 CRLF，于是 Windows 上记录的是 CRLF 摘要，CI 重算的是 LF 摘要。
+>    这个缺陷由 CI 实际捕获（`corpus revision is bound to the specification it was
+>    derived from` 失败）。r3 修的是**摘要的计算方式**，不是被摘要的内容。
+> 2. 明确 `TRUST_BOUNDARIES` 摘要同样适用该规则。
+>
 > 修订标识同时记录在 `claudep/conformance/SPEC_REVISION.json` 的 `spec_revision` 字段，
 > 两仓测试都对其漂移 fail-closed。
+>
+> 历史：r1 为初版；r2 新增 §12 字节级契约，把 transcript 与 request fingerprint 的编码
+> 从「只存在于 Android 实现中」提升为规范正文（见 §12.0），同样不改变语义。
 
 ## 1. 传输
 
@@ -413,4 +425,40 @@ decimal(v.length) + ":" + v
 
 实现方应以语料为验收依据：语料通过即编码正确，语料不通过即编码错误。
 **不得**通过修改语料来迁就实现。
+
+### 12.11 规范摘要（canonical spec digest）
+
+`claudep/conformance/SPEC_REVISION.json` 记录的 `protocol_spec_sha256` 与
+`trust_boundaries_sha256` 让读者能判断：手上这份语料描述的是不是眼前这份文档。
+
+**这两个摘要按 canonical 形式计算，而不是按某个检出的原始字节。** 规则如下：
+
+| # | 步骤 |
+|---:|---|
+| 1 | 按 **UTF-8 严格解码**；非法 UTF-8 **拒绝**（fail-closed），不得用 U+FFFD 替换 |
+| 2 | 把所有 `CRLF` 规范化为 `LF` |
+| 3 | **裸 `CR`（其后不跟 `LF`）拒绝**（fail-closed） |
+| 4 | **除此之外不做任何变换**：不 trim、不去 BOM、不重排、不折叠空行、不做 Unicode 规范化 |
+| 5 | 对规范化后文本的 UTF-8 字节计算 **SHA-256**，小写十六进制 |
+
+**为什么必须有这条规则。** 早期版本直接哈希工作区原始字节。该值随后取决于
+**运行生成器的那台机器**：`core.autocrlf=true` 会把文本检出为 CRLF，于是 Windows 上
+记录的是 CRLF 形式的摘要，而 CI 检出 LF、重算 LF 形式的摘要，**任何 LF 检出上都
+不可能匹配**。这不是容差问题——一个随检出变化的哈希不是文档的哈希，而是某台机器
+渲染结果的哈希。
+
+**两条刻意的推论**（由 `tools/selftest.mjs` 断言）：
+
+- 同一文档的 LF 形式与 CRLF 形式产生**相同**摘要；
+- **增删末尾换行会改变摘要**——它是真实内容变化，不是排版细节。
+
+**`.gitattributes` 是工作树防护，不是正确性来源。** 仓库为语料与规范文件声明 `eol=lf`，
+使原始字节在检出时稳定；但 `*_sha256` 的正确性**不依赖**该声明，即使在 CRLF 工作区
+重新生成也得到同一摘要。
+
+**`MANIFEST.sha256` 不适用本规则**：它钉的是语料文件的**逐字节**内容，由 `sha256sum -c`
+原样校验，因此保持原始字节哈希；其跨平台稳定性由 `.gitattributes` 的 `eol=lf` 提供。
+
+规范摘要规则只定义**如何计算哈希**，不定义文档内容；每次给该规则增加例外，
+都是一种让两份不同文档共享同一摘要的方式。
 

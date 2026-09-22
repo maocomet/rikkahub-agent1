@@ -1,2 +1,22 @@
 # Baseline Profile 生成文件：标记为文本，统一使用 LF 换行，避免 CRLF 抖动
 app/src/release/generated/baselineProfiles/*.txt text eol=lf
+
+# Claude P conformance corpus and specifications.
+#
+# These files are hashed and vendored byte-for-byte, so their working-tree form must not
+# depend on the machine that checked them out. Without this, `core.autocrlf=true` yields
+# CRLF for anyone on Windows and LF everywhere else, and a hash computed on one machine
+# could never match a hash computed on another.
+#
+# This is a working-tree guard, NOT the correctness argument. The specification digests
+# are canonical (claudep/02-wire-protocol-v1.md §12.11): they normalize CRLF to LF and
+# reject a bare CR, so they produce the same value from either working tree. This file
+# exists because MANIFEST.sha256 hashes raw bytes and cannot do that, and because a corpus
+# file that silently changed shape between checkouts would make the vendoring comparison
+# meaningless even where the digests still matched.
+#
+# If this block were removed the canonical digests would still be correct; the manifest
+# would become checkout-dependent. Do not treat it as the only thing holding either up.
+claudep/conformance/** text eol=lf
+claudep/02-wire-protocol-v1.md text eol=lf
+claudep/01-architecture-and-trust-boundaries.md text eol=lf
