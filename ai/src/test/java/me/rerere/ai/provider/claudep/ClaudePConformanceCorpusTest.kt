@@ -345,33 +345,49 @@ class ClaudePConformanceCorpusTest {
 
             val actual = ClaudePProtocol.parseInbound(raw)
 
+            // Every assertion below names the frame and both sides of the comparison, so a
+            // failure in CI identifies the divergent vector without needing a second run —
+            // which matters because this suite previously failed with only a line number,
+            // and Gradle's test logging is off project-wide, so the message is the only
+            // place the identity can appear. The frames are synthetic corpus fixtures and
+            // carry no credential or user content, so quoting one is safe.
+            val context = buildString {
+                append(id)
+                append(" | expected=")
+                append(expect.entries.sortedBy { it.key }.joinToString(",") { "${it.key}:${it.value}" })
+                append(" | actual=")
+                append(describeInbound(actual))
+                append(" | frame=")
+                append(raw)
+            }
+
             when (kind) {
                 "event" -> {
                     assertTrue(
-                        "$id: expected a routed event, got $actual",
+                        "expected a routed event. $context",
                         actual is ClaudePInbound.Event,
                     )
                     val expectedType = expect.mustGet("eventType").jsonPrimitive.content
                     val envelopeType = (actual as ClaudePInbound.Event).event.envelope.type.trim()
-                    assertEquals("$id: wrong routed type", expectedType, envelopeType)
+                    assertEquals("wrong routed type. $context", expectedType, envelopeType)
                 }
 
                 "ignored_unknown" -> assertTrue(
-                    "$id: expected IgnoredUnknownEvent, got $actual",
+                    "expected IgnoredUnknownEvent. $context",
                     actual is ClaudePInbound.IgnoredUnknownEvent,
                 )
 
                 "rejected" -> {
-                    assertTrue("$id: expected a rejection, got $actual", actual is ClaudePInbound.Rejected)
+                    assertTrue("expected a rejection. $context", actual is ClaudePInbound.Rejected)
                     val expectedReason = expect.mustGet("reason").jsonPrimitive.content
                     assertEquals(
-                        "$id: wrong rejection reason",
+                        "wrong rejection reason. $context",
                         expectedReason,
                         rejectionName((actual as ClaudePInbound.Rejected).reason),
                     )
                 }
 
-                else -> throw AssertionError("$id: unknown expectation kind '$kind'")
+                else -> throw AssertionError("unknown expectation kind '$kind'. $context")
             }
         }
     }
@@ -520,6 +536,20 @@ class ClaudePConformanceCorpusTest {
             "the corpus should exercise at least one routed server event type",
             routed.isNotEmpty(),
         )
+    }
+
+    /**
+     * A one-line, content-free rendering of a routing outcome.
+     *
+     * Exists so a failed assertion says *what* the parser did, not merely that it did
+     * something unexpected. For an event it reports the routed type; for a rejection it
+     * reports which rule refused the frame; for an ignored frame it says so. None of these
+     * carry frame content, so the rendering is safe to put in a CI log.
+     */
+    private fun describeInbound(inbound: ClaudePInbound): String = when (inbound) {
+        is ClaudePInbound.Event -> "Event(type=${inbound.event.envelope.type.trim()})"
+        is ClaudePInbound.Rejected -> "Rejected(${rejectionName(inbound.reason)})"
+        ClaudePInbound.IgnoredUnknownEvent -> "IgnoredUnknownEvent"
     }
 
     /**
