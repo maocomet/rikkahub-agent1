@@ -216,6 +216,7 @@ jobs:
           REQUIRED=(
             "ai:me.rerere.ai.provider.claudep.ClaudePCleanupTombstoneCodecTest"
             "ai:me.rerere.ai.provider.claudep.ClaudePConfigureUiTest"
+            "ai:me.rerere.ai.provider.claudep.ClaudePConformanceCorpusTest"
             "ai:me.rerere.ai.provider.claudep.ClaudePCredentialStoreTest"
             "ai:me.rerere.ai.provider.claudep.ClaudePEndpointTest"
             "ai:me.rerere.ai.provider.claudep.ClaudePFakeGatewayTest"
@@ -254,7 +255,31 @@ jobs:
                 [ -n "$xml" ] || continue
                 # Compare the XML's own class name, not the file name: an inner-class or a renamed
                 # file must not be able to satisfy an entry it does not match.
-                if grep -q "name=\"$class\"" "$xml"; then found=1; echo "executed: $class"; fi
+                if grep -q "name=\"$class\"" "$xml"; then
+                  found=1
+                  # An XML that EXISTS is not an XML that RAN. Gradle writes a suite element even
+                  # for a class whose every case was filtered out or skipped, so "the file is
+                  # there" would pass while the class verified nothing. Read the suite's own
+                  # counters, which are the only statement about what actually executed.
+                  counts=$(grep -o '<testsuite[^>]*>' "$xml" | head -1)
+                  n_tests=$(printf '%s' "$counts" | grep -o 'tests="[0-9]*"' | head -1 | tr -dc '0-9')
+                  n_skip=$(printf '%s' "$counts" | grep -o 'skipped="[0-9]*"' | head -1 | tr -dc '0-9')
+                  n_fail=$(printf '%s' "$counts" | grep -o 'failures="[0-9]*"' | head -1 | tr -dc '0-9')
+                  n_err=$(printf '%s' "$counts" | grep -o 'errors="[0-9]*"' | head -1 | tr -dc '0-9')
+                  if [ "${n_tests:-0}" -eq 0 ]; then
+                    echo "::error::$class produced a JUnit XML reporting 0 tests — it compiled but verified nothing."
+                    missing=$((missing + 1))
+                  elif [ "${n_skip:-0}" -ne 0 ]; then
+                    # skipped is not passed. A suite that skips is a suite that did not check.
+                    echo "::error::$class reported ${n_skip} skipped test(s); skipped must not be treated as passing."
+                    missing=$((missing + 1))
+                  elif [ "${n_fail:-0}" -ne 0 ] || [ "${n_err:-0}" -ne 0 ]; then
+                    echo "::error::$class reported ${n_fail} failure(s) and ${n_err} error(s)."
+                    missing=$((missing + 1))
+                  else
+                    echo "executed: $class (${n_tests} tests, 0 skipped)"
+                  fi
+                fi
               done < <(find "$results" -name '*.xml' | sort)
             fi
             if [ "$found" -ne 1 ]; then
@@ -268,6 +293,68 @@ jobs:
             exit 1
           fi
           echo "All ${#REQUIRED[@]} required Claude P test classes executed."
+
+      # The conformance corpus is the shared artifact between this repository and the server
+      # implementation, so it gets its own gate rather than riding on the class-level one.
+      #
+      # Three separate things can go wrong and they need three different checks:
+      #   1. the corpus files were edited without regenerating the manifest -- so the manifest
+      #      is verified against the files on disk, not merely read;
+      #   2. the tests ran but not all of them did -- so the executed count is pinned exactly.
+      #      A pinned count is brittle on purpose: adding a case means editing this number,
+      #      which is the moment someone notices the corpus changed;
+      #   3. the corpus drifted from the specification it was derived from -- which the corpus
+      #      test itself asserts, and which therefore shows up as a failure above.
+      - name: Verify the conformance corpus gate
+        if: always()
+        run: |
+          set -uo pipefail
+
+          if [ ! -f claudep/conformance/MANIFEST.sha256 ]; then
+            echo "::error::claudep/conformance/MANIFEST.sha256 is missing from the checkout; the conformance test cannot verify anything."
+            exit 1
+          fi
+
+          # Run from inside the directory: the manifest records paths relative to it.
+          if ! (cd claudep/conformance && sha256sum -c MANIFEST.sha256); then
+            echo "::error::The conformance corpus does not match its manifest. Either the corpus was edited without regenerating it, or the vendored copy diverged. Regenerate with claudep/conformance/tools/build-corpus.mjs -- do not hand-edit the manifest."
+            exit 1
+          fi
+
+          revision=$(sed -n 's/.*"spec_revision"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' claudep/conformance/SPEC_REVISION.json)
+          if [ -z "$revision" ]; then
+            echo "::error::SPEC_REVISION.json records no spec_revision; the corpus cannot be tied to a specification revision."
+            exit 1
+          fi
+          echo "Conformance corpus verified against specification revision $revision."
+
+          # Pin the executed count for the corpus suite.
+          EXPECTED_CONFORMANCE_TESTS=14
+          xml=ai/build/test-results/testDebugUnitTest/TEST-me.rerere.ai.provider.claudep.ClaudePConformanceCorpusTest.xml
+          if [ ! -f "$xml" ]; then
+            echo "::error::No JUnit XML for ClaudePConformanceCorpusTest at $xml."
+            exit 1
+          fi
+          # The suite element's own counters, not the file's existence. Gradle writes a
+          # testsuite element even for a class whose every case was filtered out or
+          # skipped, so "the XML is there" would pass while the corpus verified nothing.
+          counts=$(grep -o '<testsuite[^>]*>' "$xml" | head -1)
+          actual=$(printf '%s' "$counts" | grep -o 'tests="[0-9]*"' | head -1 | tr -dc '0-9')
+          skipped=$(printf '%s' "$counts" | grep -o 'skipped="[0-9]*"' | head -1 | tr -dc '0-9')
+
+          # Checked here as well as in the per-class report step above. Two steps asserting
+          # the same property is deliberate: this one is the gate for the corpus
+          # specifically, and it should be readable on its own without having to know that
+          # another step also covers it.
+          if [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::ClaudePConformanceCorpusTest reported ${skipped} skipped test(s). Skipped is not passed — the corpus is the shared contract with the server implementation, so a skipped case means the contract went unverified."
+            exit 1
+          fi
+          if [ "${actual:-0}" -ne "$EXPECTED_CONFORMANCE_TESTS" ]; then
+            echo "::error::ClaudePConformanceCorpusTest executed ${actual:-0} tests, expected $EXPECTED_CONFORMANCE_TESTS. If a case was added or removed deliberately, update EXPECTED_CONFORMANCE_TESTS in this workflow in the same change."
+            exit 1
+          fi
+          echo "ClaudePConformanceCorpusTest executed exactly $EXPECTED_CONFORMANCE_TESTS tests, none skipped."
 
       - name: Diagnose web-ui build (on failure)
         if: failure()
