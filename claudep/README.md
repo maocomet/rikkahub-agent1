@@ -1,5 +1,7 @@
 # RikkaHub Claude P 集成：Phase 0 设计包
 
+Current execution plan: [10-mvp-v2-execution-plan.md](./10-mvp-v2-execution-plan.md)
+
 状态：Phase 0 设计冻结；Android 端 CP1-A / CP1-B 已完成（CI + 真机），
 **服务端（CP1-C）待用户确认 ADR 后开始**
 
