@@ -3,7 +3,6 @@ package me.rerere.ai.provider.claudep
 import java.io.File
 import java.security.MessageDigest
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -524,13 +523,31 @@ class ClaudePConformanceCorpusTest {
     }
 
     /**
-     * Reads a required key.
+     * Reads a required key, failing loudly when it is absent.
      *
-     * Deliberately not named `getValue`: `JsonObject` already inherits a `getValue` from
-     * `kotlin.collections` whose failure mode is a bare `NoSuchElementException`, and a
-     * member extension would silently shadow it — making a missing key in the corpus
-     * indistinguishable from a genuine assertion failure.
+     * Deliberately not named `getValue`: `kotlin.collections` already provides one whose
+     * failure mode is a bare `NoSuchElementException`, and a member extension would
+     * silently shadow it — making a missing key in the corpus indistinguishable from a
+     * genuine assertion failure.
+     *
+     * **Generic over the value type on purpose.** The corpus is read two ways: as a
+     * `JsonObject` (a frame's fields, where the value is a `JsonElement`) and as an
+     * indexed `Map<String, JsonObject>` built by `associateBy` (one vector looked up by
+     * its id). Both need the same fail-closed lookup, and neither should get a weaker one
+     * than the other. An earlier revision declared this on `JsonObject` alone, which
+     * compiled for the first use and failed for the second at every call site: a
+     * `Map<String, JsonObject>` is not a `JsonObject`, even though `JsonObject` is itself
+     * a `Map<String, JsonElement>`.
+     *
+     * Because the receiver is the Map rather than the concrete type, the return type is
+     * inferred from the Map's own value type — `JsonObject` for an indexed vector map,
+     * `JsonElement` for a frame — so callers keep their existing `.jsonPrimitive`,
+     * `.jsonArray` and `.jsonObject` accessors with no casts.
+     *
+     * `V : Any` is required rather than incidental: it is what lets the elvis operator
+     * narrow `V?` to `V`, so a genuinely absent key throws instead of yielding a null that
+     * a later access would turn into a confusing failure somewhere else.
      */
-    private fun JsonObject.mustGet(key: String): JsonElement =
+    private fun <V : Any> Map<String, V>.mustGet(key: String): V =
         this[key] ?: throw AssertionError("corpus entry is missing '$key'")
 }
