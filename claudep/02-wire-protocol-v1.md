@@ -1,5 +1,12 @@
 # 02｜线协议与状态机（v1）
 
+> **规范修订：`v1-r2`（2026-09-22）。**
+> r2 相对 r1 只做**补充**：新增 §12 字节级契约，把 transcript 与 request fingerprint
+> 的编码从「只存在于 Android 实现中」提升为规范正文（见 §12.0）。
+> **不改变任何既有语义**——新增文字描述的是已经冻结、且已被语料固定的行为。
+> 修订标识同时记录在 `claudep/conformance/SPEC_REVISION.json` 的 `spec_revision` 字段，
+> 两仓测试都对其漂移 fail-closed。
+
 ## 1. 传输
 
 - 生产：`wss://<paired-origin>/v1/claude-p/stream`；
@@ -217,4 +224,193 @@ Gateway 为每个 `request_id` 保存请求指纹和 receipt：
 附件先走独立的分块上传协议，完成后返回一次性 `attachment_handle`。Generation 只引用 handle 与 manifest hash。handle 必须绑定设备、Generation、真实 SHA-256、大小、服务端 MIME、过期时间和 ready 状态。
 
 上传未完成、校验不符、跨 Generation、已过期或非 ready 时必须在模型 dispatch 前失败。
+
+## 12. 字节级契约（transcript 与 request fingerprint）
+
+### 12.0 本节的地位
+
+§3 的握手和 §7 的指纹此前只规定了**绑定哪些字段**，没有规定这些字段的**字节级编码**。
+在那之前，这些字节的唯一定义是 Android 实现本身——一个用 Kotlin 之外的语言写服务端的人，
+没有任何东西可以据以自检。
+
+本节把这些编码写进规范正文，使第二个实现无需阅读 Kotlin 即可复现，并可对照语料自证。
+
+**本节是补充，不是变更。** 它描述的是**已经冻结、且已被 Gate 7 之前各阶段固定下来的行为**；
+若本节文字与现有实现有任何冲突，以**实现与语料**为准，并应视为规范缺陷上报，
+**不得**为了让某一方通过而修改协议。
+
+本节内容经三方交叉核对：**现有 Kotlin 实现**（`ai/src/main/java/me/rerere/ai/provider/claudep/`）、
+**独立 JVM 复算**（`claudep/conformance/tools/VerifyVectors.java`）、以及
+**语料**（`claudep/conformance/`）。三者逐字节一致。
+
+> **诚实的边界**：Kotlin 实现本身**从未被执行过**——本仓库的 Android 测试需要 Android SDK，
+> 在产生本节的环境里不可用。所谓「三方核对」中的 Kotlin 一方，是**逐行阅读其源码**
+> 并据此写出独立的 JVM 复算程序，再由该程序实际执行。这与「运行了 Kotlin」
+> 是两件事，不得混为一谈。真正执行 Kotlin 的是 `ClaudePConformanceCorpusTest`，
+> 它已写好但**尚未运行**。
+
+### 12.1 存在两套 framing，且它们**不同**
+
+这是本协议最容易出错的地方，因此先说结论：
+
+| 用于 | framing |
+|---|---|
+| 握手 transcript、配对 transcript | 十进制 ASCII 计数 + 冒号前缀，计数单位是 **UTF-16 码元** |
+| request fingerprint | **4 字节大端**长度前缀，计数单位是 **UTF-8 字节**，值另有 1 字节 presence 标志 |
+
+两者**不可互换**。一个星面字符（emoji）在第一种下计 **2**，在第二种下计 **4 字节**。
+写错任何一种都会得到一个「看起来完全正常」的摘要——这正是语料中存在
+`handshake-astral-emoji` 与 `fingerprint-unicode` 两个向量的原因。
+
+### 12.2 transcript framing
+
+对每个字段 `v`，写入：
+
+```text
+decimal(v.length) + ":" + v
+```
+
+- `v.length` 是 **UTF-16 码元**个数（不是码点数，不是 UTF-8 字节数）；
+- 十进制 ASCII，**无前导零**（零写作 `0`），**无填充**，随后一个 `:`（U+003A）；
+- **字段之间没有其他分隔符**；长度前缀本身就是唯一的边界信息；
+- 所有字段按 §12.4 的顺序**直接串接**，得到一个字符串，再把**整个字符串**按 UTF-8 编码；
+- 空字符串编码为 `0:`（长度前缀仍然存在，不是省略）。
+
+长度前缀不是装饰：没有它，`("ab","c")` 与 `("a","bc")` 会串接出相同字节，
+签名就无法覆盖它声称覆盖的值。
+
+**不做的变换**：不做 trim、不做 Unicode 规范化（NFC/NFD）、不折叠大小写、不加 BOM。
+
+### 12.3 request fingerprint framing
+
+指纹是对一个**标签/值流**取 SHA-256。每个字段依次写入：
+
+1. `len32(标签的 UTF-8 字节)` + 标签的 UTF-8 字节；
+2. 然后是值：
+   - 值为 **absent 或 null**：写入单个字节 `0x00`，**到此为止**；
+   - 值存在：写入单个字节 `0x01`，再写 `len32(值的 UTF-8 字节)` + 值的 UTF-8 字节。
+
+其中 `len32(x)` = `x` 的字节长度，作为 **4 字节大端无符号整数**（高位在前）。
+
+因此 absent 的值贡献 3 字节（标签部分之外），空字符串贡献 4 字节（`0x01` + 四个 `0x00`）。
+**两者的摘要必然不同**——这正是 presence 字节存在的理由。
+
+标签本身**永远存在**，`len32` 前缀对标签同样适用。
+
+### 12.4 完整字段序
+
+字段顺序**是输入的一部分**：交换任意两个标签都会改变摘要。
+
+**握手 transcript**（`rikkahub-claude-p-handshake-v1`）：
+
+| # | 字段 | 值来源 |
+|---:|---|---|
+| 1 | 域标签 | 字面量 `rikkahub-claude-p-handshake-v1` |
+| 2 | deviceId | `client.hello.body.device_id` |
+| 3 | nonce | `client.hello.body.nonce` |
+| 4 | gatewayAuthority | 客户端实际拨号的 authority |
+| 5 | appVersion | `client.hello.body.app_version` |
+
+**配对 transcript**（`rikkahub-claude-p-pairing-v1`）：
+
+| # | 字段 | 值来源 |
+|---:|---|---|
+| 1 | 域标签 | 字面量 `rikkahub-claude-p-pairing-v1` |
+| 2 | origin | 客户端配对时使用的 `https://<authority>` |
+| 3 | ticket | 一次性票据明文 |
+| 4 | devicePublicKeyBase64Url | base64url 的 X.509 SPKI |
+| 5 | state | 每次尝试的随机值 |
+| 6 | challenge | 每次尝试的随机值，被 proof 覆盖 |
+| 7 | appVersion | 请求体中的 `app_version` |
+
+**request fingerprint**（`rikkahub-claude-p-request-fingerprint-v1`），标签逐字如下：
+
+| # | 标签 | 说明 |
+|---:|---|---|
+| 1 | `domain` | 字面量 `rikkahub-claude-p-request-fingerprint-v1` |
+| 2 | `device_id` | |
+| 3 | `remote_thread_id` | |
+| 4 | `remote_branch_id` | |
+| 5 | `mode` | |
+| 6 | `model_alias` | |
+| 7 | `system_prompt` | **可 absent**，见 §12.5 |
+| 8 | `turn_role` | |
+| 9 | `turn_parts` | 部分数量的**十进制字符串**（不是数字） |
+| 10 | `turn_part_{i}.type`、`turn_part_{i}.text` | `i` 从 **0** 开始，逐部分 |
+| 11 | `rebuild_history_turns` | 历史轮数的**十进制字符串** |
+| 12 | `rebuild_{i}.role` | `i` 从 **0** 开始 |
+| 13 | `rebuild_{i}.{j}.type`、`rebuild_{i}.{j}.text` | 轮内部分，`j` 从 **0** 开始 |
+| 14 | `tool_snapshot` | **可 absent** |
+| 15 | `attachment_manifest` | **可 absent** |
+
+注意第 12 与第 13 的顺序：每一轮先写 `role`，再写该轮的全部部分。
+
+### 12.5 absent / null / 空字符串
+
+| 情形 | fingerprint 编码 | transcript 编码 |
+|---|---|---|
+| 字段 absent | presence `0x00` | 不适用——transcript 的每个字段都必须是字符串 |
+| 字段为 `null` | presence `0x00` | 不适用 |
+| 字段为 `""` | presence `0x01` + `len32(0)` = 四个 `0x00` | `0:` |
+
+**absent 与 `null` 在 fingerprint 中编码相同**（都写 `0x00`）。
+这是刻意的：两者的语义都是「没有这个值」。
+
+`system_prompt` 的 absent 与空串**必须**产生不同摘要——否则客户端可以用同一个
+`request_id` 把一个请求当作另一个重放，而这正是指纹要阻止的事情。
+
+### 12.6 字符串与 UTF-8
+
+- 字符串按 **UTF-8** 编码，无 BOM；
+- **不做 Unicode 规范化**：视觉相同但规范化形式不同的文本（NFC vs NFD）产生不同字节，
+  因而产生不同签名。发送方必须原样发送它要签名的字节；
+- **不做 trim、不做大小写折叠**；
+  （注意：§2 的 envelope 解析对 `protocol` 和 `type` 做 trim，那是**路由**规则，
+  与本节无关——transcript 的字段值不被 trim。）
+- 未配对的代理项（ill-formed UTF-16）按 U+FFFD 替换编码。
+  Kotlin、JavaScript 与 JVM 在此行为一致，但它是实现细节，不应被依赖。
+
+### 12.7 SHA-256
+
+- 输入是 §12.3 描述的**完整字节流**，无一字节遗漏，无额外前缀或分隔；
+- 输出是 **64 个字符的小写十六进制**，没有 `0x`、没有 base64、没有分隔符；
+- 摘要本身即指纹值，直接进入 §7 的幂等判定。
+
+### 12.8 JSON 对象字段顺序：哪里**不能**依赖，哪里无所谓
+
+这条容易搞反，明确写清：
+
+- **路由不得依赖 JSON 对象键顺序。** JSON 对象是无序的；帧里键的顺序对 envelope 解析、
+  事件类型判定、拒绝原因**没有任何影响**。语料中的
+  `order-insensitive-fields-reordered` 与 `order-sensitive-envelope-protocol-first`
+  是一对内容相同、键序不同的向量，用来钉死这一点。
+- **但 transcript 与 fingerprint 的字段序必须固定。** 它们的字节流是**按名字提取字段、
+  再按 §12.4 的固定顺序串接**得到的——不是对原始帧字节做的变换。
+  因此帧里的键序**不影响**摘要；**字段名的顺序**（即 §12.4）**决定**摘要。
+
+一句话：**键序不参与语义；字段序是语义的一部分。**
+
+### 12.9 必须逐字节保留的原始帧
+
+**没有任何协议值是对原始 JSON 帧字节计算的**——transcript 与 fingerprint 都来自提取后的字段值。
+
+**但语料中的 `frames/envelope.json` 的 `raw` 字段必须逐字节保留**，原因与协议语义无关，
+而在于**测试的有效性**：这些字符串是被原样喂给解析器的输入，
+重新序列化会改变被测对象。例如 `malformed-json` 一旦被重新格式化就成了合法 JSON，
+一个「拒绝」用例会静默变成「接受」用例。
+
+因此：**vendor 语料时不得重新格式化、重新序列化或重新缩进任何 `raw` 字符串。**
+`MANIFEST.sha256` 是这条要求的机器强制手段。
+
+### 12.10 参考与语料
+
+| 产物 | 位置 |
+|---|---|
+| 语料（权威） | `claudep/conformance/` |
+| 生成与复算工具 | `claudep/conformance/tools/` |
+| Kotlin 实现 | `ai/src/main/java/me/rerere/ai/provider/claudep/` |
+| 规范修订标识 | `claudep/conformance/SPEC_REVISION.json` |
+
+实现方应以语料为验收依据：语料通过即编码正确，语料不通过即编码错误。
+**不得**通过修改语料来迁就实现。
 

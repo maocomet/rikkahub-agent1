@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -459,6 +460,47 @@ class ClaudePConformanceCorpusTest {
         assertEquals(
             ClaudePProtocol.SUBPROTOCOL,
             revision.mustGet("protocol_id").jsonPrimitive.content,
+        )
+    }
+
+    /**
+     * Binds the corpus to the specification text it was derived from.
+     *
+     * The manifest proves the corpus has not been edited, but it cannot notice the *other*
+     * direction: someone changing `claudep/02-wire-protocol-v1.md` and forgetting to
+     * regenerate. Then the tests still pass while the vectors quietly describe a revision
+     * of the protocol that no longer exists.
+     *
+     * Two independent checks close that:
+     *
+     * 1. the revision string the specification declares must equal the one the corpus
+     *    records, so a bumped spec with a stale corpus fails;
+     * 2. the specification's SHA-256 must equal the one the corpus recorded, so even a
+     *    whitespace-only edit fails rather than passing because the marker was untouched.
+     *
+     * The server repository cannot perform check 2 — it does not hold the specification —
+     * which is why it asserts the revision string against a constant it carries itself.
+     * Between the two repositories, both directions are covered.
+     */
+    @Test
+    fun `corpus revision is bound to the specification it was derived from`() {
+        val revision = readJson("SPEC_REVISION.json")
+        val specFile = File(corpusRoot().parentFile, "02-wire-protocol-v1.md")
+        assertTrue("the specification must exist at ${specFile.path}", specFile.isFile)
+
+        val specText = specFile.readText()
+        val declared = Regex("规范修订：`([^`]+)`").find(specText)?.groupValues?.get(1)
+        assertNotNull("the specification must declare a 规范修订 marker", declared)
+
+        assertEquals(
+            "SPEC_REVISION.json records a different revision than the specification declares",
+            declared,
+            revision.mustGet("spec_revision").jsonPrimitive.content,
+        )
+        assertEquals(
+            "the specification changed without the corpus being regenerated",
+            revision.mustGet("protocol_spec_sha256").jsonPrimitive.content,
+            sha256Hex(specFile.readBytes()),
         )
     }
 

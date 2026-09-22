@@ -30,14 +30,39 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
 
+const SPEC_PATH = join(ROOT, '..', '02-wire-protocol-v1.md');
+const BOUNDARIES_PATH = join(ROOT, '..', '01-architecture-and-trust-boundaries.md');
+
+const specText = readFileSync(SPEC_PATH, 'utf8');
+
+/**
+ * Reads the revision identifier out of the specification's own header rather than
+ * duplicating it here.
+ *
+ * A duplicated literal is a value that can silently disagree with the document it claims
+ * to describe — the corpus would then advertise a revision the spec no longer carries, and
+ * the whole point of recording it is that a consumer can tell which text the vectors came
+ * from. Failing loudly on a missing marker is deliberate: emitting an empty or guessed
+ * revision would make the drift check below pass for the wrong reason.
+ */
+function readSpecRevision(text) {
+  const match = /规范修订：`([^`]+)`/.exec(text);
+  if (match === null) {
+    throw new Error(
+      'could not find the 规范修订 marker in claudep/02-wire-protocol-v1.md; ' +
+        'the corpus records this revision and must not guess it',
+    );
+  }
+  return match[1];
+}
+
 const SPEC_REVISION = {
+  spec_revision: readSpecRevision(specText),
   protocol_spec: 'claudep/02-wire-protocol-v1.md',
-  protocol_spec_sha256: createHash('sha256')
-    .update(readFileSync(join(ROOT, '..', '02-wire-protocol-v1.md')))
-    .digest('hex'),
+  protocol_spec_sha256: createHash('sha256').update(specText).digest('hex'),
   trust_boundaries: 'claudep/01-architecture-and-trust-boundaries.md',
   trust_boundaries_sha256: createHash('sha256')
-    .update(readFileSync(join(ROOT, '..', '01-architecture-and-trust-boundaries.md')))
+    .update(readFileSync(BOUNDARIES_PATH))
     .digest('hex'),
   protocol_id: 'rikkahub.claude-p.v1',
   major_version: 1,
