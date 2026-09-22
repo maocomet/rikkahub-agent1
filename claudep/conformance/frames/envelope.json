@@ -155,21 +155,21 @@
       }
     },
     {
-      "id": "valid-server-hello-empty-body",
-      "note": "Every field of ClaudePServerHelloBody has a default, so `{}` decodes.",
+      "id": "server-hello-empty-body",
+      "note": "An empty body is NOT a valid server.hello: protocol_version is required, so this is refused as MALFORMED_EVENT_BODY rather than ignored. A handshake that never named a version must not be treated as a successful one.",
       "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"server.hello\",\"body\":{}}",
       "expect": {
-        "kind": "event",
-        "eventType": "server.hello"
+        "kind": "rejected",
+        "reason": "MALFORMED_EVENT_BODY"
       }
     },
     {
-      "id": "valid-server-hello-absent-body",
-      "note": "`body` itself defaults to an empty object, so omitting it entirely also decodes.",
+      "id": "server-hello-absent-body",
+      "note": "Omitting `body` entirely decodes the envelope — that field does have a default — and then fails for the same reason as the empty body above.",
       "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"server.hello\"}",
       "expect": {
-        "kind": "event",
-        "eventType": "server.hello"
+        "kind": "rejected",
+        "reason": "MALFORMED_EVENT_BODY"
       }
     },
     {

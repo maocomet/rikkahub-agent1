@@ -150,20 +150,20 @@
       "note": "The handshake response. All body fields are optional, so an empty body is valid."
     },
     {
-      "id": "valid-server-hello-empty-body",
+      "id": "server-hello-empty-body",
       "expect": {
-        "kind": "event",
-        "eventType": "server.hello"
+        "kind": "rejected",
+        "reason": "MALFORMED_EVENT_BODY"
       },
-      "note": "Every field of ClaudePServerHelloBody has a default, so `{}` decodes."
+      "note": "An empty body is NOT a valid server.hello: protocol_version is required, so this is refused as MALFORMED_EVENT_BODY rather than ignored. A handshake that never named a version must not be treated as a successful one."
     },
     {
-      "id": "valid-server-hello-absent-body",
+      "id": "server-hello-absent-body",
       "expect": {
-        "kind": "event",
-        "eventType": "server.hello"
+        "kind": "rejected",
+        "reason": "MALFORMED_EVENT_BODY"
       },
-      "note": "`body` itself defaults to an empty object, so omitting it entirely also decodes."
+      "note": "Omitting `body` entirely decodes the envelope — that field does have a default — and then fails for the same reason as the empty body above."
     },
     {
       "id": "valid-text-delta",

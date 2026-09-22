@@ -238,16 +238,33 @@ const frames = [
     expect: { kind: 'event', eventType: 'server.hello' },
   },
   {
-    id: 'valid-server-hello-empty-body',
-    note: 'Every field of ClaudePServerHelloBody has a default, so `{}` decodes.',
+    // CORRECTED. This vector originally expected `event`, on the assumption that every
+    // field of ClaudePServerHelloBody carries a default. That assumption was wrong:
+    // `protocol_version` is declared WITHOUT one (ClaudePDto.kt:31), and kotlinx reports
+    // `MissingFieldException: Field 'protocol_version' is required`. The production
+    // decoder refuses both this and the absent-body vector below, and it is right to —
+    // claudep/02 §3 defines server.hello as the frame that freezes the chosen protocol
+    // version, so a server.hello carrying none cannot do the job it exists for.
+    //
+    // The error was the corpus's, produced by a validator that treated every declared
+    // field as optional. It was found by RUNNING the real decoder, not by reading it:
+    // `tools/kotlin-probe` compiles ClaudePProtocol.kt and ClaudePDto.kt unchanged and
+    // replays every frame here. Reading is not evidence.
+    id: 'server-hello-empty-body',
+    note:
+      'An empty body is NOT a valid server.hello: protocol_version is required, so this is ' +
+      'refused as MALFORMED_EVENT_BODY rather than ignored. A handshake that never named a ' +
+      'version must not be treated as a successful one.',
     raw: '{"protocol":"rikkahub.claude-p.v1","type":"server.hello","body":{}}',
-    expect: { kind: 'event', eventType: 'server.hello' },
+    expect: { kind: 'rejected', reason: 'MALFORMED_EVENT_BODY' },
   },
   {
-    id: 'valid-server-hello-absent-body',
-    note: '`body` itself defaults to an empty object, so omitting it entirely also decodes.',
+    id: 'server-hello-absent-body',
+    note:
+      'Omitting `body` entirely decodes the envelope — that field does have a default — ' +
+      'and then fails for the same reason as the empty body above.',
     raw: '{"protocol":"rikkahub.claude-p.v1","type":"server.hello"}',
-    expect: { kind: 'event', eventType: 'server.hello' },
+    expect: { kind: 'rejected', reason: 'MALFORMED_EVENT_BODY' },
   },
   {
     id: 'valid-text-delta',
