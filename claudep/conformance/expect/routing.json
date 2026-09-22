@@ -1,0 +1,201 @@
+{
+  "kind": "routing-expectation",
+  "derivedFrom": "ai/src/main/java/me/rerere/ai/provider/claudep/ClaudePProtocol.kt:112-145",
+  "outcome_kinds": {
+    "event": "routed to a typed event; `eventType` names the routed ClaudePEventType",
+    "ignored_unknown": "well-formed envelope, unrouted type — must produce no text and no terminal",
+    "rejected": "protocol violation; `reason` is a ClaudePParseRejection name"
+  },
+  "rejection_reasons": [
+    "MALFORMED_FRAME",
+    "MISSING_PROTOCOL",
+    "MALFORMED_PROTOCOL",
+    "PROTOCOL_MAJOR_MISMATCH",
+    "MISSING_TYPE",
+    "MALFORMED_EVENT_BODY"
+  ],
+  "note": "One expectation per frames/envelope.json entry, keyed by `id`, in the same order. Kept separate so a consumer can diff the frame bytes independently of the expected outcome.",
+  "expectations": [
+    {
+      "id": "protocol-field-absent",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_FRAME"
+      },
+      "note": "The `protocol` field is missing entirely. Because ClaudePEnvelope.protocol has no default, this fails JSON decoding and is rejected as MALFORMED_FRAME — it never reaches the MISSING_PROTOCOL branch. This is the anti-\"assume v1\" guard."
+    },
+    {
+      "id": "protocol-field-empty",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MISSING_PROTOCOL"
+      },
+      "note": "`protocol` is present but empty. Decoding succeeds, so this DOES reach the MISSING_PROTOCOL branch — a distinct outcome from protocol-field-absent."
+    },
+    {
+      "id": "protocol-field-whitespace-only",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MISSING_PROTOCOL"
+      },
+      "note": "`protocol` is trimmed before the emptiness check, so whitespace is also MISSING_PROTOCOL."
+    },
+    {
+      "id": "protocol-malformed-unversioned",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_PROTOCOL"
+      },
+      "note": "No `.v<major>` suffix, so majorVersionOf returns null → MALFORMED_PROTOCOL."
+    },
+    {
+      "id": "protocol-malformed-uppercase-family",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_PROTOCOL"
+      },
+      "note": "The family pattern is lowercase-only ([a-z0-9][a-z0-9.-]*), so an uppercase family does not match and is MALFORMED_PROTOCOL rather than a major mismatch."
+    },
+    {
+      "id": "protocol-major-mismatch-v2",
+      "expect": {
+        "kind": "rejected",
+        "reason": "PROTOCOL_MAJOR_MISMATCH"
+      },
+      "note": "A known type under a different major. The major is checked BEFORE the type, so this is rejected rather than routed — a newer major may have changed what `server.hello` means."
+    },
+    {
+      "id": "protocol-major-mismatch-unknown-type",
+      "expect": {
+        "kind": "rejected",
+        "reason": "PROTOCOL_MAJOR_MISMATCH"
+      },
+      "note": "Both the major and the type are unfamiliar. Major wins: still PROTOCOL_MAJOR_MISMATCH, never ignored_unknown."
+    },
+    {
+      "id": "malformed-json",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_FRAME"
+      },
+      "note": "Not JSON at all. The decoder exception may quote the offending text, so it is never surfaced."
+    },
+    {
+      "id": "not-an-object",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_FRAME"
+      },
+      "note": "Valid JSON, wrong shape."
+    },
+    {
+      "id": "type-field-absent",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_FRAME"
+      },
+      "note": "`type` is absent. ClaudePEnvelope.type also has no default, so this fails decoding as MALFORMED_FRAME — NOT MISSING_TYPE."
+    },
+    {
+      "id": "type-field-empty",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MISSING_TYPE"
+      },
+      "note": "`type` present but empty → MISSING_TYPE."
+    },
+    {
+      "id": "unknown-event-tool-requested",
+      "expect": {
+        "kind": "ignored_unknown"
+      },
+      "note": "A Phase 3 tool event. Unknown types are dropped, and dropping them can never produce text or end a generation — which is what makes forward compatibility safe."
+    },
+    {
+      "id": "unknown-event-future-minor",
+      "expect": {
+        "kind": "ignored_unknown"
+      },
+      "note": "A hypothetical event added by a newer minor of the same major."
+    },
+    {
+      "id": "unknown-event-with-malformed-body",
+      "expect": {
+        "kind": "ignored_unknown"
+      },
+      "note": "Unknown type AND a body this build cannot parse. The type check happens first, so the body is never decoded and the frame is still merely ignored."
+    },
+    {
+      "id": "known-event-bad-body-type",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_EVENT_BODY"
+      },
+      "note": "`server.hello` with a string where an integer is declared. The type is known, so the body IS decoded and the failure becomes MALFORMED_EVENT_BODY."
+    },
+    {
+      "id": "known-event-body-wrong-shape",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_EVENT_BODY"
+      },
+      "note": "`catalog.result` expects `models` to be a list; an object is a schema violation."
+    },
+    {
+      "id": "valid-server-hello",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      },
+      "note": "The handshake response. All body fields are optional, so an empty body is valid."
+    },
+    {
+      "id": "valid-server-hello-empty-body",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      },
+      "note": "Every field of ClaudePServerHelloBody has a default, so `{}` decodes."
+    },
+    {
+      "id": "valid-server-hello-absent-body",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      },
+      "note": "`body` itself defaults to an empty object, so omitting it entirely also decodes."
+    },
+    {
+      "id": "valid-text-delta",
+      "expect": {
+        "kind": "event",
+        "eventType": "text.delta"
+      },
+      "note": "Content-carrying event. It is also the one that must never arrive after a terminal."
+    },
+    {
+      "id": "valid-generation-failed",
+      "expect": {
+        "kind": "event",
+        "eventType": "generation.failed"
+      },
+      "note": "A terminal carrying only the enum; any human-readable message is dropped by ignoreUnknownKeys."
+    },
+    {
+      "id": "order-insensitive-fields-reordered",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      },
+      "note": "ORDER-INSENSITIVE PROJECTION. The same fields as valid-server-hello in a different JSON order, plus an unknown extra key. JSON object order is not semantically meaningful and ignoreUnknownKeys is on, so this must route to the SAME event. A server that made its routing depend on key order would fail this vector."
+    },
+    {
+      "id": "order-sensitive-envelope-protocol-first",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      },
+      "note": "ORDER-SENSITIVE BYTE RECORD. The canonical spelling of the envelope: `protocol` first, then `type`, then `body`. This raw byte string is what the server is expected to emit, and it is what the byte vectors in transcripts/ and fingerprints/ are computed over. Reordering these keys does not change routing (see the previous vector) but DOES change the bytes, so it must not be treated as equivalent for any value that gets hashed or signed."
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "kind": "pairing-transcript",
+  "derivedFrom": "ai/src/main/java/me/rerere/ai/provider/claudep/ClaudePPairingTransport.kt:113-135",
+  "algorithm": "UTF-8 of the concatenation of lengthPrefixed(DOMAIN), lengthPrefixed(origin), lengthPrefixed(ticket), lengthPrefixed(devicePublicKeyBase64Url), lengthPrefixed(state), lengthPrefixed(challenge), lengthPrefixed(appVersion), same lengthPrefixed rule.",
+  "domain": "rikkahub-claude-p-pairing-v1",
+  "signature_algorithm": "SHA256withECDSA",
+  "verification": "dual-implementation (gen-vectors.mjs + VerifyVectors.java) agreed byte-for-byte",
+  "vectors": [
+    {
+      "id": "pairing-ascii",
+      "note": "Baseline pairing transcript, all fields ASCII.",
+      "input": {
+        "origin": "https://gateway.example.com",
+        "ticket": "ticket-abc123",
+        "devicePublicKeyBase64Url": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE",
+        "state": "state-xyz",
+        "challenge": "challenge-789",
+        "appVersion": "1.0.0"
+      },
+      "transcriptHex": "32383a72696b6b616875622d636c617564652d702d70616972696e672d763132373a68747470733a2f2f676174657761792e6578616d706c652e636f6d31333a7469636b65742d61626331323333363a4d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a30444151634451674145393a73746174652d78797a31333a6368616c6c656e67652d373839353a312e302e30",
+      "transcriptUtf8": "28:rikkahub-claude-p-pairing-v127:https://gateway.example.com13:ticket-abc12336:MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE9:state-xyz13:challenge-7895:1.0.0"
+    },
+    {
+      "id": "pairing-multibyte-unicode",
+      "note": "Non-ASCII origin and ticket: the length prefix stays a UTF-16 code-unit count.",
+      "input": {
+        "origin": "https://网关.example.com",
+        "ticket": "票据-一二三",
+        "devicePublicKeyBase64Url": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE",
+        "state": "状态",
+        "challenge": "挑战",
+        "appVersion": "1.0.0"
+      },
+      "transcriptHex": "32383a72696b6b616875622d636c617564652d702d70616972696e672d763132323a68747470733a2f2fe7bd91e585b32e6578616d706c652e636f6d363ae7a5a8e68dae2de4b880e4ba8ce4b88933363a4d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a30444151634451674145323ae78ab6e68081323ae68c91e68898353a312e302e30",
+      "transcriptUtf8": "28:rikkahub-claude-p-pairing-v122:https://网关.example.com6:票据-一二三36:MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2:状态2:挑战5:1.0.0"
+    },
+    {
+      "id": "pairing-empty-ticket",
+      "note": "An empty ticket is still framed as \"0:\".",
+      "input": {
+        "origin": "https://gateway.example.com",
+        "ticket": "",
+        "devicePublicKeyBase64Url": "",
+        "state": "",
+        "challenge": "",
+        "appVersion": ""
+      },
+      "transcriptHex": "32383a72696b6b616875622d636c617564652d702d70616972696e672d763132373a68747470733a2f2f676174657761792e6578616d706c652e636f6d303a303a303a303a303a",
+      "transcriptUtf8": "28:rikkahub-claude-p-pairing-v127:https://gateway.example.com0:0:0:0:0:"
+    },
+    {
+      "id": "pairing-field-order-binding",
+      "note": "state and challenge swapped relative to pairing-ascii, everything else equal. The transcript must change, which is what makes the signature cover field ORDER and not merely the field set.",
+      "input": {
+        "origin": "https://gateway.example.com",
+        "ticket": "ticket-abc123",
+        "devicePublicKeyBase64Url": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE",
+        "state": "challenge-789",
+        "challenge": "state-xyz",
+        "appVersion": "1.0.0"
+      },
+      "transcriptHex": "32383a72696b6b616875622d636c617564652d702d70616972696e672d763132373a68747470733a2f2f676174657761792e6578616d706c652e636f6d31333a7469636b65742d61626331323333363a4d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a3044415163445167414531333a6368616c6c656e67652d373839393a73746174652d78797a353a312e302e30",
+      "transcriptUtf8": "28:rikkahub-claude-p-pairing-v127:https://gateway.example.com13:ticket-abc12336:MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE13:challenge-7899:state-xyz5:1.0.0"
+    }
+  ]
+}

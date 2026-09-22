@@ -1,0 +1,212 @@
+{
+  "kind": "raw-envelope-frame",
+  "derivedFrom": "ai/src/main/java/me/rerere/ai/provider/claudep/ClaudePProtocol.kt:112-145",
+  "note": "Each `raw` is the exact text that would arrive on the wire. Do not reformat, re-serialize or re-order these strings when vendoring.",
+  "verification": "READ-DERIVED, not executed in this environment. The Android-side test ClaudePConformanceCorpusTest replays these through the real parseInbound.",
+  "frames": [
+    {
+      "id": "protocol-field-absent",
+      "note": "The `protocol` field is missing entirely. Because ClaudePEnvelope.protocol has no default, this fails JSON decoding and is rejected as MALFORMED_FRAME — it never reaches the MISSING_PROTOCOL branch. This is the anti-\"assume v1\" guard.",
+      "raw": "{\"type\":\"server.hello\",\"body\":{}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_FRAME"
+      }
+    },
+    {
+      "id": "protocol-field-empty",
+      "note": "`protocol` is present but empty. Decoding succeeds, so this DOES reach the MISSING_PROTOCOL branch — a distinct outcome from protocol-field-absent.",
+      "raw": "{\"protocol\":\"\",\"type\":\"server.hello\",\"body\":{}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MISSING_PROTOCOL"
+      }
+    },
+    {
+      "id": "protocol-field-whitespace-only",
+      "note": "`protocol` is trimmed before the emptiness check, so whitespace is also MISSING_PROTOCOL.",
+      "raw": "{\"protocol\":\"   \",\"type\":\"server.hello\",\"body\":{}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MISSING_PROTOCOL"
+      }
+    },
+    {
+      "id": "protocol-malformed-unversioned",
+      "note": "No `.v<major>` suffix, so majorVersionOf returns null → MALFORMED_PROTOCOL.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p\",\"type\":\"server.hello\",\"body\":{}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_PROTOCOL"
+      }
+    },
+    {
+      "id": "protocol-malformed-uppercase-family",
+      "note": "The family pattern is lowercase-only ([a-z0-9][a-z0-9.-]*), so an uppercase family does not match and is MALFORMED_PROTOCOL rather than a major mismatch.",
+      "raw": "{\"protocol\":\"RikkaHub.claude-p.v1\",\"type\":\"server.hello\",\"body\":{}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_PROTOCOL"
+      }
+    },
+    {
+      "id": "protocol-major-mismatch-v2",
+      "note": "A known type under a different major. The major is checked BEFORE the type, so this is rejected rather than routed — a newer major may have changed what `server.hello` means.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v2\",\"type\":\"server.hello\",\"body\":{}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "PROTOCOL_MAJOR_MISMATCH"
+      }
+    },
+    {
+      "id": "protocol-major-mismatch-unknown-type",
+      "note": "Both the major and the type are unfamiliar. Major wins: still PROTOCOL_MAJOR_MISMATCH, never ignored_unknown.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v9\",\"type\":\"future.thing\",\"body\":{}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "PROTOCOL_MAJOR_MISMATCH"
+      }
+    },
+    {
+      "id": "malformed-json",
+      "note": "Not JSON at all. The decoder exception may quote the offending text, so it is never surfaced.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_FRAME"
+      }
+    },
+    {
+      "id": "not-an-object",
+      "note": "Valid JSON, wrong shape.",
+      "raw": "[\"rikkahub.claude-p.v1\",\"server.hello\"]",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_FRAME"
+      }
+    },
+    {
+      "id": "type-field-absent",
+      "note": "`type` is absent. ClaudePEnvelope.type also has no default, so this fails decoding as MALFORMED_FRAME — NOT MISSING_TYPE.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"body\":{}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_FRAME"
+      }
+    },
+    {
+      "id": "type-field-empty",
+      "note": "`type` present but empty → MISSING_TYPE.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"\",\"body\":{}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MISSING_TYPE"
+      }
+    },
+    {
+      "id": "unknown-event-tool-requested",
+      "note": "A Phase 3 tool event. Unknown types are dropped, and dropping them can never produce text or end a generation — which is what makes forward compatibility safe.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"tool.requested\",\"body\":{\"tool\":\"echo\"}}",
+      "expect": {
+        "kind": "ignored_unknown"
+      }
+    },
+    {
+      "id": "unknown-event-future-minor",
+      "note": "A hypothetical event added by a newer minor of the same major.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"generation.progress\",\"body\":{}}",
+      "expect": {
+        "kind": "ignored_unknown"
+      }
+    },
+    {
+      "id": "unknown-event-with-malformed-body",
+      "note": "Unknown type AND a body this build cannot parse. The type check happens first, so the body is never decoded and the frame is still merely ignored.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"future.event\",\"body\":{\"nested\":{\"deep\":[1,2,3]}}}",
+      "expect": {
+        "kind": "ignored_unknown"
+      }
+    },
+    {
+      "id": "known-event-bad-body-type",
+      "note": "`server.hello` with a string where an integer is declared. The type is known, so the body IS decoded and the failure becomes MALFORMED_EVENT_BODY.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"server.hello\",\"body\":{\"max_frame_bytes\":\"not-a-number\"}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_EVENT_BODY"
+      }
+    },
+    {
+      "id": "known-event-body-wrong-shape",
+      "note": "`catalog.result` expects `models` to be a list; an object is a schema violation.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"catalog.result\",\"body\":{\"models\":{\"alias\":\"sonnet\"}}}",
+      "expect": {
+        "kind": "rejected",
+        "reason": "MALFORMED_EVENT_BODY"
+      }
+    },
+    {
+      "id": "valid-server-hello",
+      "note": "The handshake response. All body fields are optional, so an empty body is valid.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"server.hello\",\"body\":{\"protocol_version\":\"v1\",\"gateway_build\":\"c1\",\"max_frame_bytes\":262144}}",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      }
+    },
+    {
+      "id": "valid-server-hello-empty-body",
+      "note": "Every field of ClaudePServerHelloBody has a default, so `{}` decodes.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"server.hello\",\"body\":{}}",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      }
+    },
+    {
+      "id": "valid-server-hello-absent-body",
+      "note": "`body` itself defaults to an empty object, so omitting it entirely also decodes.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"server.hello\"}",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      }
+    },
+    {
+      "id": "valid-text-delta",
+      "note": "Content-carrying event. It is also the one that must never arrive after a terminal.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"text.delta\",\"sequence\":3,\"body\":{\"message_id\":\"m1\",\"index\":0,\"text\":\"hello\"}}",
+      "expect": {
+        "kind": "event",
+        "eventType": "text.delta"
+      }
+    },
+    {
+      "id": "valid-generation-failed",
+      "note": "A terminal carrying only the enum; any human-readable message is dropped by ignoreUnknownKeys.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"generation.failed\",\"sequence\":9,\"body\":{\"error_code\":\"worker_busy\",\"message\":\"ignored on purpose\"}}",
+      "expect": {
+        "kind": "event",
+        "eventType": "generation.failed"
+      }
+    },
+    {
+      "id": "order-insensitive-fields-reordered",
+      "note": "ORDER-INSENSITIVE PROJECTION. The same fields as valid-server-hello in a different JSON order, plus an unknown extra key. JSON object order is not semantically meaningful and ignoreUnknownKeys is on, so this must route to the SAME event. A server that made its routing depend on key order would fail this vector.",
+      "raw": "{\"type\":\"server.hello\",\"body\":{\"max_frame_bytes\":262144,\"gateway_build\":\"c1\",\"protocol_version\":\"v1\",\"unknown_extra\":true},\"protocol\":\"rikkahub.claude-p.v1\"}",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      }
+    },
+    {
+      "id": "order-sensitive-envelope-protocol-first",
+      "note": "ORDER-SENSITIVE BYTE RECORD. The canonical spelling of the envelope: `protocol` first, then `type`, then `body`. This raw byte string is what the server is expected to emit, and it is what the byte vectors in transcripts/ and fingerprints/ are computed over. Reordering these keys does not change routing (see the previous vector) but DOES change the bytes, so it must not be treated as equivalent for any value that gets hashed or signed.",
+      "raw": "{\"protocol\":\"rikkahub.claude-p.v1\",\"type\":\"server.hello\",\"body\":{\"protocol_version\":\"v1\",\"gateway_build\":\"c1\",\"max_frame_bytes\":262144}}",
+      "expect": {
+        "kind": "event",
+        "eventType": "server.hello"
+      }
+    }
+  ]
+}

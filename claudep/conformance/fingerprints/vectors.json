@@ -1,0 +1,234 @@
+{
+  "kind": "request-fingerprint",
+  "derivedFrom": "ai/src/main/java/me/rerere/ai/provider/claudep/ClaudePGatewayClient.kt:153-219",
+  "algorithm": "SHA-256 over a label/value stream. Every label is written as a 4-byte big-endian UTF-8 byte length followed by its bytes. Every value is preceded by a presence byte (0 = null, 1 = present) and, only when present, a 4-byte big-endian UTF-8 byte length followed by its bytes. NOTE this framing is deliberately DIFFERENT from the transcripts above, which use a decimal `length:` prefix over UTF-16 code units.",
+  "domain": "rikkahub-claude-p-request-fingerprint-v1",
+  "field_order": [
+    "domain",
+    "device_id",
+    "remote_thread_id",
+    "remote_branch_id",
+    "mode",
+    "model_alias",
+    "system_prompt",
+    "turn_role",
+    "turn_parts",
+    "turn_part_{i}.type",
+    "turn_part_{i}.text",
+    "rebuild_history_turns",
+    "rebuild_{i}.role",
+    "rebuild_{i}.{j}.type",
+    "rebuild_{i}.{j}.text",
+    "tool_snapshot",
+    "attachment_manifest"
+  ],
+  "invariants": [
+    "system_prompt null and \"\" MUST produce different digests (presence byte).",
+    "parts [\"ab\",\"c\"] and [\"a\",\"bc\"] MUST produce different digests (length prefixes).",
+    "field ORDER is part of the input; reordering the labels changes the digest."
+  ],
+  "verification": "dual-implementation (gen-vectors.mjs + VerifyVectors.java) agreed byte-for-byte",
+  "vectors": [
+    {
+      "id": "fingerprint-minimal",
+      "note": "Smallest valid request: one turn, one text part, no optional fields.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "branch-01",
+        "mode": "new",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "f4bb36ce2f6417def4955166c20a5f61c00fc9b1f69f5ecd000d5f593f287525"
+    },
+    {
+      "id": "fingerprint-null-vs-empty-system-prompt",
+      "note": "systemPrompt = \"\" where fingerprint-minimal has null. The two digests MUST differ: the presence byte exists so an absent system prompt cannot collide with an empty one.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "branch-01",
+        "mode": "new",
+        "modelAlias": "sonnet",
+        "systemPrompt": "",
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "a9e96a2b31f99cf7a7cde45a2db790d57964abfd1dcc7a9c378dcd0f3f052e2f"
+    },
+    {
+      "id": "fingerprint-with-history",
+      "note": "Two rebuild-history turns, the second with two parts.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "branch-01",
+        "mode": "new",
+        "modelAlias": "sonnet",
+        "systemPrompt": "be brief",
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "again"
+            }
+          ]
+        },
+        "rebuildHistory": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "first"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "parts": [
+              {
+                "type": "text",
+                "text": "second-a"
+              },
+              {
+                "type": "text",
+                "text": "second-b"
+              }
+            ]
+          }
+        ],
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "41a9abe0748912df1cdd6207bdfa96bccfa1cad1ecf94182c0429d2883e4c5ce"
+    },
+    {
+      "id": "fingerprint-unicode",
+      "note": "Astral and CJK content in the prompt and history.",
+      "input": {
+        "deviceId": "设备-01",
+        "remoteThreadId": "线程-01",
+        "remoteBranchId": "分支-01",
+        "mode": "new",
+        "modelAlias": "sonnet",
+        "systemPrompt": "请简短回答 😀",
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "你好 🌏"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "fd9f6d0dda1a72d2d9df62ad49b9e626257a2339241d05163e1285d73afb52e0"
+    },
+    {
+      "id": "fingerprint-empty-turn-parts",
+      "note": "A turn with zero parts: \"turn_parts\" is the string \"0\" and no part fields follow.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "branch-01",
+        "mode": "new",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": []
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "39e472401f402569dd2ea55c114a419041307d0389e00bb69abbf8dbd2bd7063"
+    },
+    {
+      "id": "fingerprint-part-boundary",
+      "note": "Two adjacent parts \"ab\" and \"c\". Length prefixes must keep this distinct from the next case, which is parts \"a\" and \"bc\".",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "branch-01",
+        "mode": "new",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "ab"
+            },
+            {
+              "type": "text",
+              "text": "c"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "e5c5d7445e48c5088233739b5cbebe09674c4ee0e8903065d118c3f96fc41d5d"
+    },
+    {
+      "id": "fingerprint-part-boundary-shifted",
+      "note": "The shifted counterpart of fingerprint-part-boundary. Must NOT be equal to it.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "branch-01",
+        "mode": "new",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "a"
+            },
+            {
+              "type": "text",
+              "text": "bc"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "f8008a58c987a6a96a3bc2b70c312a299b892474660410ce893122531e907c00"
+    }
+  ]
+}

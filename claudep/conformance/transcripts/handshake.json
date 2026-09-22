@@ -1,0 +1,82 @@
+{
+  "kind": "handshake-transcript",
+  "derivedFrom": "ai/src/main/java/me/rerere/ai/provider/claudep/ClaudePDeviceIdentity.kt:232-256",
+  "algorithm": "UTF-8 of the concatenation of lengthPrefixed(DOMAIN), lengthPrefixed(deviceId), lengthPrefixed(nonce), lengthPrefixed(gatewayAuthority), lengthPrefixed(appVersion), where lengthPrefixed(v) = `${v.length}:${v}` and `length` counts UTF-16 code units.",
+  "domain": "rikkahub-claude-p-handshake-v1",
+  "signature_algorithm": "SHA256withECDSA",
+  "verification": "dual-implementation (gen-vectors.mjs + VerifyVectors.java) agreed byte-for-byte",
+  "vectors": [
+    {
+      "id": "handshake-ascii",
+      "note": "Baseline: every field is BMP ASCII, so UTF-16 length equals UTF-8 byte length.",
+      "input": {
+        "deviceId": "dev-01",
+        "nonce": "n0nce-abc",
+        "gatewayAuthority": "gateway.example.com",
+        "appVersion": "1.0.0"
+      },
+      "transcriptHex": "33303a72696b6b616875622d636c617564652d702d68616e647368616b652d7631363a6465762d3031393a6e306e63652d61626331393a676174657761792e6578616d706c652e636f6d353a312e302e30",
+      "transcriptUtf8": "30:rikkahub-claude-p-handshake-v16:dev-019:n0nce-abc19:gateway.example.com5:1.0.0"
+    },
+    {
+      "id": "handshake-multibyte-unicode",
+      "note": "CJK fields. Each character is 1 UTF-16 unit and 3 UTF-8 bytes, so a byte-length prefix gives a different transcript than a code-unit prefix.",
+      "input": {
+        "deviceId": "设备一号",
+        "nonce": "随机数",
+        "gatewayAuthority": "网关.example.com",
+        "appVersion": "1.0.0-中文"
+      },
+      "transcriptHex": "33303a72696b6b616875622d636c617564652d702d68616e647368616b652d7631343ae8aebee5a487e4b880e58fb7333ae99a8fe69cbae695b031343ae7bd91e585b32e6578616d706c652e636f6d383a312e302e302de4b8ade69687",
+      "transcriptUtf8": "30:rikkahub-claude-p-handshake-v14:设备一号3:随机数14:网关.example.com8:1.0.0-中文"
+    },
+    {
+      "id": "handshake-astral-emoji",
+      "note": "Astral characters. Kotlin String.length counts a surrogate PAIR as 2, while the UTF-8 encoding is 4 bytes. This is the case that separates a correct implementation from one that prefixes byte or code-point counts.",
+      "input": {
+        "deviceId": "dev-😀",
+        "nonce": "🔐🔐",
+        "gatewayAuthority": "gateway.example.com",
+        "appVersion": "1.0.0"
+      },
+      "transcriptHex": "33303a72696b6b616875622d636c617564652d702d68616e647368616b652d7631363a6465762df09f9880343af09f9490f09f949031393a676174657761792e6578616d706c652e636f6d353a312e302e30",
+      "transcriptUtf8": "30:rikkahub-claude-p-handshake-v16:dev-😀4:🔐🔐19:gateway.example.com5:1.0.0"
+    },
+    {
+      "id": "handshake-empty-fields",
+      "note": "Empty strings are still length-prefixed as \"0:\". An implementation that skips the prefix for empty values produces different bytes.",
+      "input": {
+        "deviceId": "",
+        "nonce": "",
+        "gatewayAuthority": "",
+        "appVersion": ""
+      },
+      "transcriptHex": "33303a72696b6b616875622d636c617564652d702d68616e647368616b652d7631303a303a303a303a",
+      "transcriptUtf8": "30:rikkahub-claude-p-handshake-v10:0:0:0:"
+    },
+    {
+      "id": "handshake-ambiguity-guard",
+      "note": "The pair (\"ab\",\"c\") versus (\"a\",\"bc\"). Without length prefixes both would concatenate identically; with them the transcripts must differ.",
+      "input": {
+        "deviceId": "ab",
+        "nonce": "c",
+        "gatewayAuthority": "gateway.example.com",
+        "appVersion": "1.0.0"
+      },
+      "transcriptHex": "33303a72696b6b616875622d636c617564652d702d68616e647368616b652d7631323a6162313a6331393a676174657761792e6578616d706c652e636f6d353a312e302e30",
+      "transcriptUtf8": "30:rikkahub-claude-p-handshake-v12:ab1:c19:gateway.example.com5:1.0.0"
+    },
+    {
+      "id": "handshake-ambiguity-guard-shifted",
+      "note": "The second half of handshake-ambiguity-guard. Must NOT equal the first.",
+      "input": {
+        "deviceId": "a",
+        "nonce": "bc",
+        "gatewayAuthority": "gateway.example.com",
+        "appVersion": "1.0.0"
+      },
+      "transcriptHex": "33303a72696b6b616875622d636c617564652d702d68616e647368616b652d7631313a61323a626331393a676174657761792e6578616d706c652e636f6d353a312e302e30",
+      "transcriptUtf8": "30:rikkahub-claude-p-handshake-v11:a2:bc19:gateway.example.com5:1.0.0"
+    }
+  ]
+}

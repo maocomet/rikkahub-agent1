@@ -1,0 +1,9 @@
+{
+  "protocol_spec": "claudep/02-wire-protocol-v1.md",
+  "protocol_spec_sha256": "aed51de50adad53b9fe60be7ac109a787105adb903bddcdf21fd4ba9eb8480be",
+  "trust_boundaries": "claudep/01-architecture-and-trust-boundaries.md",
+  "trust_boundaries_sha256": "f9800a371dee274e9f9a15bf95632f93f16748c7947f0f981da8957d1ded1b2b",
+  "protocol_id": "rikkahub.claude-p.v1",
+  "major_version": 1,
+  "android_corpus_origin": "maocomet/rikkahub-agent1"
+}
