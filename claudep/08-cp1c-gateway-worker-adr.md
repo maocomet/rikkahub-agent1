@@ -1,10 +1,17 @@
 # 08｜CP1-C 服务端 ADR：Claude P Gateway 与 Claude Worker
 
-状态：**待用户确认**（本 ADR 未生效前不得开始服务端实现）
+状态：**已确认，可进入 CP1-C1**（2026-09-21 用户确认；最终决定见 `claudep/09-cp1c0-confirmed-decisions.md`）
 日期：2026-09-21
 上位设计：`claudep/00`–`07`（Phase 0 设计包，基线 `c00f6f3d`）
 配套计划：`claudep/reports/CP1C0-server-implementation-plan.md`
 本轮模型调用数：**0**；本轮服务端代码：**0 行**
+
+> **生效范围**：本 ADR 的**推荐方案（§3.1 独立仓库）、§7 协议边界、§8 存储、§9 日志规则、
+> §10 health/ready、§11 binary/argv/env、§13 兼容矩阵、§14 回滚**均已生效。
+> 但其中三处已被后续文档**取代或修订**，以新文档为准：
+> - **§6 / §6.2 三层 + sudo 权限边界 → 作废**，改为**两层**（无 sudo、无 setuid），见 `09` §6；
+> - **§1.2 / §2 的「檐岚没有 Worker」一组事实结论 → 已 superseded**，见下方 Superseded 小节；
+> - **§15 未决项已裁决**（仓库名、许可证、存储、降权），见 `09` §9。
 
 ---
 
@@ -384,6 +391,12 @@ VPS 需要 JRE 与 Gradle 构建链；Unix socket 与进程管理需要 JNI 或 
 ---
 
 ## 6. 三层权限边界（Gateway / Worker / Claude）
+
+> **⚠ 本节与 §6.1、§6.2 已作废（2026-09-21 用户确认）。**
+> 最终采用**两层**边界：**所有 unit 保留 `NoNewPrivileges=true`，无 sudoers、无 setuid launcher**。
+> 理由：檐岚实测形态本就是两层且已过 Gate 7；两层同时消除了 §6.2 的能力让步。
+> **以 `claudep/09-cp1c0-confirmed-decisions.md` §6 为准。**
+> 以下原文保留不改，作为当时的设计记录。
 
 三个**独立的 Linux 用户**、三个**独立的 systemd unit**、**不共享**可写目录。
 
@@ -919,6 +932,12 @@ Claude OAuth 失效率**不**自动删除手机配对。
 ---
 
 ## 15. 未决项（必须由用户选择后才能开始 CP1-C1）
+
+> **⚠ 本表已于 2026-09-21 裁决完毕。最终决定见
+> `claudep/09-cp1c0-confirmed-decisions.md` §9。**
+> 要点：#1 仓库名 `maocomet/rikkahub-claude-p-server`（private）；
+> #2 SQLite + WAL；#3 **取消降权机制（改两层，无 sudo）**；#12 随之不再需要。
+> #4–#7 仍未定，但**不阻塞 C1**。以下原文保留不改。
 
 | # | 项 | 建议 |
 |---|---|---|

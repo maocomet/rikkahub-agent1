@@ -21,6 +21,12 @@
 
 ## Gate CP1：纯文本 Provider
 
+状态（2026-09-21）：**未完成**。
+CP1-A（Android Provider 骨架）、CP1-B（Android 安全传输与配对）已完成（CI + 真机）；
+CP1-C 分 **C1 → C2 → C3 → C4**，正在做 **C1（零模型 Gateway）**。
+**C1 / C2 / C3 / C4 均不得标记为完成**；C4 是唯一的真实模型验收，须单独授权。
+决定记录见 `claudep/09-cp1c0-confirmed-decisions.md`。
+
 实现：
 
 - `ProviderSetting.ClaudeP`、设置页、配对 credential store；
