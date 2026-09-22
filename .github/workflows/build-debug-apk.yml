@@ -297,18 +297,29 @@ jobs:
       # The conformance corpus is the shared artifact between this repository and the server
       # implementation, so it gets its own gate rather than riding on the class-level one.
       #
-      # Three separate things can go wrong and they need three different checks:
+      # Four separate things can go wrong and they need four different checks:
       #   1. the corpus files were edited without regenerating the manifest -- so the manifest
       #      is verified against the files on disk, not merely read;
-      #   2. the tests ran but not all of them did -- so the executed count is pinned exactly.
+      #   2. the corpus drifted from the specification it was derived from -- so the revision
+      #      is pinned here as well as asserted by the test;
+      #   3. the tests ran, but not all of them -- so the executed count is pinned exactly.
       #      A pinned count is brittle on purpose: adding a case means editing this number,
       #      which is the moment someone notices the corpus changed;
-      #   3. the corpus drifted from the specification it was derived from -- which the corpus
-      #      test itself asserts, and which therefore shows up as a failure above.
+      #   4. the tests ran and failed -- which an earlier version of this step did NOT check.
+      #      It read `tests` and `skipped` and ignored `failures` and `errors`, so it printed
+      #      "executed exactly 14 tests, none skipped" while two of those tests were failing.
+      #      The overall build still failed (the per-class step checks failures), but this
+      #      step's own claim was stronger than what it verified. That is fixed below, and
+      #      the self-test asserts it stays fixed.
       - name: Verify the conformance corpus gate
         if: always()
         run: |
           set -uo pipefail
+
+          EXPECTED_CONFORMANCE_TESTS=14
+          EXPECTED_SPEC_REVISION=v1-r3
+          SUITE_CLASS=me.rerere.ai.provider.claudep.ClaudePConformanceCorpusTest
+          xml="ai/build/test-results/testDebugUnitTest/TEST-$SUITE_CLASS.xml"
 
           if [ ! -f claudep/conformance/MANIFEST.sha256 ]; then
             echo "::error::claudep/conformance/MANIFEST.sha256 is missing from the checkout; the conformance test cannot verify anything."
@@ -326,35 +337,121 @@ jobs:
             echo "::error::SPEC_REVISION.json records no spec_revision; the corpus cannot be tied to a specification revision."
             exit 1
           fi
+          if [ "$revision" != "$EXPECTED_SPEC_REVISION" ]; then
+            echo "::error::Conformance corpus is at revision '$revision' but this workflow expects '$EXPECTED_SPEC_REVISION'. Re-vendoring a newer corpus is a deliberate change: update EXPECTED_SPEC_REVISION in the same commit."
+            exit 1
+          fi
           echo "Conformance corpus verified against specification revision $revision."
 
-          # Pin the executed count for the corpus suite.
-          EXPECTED_CONFORMANCE_TESTS=14
-          xml=ai/build/test-results/testDebugUnitTest/TEST-me.rerere.ai.provider.claudep.ClaudePConformanceCorpusTest.xml
-          if [ ! -f "$xml" ]; then
-            echo "::error::No JUnit XML for ClaudePConformanceCorpusTest at $xml."
-            exit 1
-          fi
-          # The suite element's own counters, not the file's existence. Gradle writes a
-          # testsuite element even for a class whose every case was filtered out or
+          # Decides whether a JUnit suite file is an acceptable result for the corpus class.
+          # Prints a reason and returns non-zero when it is not.
+          #
+          # Reads the suite element's own counters, never the file's existence: Gradle writes
+          # a testsuite element even for a class whose every case was filtered out or
           # skipped, so "the XML is there" would pass while the corpus verified nothing.
-          counts=$(grep -o '<testsuite[^>]*>' "$xml" | head -1)
-          actual=$(printf '%s' "$counts" | grep -o 'tests="[0-9]*"' | head -1 | tr -dc '0-9')
-          skipped=$(printf '%s' "$counts" | grep -o 'skipped="[0-9]*"' | head -1 | tr -dc '0-9')
+          check_suite() {
+            file="$1"
+            if [ ! -f "$file" ]; then
+              echo "no JUnit XML at $file"
+              return 1
+            fi
+            suites=$(grep -o '<testsuite' "$file" | wc -l | tr -dc '0-9')
+            if [ "${suites:-0}" -ne 1 ]; then
+              echo "expected exactly one <testsuite> element, found ${suites:-0}"
+              return 1
+            fi
+            counts=$(grep -o '<testsuite[^>]*>' "$file" | head -1)
+            tests=$(printf '%s' "$counts" | grep -o 'tests="[0-9]*"' | head -1 | tr -dc '0-9')
+            skipped=$(printf '%s' "$counts" | grep -o 'skipped="[0-9]*"' | head -1 | tr -dc '0-9')
+            failures=$(printf '%s' "$counts" | grep -o 'failures="[0-9]*"' | head -1 | tr -dc '0-9')
+            errors=$(printf '%s' "$counts" | grep -o 'errors="[0-9]*"' | head -1 | tr -dc '0-9')
+            if [ "${failures:-0}" -ne 0 ]; then
+              echo "reported ${failures} failure(s)"
+              return 1
+            fi
+            if [ "${errors:-0}" -ne 0 ]; then
+              echo "reported ${errors} error(s)"
+              return 1
+            fi
+            if [ "${skipped:-0}" -ne 0 ]; then
+              # Skipped is not passed. The corpus is the shared contract with the server
+              # implementation; a skipped case is a case where the contract went unverified.
+              echo "reported ${skipped} skipped test(s)"
+              return 1
+            fi
+            if [ "${tests:-0}" -ne "$EXPECTED_CONFORMANCE_TESTS" ]; then
+              echo "executed ${tests:-0} tests, expected $EXPECTED_CONFORMANCE_TESTS"
+              return 1
+            fi
+            return 0
+          }
 
-          # Checked here as well as in the per-class report step above. Two steps asserting
-          # the same property is deliberate: this one is the gate for the corpus
-          # specifically, and it should be readable on its own without having to know that
-          # another step also covers it.
-          if [ "${skipped:-0}" -ne 0 ]; then
-            echo "::error::ClaudePConformanceCorpusTest reported ${skipped} skipped test(s). Skipped is not passed — the corpus is the shared contract with the server implementation, so a skipped case means the contract went unverified."
+          # Self-test first. A gate that has stopped firing reads as a control while
+          # providing none, so the checker is exercised against synthetic suites before it
+          # is trusted with the real one -- including the two cases (failures, errors) that
+          # the previous version of this step silently accepted.
+          tmpdir=$(mktemp -d)
+          trap 'rm -rf "$tmpdir"' EXIT
+
+          synth() {
+            printf '<testsuite name="%s" tests="%s" skipped="%s" failures="%s" errors="%s" time="1.0"></testsuite>\n' \
+              "$SUITE_CLASS" "$2" "$3" "$4" "$5" > "$1"
+          }
+
+          selftest_failures=0
+          expect_accept() {
+            if ! check_suite "$1" >/dev/null 2>&1; then
+              echo "::error::self-test: expected ACCEPT for $2, got a rejection"
+              selftest_failures=$((selftest_failures + 1))
+            fi
+          }
+          expect_reject() {
+            if check_suite "$1" >/dev/null 2>&1; then
+              echo "::error::self-test: expected REJECT for $2, got an acceptance"
+              selftest_failures=$((selftest_failures + 1))
+            fi
+          }
+
+          synth "$tmpdir/ok.xml"    14 0 0 0; expect_accept "$tmpdir/ok.xml"    "14 tests, none skipped or failing"
+          synth "$tmpdir/zero.xml"   0 0 0 0; expect_reject "$tmpdir/zero.xml"  "zero tests executed"
+          synth "$tmpdir/skip.xml"  14 1 0 0; expect_reject "$tmpdir/skip.xml"  "one skipped test"
+          synth "$tmpdir/count.xml" 13 0 0 0; expect_reject "$tmpdir/count.xml" "a wrong test count"
+          synth "$tmpdir/fail.xml"  14 0 1 0; expect_reject "$tmpdir/fail.xml"  "one failing test"
+          synth "$tmpdir/err.xml"   14 0 0 1; expect_reject "$tmpdir/err.xml"   "one errored test"
+          expect_reject "$tmpdir/does-not-exist.xml" "a missing suite file"
+          printf '<testsuite/><testsuite/>\n' > "$tmpdir/dup.xml"; expect_reject "$tmpdir/dup.xml" "two suite elements"
+
+          if [ "$selftest_failures" -ne 0 ]; then
+            echo "::error::the conformance XML gate failed $selftest_failures self-test case(s); its verdict on the real suite cannot be trusted."
             exit 1
           fi
-          if [ "${actual:-0}" -ne "$EXPECTED_CONFORMANCE_TESTS" ]; then
-            echo "::error::ClaudePConformanceCorpusTest executed ${actual:-0} tests, expected $EXPECTED_CONFORMANCE_TESTS. If a case was added or removed deliberately, update EXPECTED_CONFORMANCE_TESTS in this workflow in the same change."
+          echo "Conformance XML gate self-test: 8 cases behaved as expected."
+
+          if ! check_suite "$xml"; then
+            echo "::error::ClaudePConformanceCorpusTest did not produce an acceptable result (see the reason above). The suite must exist exactly once, with tests=$EXPECTED_CONFORMANCE_TESTS and no failures, errors or skips."
             exit 1
           fi
-          echo "ClaudePConformanceCorpusTest executed exactly $EXPECTED_CONFORMANCE_TESTS tests, none skipped."
+          echo "ClaudePConformanceCorpusTest executed exactly $EXPECTED_CONFORMANCE_TESTS tests, none skipped and none failing."
+
+      # The JUnit XML is the only place a failing assertion's message appears. Gradle's test
+      # logging is off project-wide, so the console shows an exception type and a line number
+      # and nothing else -- which is exactly what happened: a run failed and the divergent
+      # frame could be located but not identified, costing a whole CI round to learn nothing.
+      #
+      # Uploaded `if: always()`, because the artifact matters most when the run failed. The
+      # name carries the run id and the commit, so a downloaded file is traceable back to
+      # the run it came from, and it contains no secret -- only test names, timings and
+      # assertion messages from synthetic corpus fixtures.
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results-${{ github.run_id }}-${{ github.sha }}
+          path: |
+            ai/build/test-results/testDebugUnitTest/*.xml
+            app/build/test-results/testDebugUnitTest/*.xml
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Diagnose web-ui build (on failure)
         if: failure()
