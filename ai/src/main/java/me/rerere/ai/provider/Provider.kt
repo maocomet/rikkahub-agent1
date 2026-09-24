@@ -7,6 +7,7 @@ import kotlinx.serialization.Transient
 import kotlinx.serialization.json.JsonElement
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.claudep.ClaudePToolGenerationContext
 import me.rerere.ai.ui.ImageAspectRatio
 import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.MessageChunk
@@ -490,6 +491,15 @@ data class TextGenerationParams(
     /** Local/provider cache namespace only. It is never serialized into an API request. */
     @Transient
     val providerCacheIdentity: ProviderCacheIdentity? = null,
+    /**
+     * The app-side run identity a Claude P tool call is bound to.
+     *
+     * Transient for the same reason as the two above: those are Android-internal identities and
+     * must not reach a request body. `null` means the app did not supply one, which the bridge
+     * treats as "no tools" rather than as permission to guess a generation.
+     */
+    @Transient
+    val claudePToolGenerationContext: ClaudePToolGenerationContext? = null,
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
 ) {
