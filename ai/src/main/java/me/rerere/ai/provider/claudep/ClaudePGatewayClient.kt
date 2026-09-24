@@ -54,6 +54,31 @@ interface ClaudePGatewayClient {
     suspend fun receipt(generationId: String): ClaudePReceiptBody
 
     /**
+     * `tool.result` — Android's answer to one `tool.invoke`.
+     *
+     * Fire-and-forget, and deliberately so. The Server applies the outcome to the call it is
+     * holding and replies with nothing; a late one, one naming a generation it no longer holds,
+     * and a repeat of an answer it already has are all dropped rather than punished. There is
+     * therefore no return value to map onto a Kotlin type, and inventing one would suggest this
+     * side could learn something from the reply that it cannot.
+     *
+     * The state must be one Android may report — [me.rerere.ai.provider.claudep.bridge.ANDROID_REPORTABLE_TOOL_CALL_STATES]
+     * — and the caller is expected to have checked. A malformed outcome is a protocol violation
+     * that ends the connection, which would take every *other* call this device is holding with
+     * it, so it is not something to discover at the socket.
+     */
+    suspend fun sendToolResult(generationId: String, body: ClaudePToolResultBody)
+
+    /**
+     * `tool.query` — ask the Server what its ledger holds for one tool call id.
+     *
+     * Also fire-and-forget, because the answer is not a reply: it arrives as a
+     * [ClaudePServerEvent.ToolQueryResult] on the generation's own stream, so that a reconnect
+     * that replays frames cannot produce a query answer that bypassed the replay ordering.
+     */
+    suspend fun queryToolCall(generationId: String, body: ClaudePToolQueryBody)
+
+    /**
      * `stream.resume`. Replays buffered events only. It must never call the model again — that is
      * the whole point of the receipt/idempotency design.
      */
@@ -67,6 +92,9 @@ interface ClaudePGatewayClient {
 
     /** Number of `generation.cancel` RPCs issued. */
     val cancelCallCount: Int
+
+    /** Number of `tool.result` frames written. Lets a test prove a replay sent nothing. */
+    val toolResultCallCount: Int
 }
 
 /** Handle for one accepted generation. */
@@ -245,10 +273,17 @@ object UnpairedClaudePGatewayClient : ClaudePGatewayClient {
     override suspend fun receipt(generationId: String): ClaudePReceiptBody =
         throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
 
+    override suspend fun sendToolResult(generationId: String, body: ClaudePToolResultBody) =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun queryToolCall(generationId: String, body: ClaudePToolQueryBody) =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
     override suspend fun resume(generationId: String, lastEventSeq: Long): ClaudePResumeResult =
         throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
 
     override val startGenerationCallCount: Int = 0
     override val remoteDispatchCount: Int = 0
     override val cancelCallCount: Int = 0
+    override val toolResultCallCount: Int = 0
 }

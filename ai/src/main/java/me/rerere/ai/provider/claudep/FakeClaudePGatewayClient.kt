@@ -118,6 +118,23 @@ class FakeClaudePGatewayClient(
     override val cancelCallCount: Int
         get() = synchronized(lock) { cancelCalls }
 
+    private var toolResultCalls = 0
+
+    override val toolResultCallCount: Int
+        get() = synchronized(lock) { toolResultCalls }
+
+    /** The `tool.result` frames written, in order, as (generation id, body). */
+    private val sentToolResults = mutableListOf<Pair<String, ClaudePToolResultBody>>()
+
+    val toolResults: List<Pair<String, ClaudePToolResultBody>>
+        get() = synchronized(lock) { sentToolResults.toList() }
+
+    /** The `tool.query` frames written, in order, as (generation id, body). */
+    private val sentToolQueries = mutableListOf<Pair<String, ClaudePToolQueryBody>>()
+
+    val toolQueries: List<Pair<String, ClaudePToolQueryBody>>
+        get() = synchronized(lock) { sentToolQueries.toList() }
+
     /** Convenience for tests: the single generation created by a one-shot script. */
     val lastGenerationId: String?
         get() = synchronized(lock) { generations.keys.lastOrNull() }
@@ -227,6 +244,33 @@ class FakeClaudePGatewayClient(
             )
 
         return synchronized(generation) { buildReceipt(generationId, generation) }
+    }
+
+    /**
+     * Records an outbound `tool.result`.
+     *
+     * Nothing is dispatched and nothing is answered: the real Server applies the outcome to the
+     * call it holds and replies with nothing, so the only thing to verify here is that the frame
+     * was produced exactly once, for the right generation, with an outcome Android may report.
+     */
+    override suspend fun sendToolResult(generationId: String, body: ClaudePToolResultBody) {
+        requireHandshakeCompleted()
+        synchronized(lock) {
+            toolResultCalls++
+            sentToolResults += generationId to body
+        }
+    }
+
+    /**
+     * Records an outbound `tool.query`.
+     *
+     * The answer to a real one arrives as a `tool.query.result` **event on the generation's
+     * stream**, not as a reply — so this fake cannot return it either, and does not pretend to.
+     * A test that wants the answer scripts one into [midStreamFrames].
+     */
+    override suspend fun queryToolCall(generationId: String, body: ClaudePToolQueryBody) {
+        requireHandshakeCompleted()
+        synchronized(lock) { sentToolQueries += generationId to body }
     }
 
     /** Caller must hold the generation's monitor. */

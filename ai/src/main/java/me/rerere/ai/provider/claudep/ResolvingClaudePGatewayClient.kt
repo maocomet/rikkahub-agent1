@@ -53,6 +53,12 @@ class ResolvingClaudePGatewayClient(
 
     override suspend fun receipt(generationId: String): ClaudePReceiptBody = delegate().receipt(generationId)
 
+    override suspend fun sendToolResult(generationId: String, body: ClaudePToolResultBody) =
+        delegate().sendToolResult(generationId, body)
+
+    override suspend fun queryToolCall(generationId: String, body: ClaudePToolQueryBody) =
+        delegate().queryToolCall(generationId, body)
+
     override suspend fun resume(generationId: String, lastEventSeq: Long): ClaudePResumeResult =
         delegate().resume(generationId, lastEventSeq)
 
@@ -61,4 +67,5 @@ class ResolvingClaudePGatewayClient(
     override val startGenerationCallCount: Int get() = fallback.startGenerationCallCount
     override val remoteDispatchCount: Int get() = fallback.remoteDispatchCount
     override val cancelCallCount: Int get() = fallback.cancelCallCount
+    override val toolResultCallCount: Int get() = fallback.toolResultCallCount
 }

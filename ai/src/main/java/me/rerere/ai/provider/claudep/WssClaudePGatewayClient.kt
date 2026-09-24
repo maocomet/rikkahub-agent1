@@ -17,6 +17,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
 /**
@@ -335,6 +336,52 @@ class WssClaudePGatewayClient(
      */
     private fun alreadyTerminalOrNull(generationId: String): ClaudePTerminalKind? =
         router.terminalKindOf(generationId)
+
+    /**
+     * `tool.result` — the answer to one `tool.invoke`.
+     *
+     * Sent, not awaited. The Server applies it to the call it is holding and replies with
+     * nothing: there is no `tool.result.result`, so a request id here would open a waiter that
+     * nothing will ever complete. That is also why this does not go through [sendRpc].
+     *
+     * The generation id travels in the **envelope**, which is where the Server reads it from —
+     * a tool frame whose envelope carries no generation is closed with 1002 rather than guessed
+     * at. [sendSafely] returning false (an oversized frame, or a socket that went away) is not
+     * retried: the call's own deadline is the backstop, and re-sending a tool outcome on a
+     * guessed-at connection is how one answer becomes two.
+     */
+    override suspend fun sendToolResult(generationId: String, body: ClaudePToolResultBody) {
+        val ready = ensureSession()
+        sendSafely(
+            ready,
+            clientFrame(
+                type = ClaudePEventType.TOOL_RESULT,
+                requestId = null,
+                generationId = generationId,
+                body = ClaudePProtocol.json.encodeToJsonElement(body).jsonObject,
+            ),
+        )
+    }
+
+    /**
+     * `tool.query` — ask what the Server holds for one call.
+     *
+     * Also not an RPC. The answer comes back as a `tool.query.result` event on the generation's
+     * own stream, so that it is ordered with everything else and so that a reconnect replaying
+     * frames cannot deliver an answer that skipped the replay.
+     */
+    override suspend fun queryToolCall(generationId: String, body: ClaudePToolQueryBody) {
+        val ready = ensureSession()
+        sendSafely(
+            ready,
+            clientFrame(
+                type = ClaudePEventType.TOOL_QUERY,
+                requestId = null,
+                generationId = generationId,
+                body = ClaudePProtocol.json.encodeToJsonElement(body).jsonObject,
+            ),
+        )
+    }
 
     override suspend fun receipt(generationId: String): ClaudePReceiptBody {
         val ready = ensureSession()

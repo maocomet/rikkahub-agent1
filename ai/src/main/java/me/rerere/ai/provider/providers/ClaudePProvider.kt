@@ -21,6 +21,21 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.claudep.ClaudePCancelReason
 import me.rerere.ai.provider.claudep.ClaudePCatalogResultBody
+import me.rerere.ai.provider.claudep.ClaudePToolBridgeHost
+import me.rerere.ai.provider.claudep.ClaudePToolCancelBody
+import me.rerere.ai.provider.claudep.ClaudePToolFrames
+import me.rerere.ai.provider.claudep.ClaudePToolInvokeBody
+import me.rerere.ai.provider.claudep.ClaudePToolPreparation
+import me.rerere.ai.provider.claudep.ClaudePToolQueryResultBody
+import me.rerere.ai.provider.claudep.toBridgeState
+import me.rerere.ai.provider.claudep.bridge.BridgeCancelDecision
+import me.rerere.ai.provider.claudep.bridge.BridgeCompletion
+import me.rerere.ai.provider.claudep.bridge.BridgeContract
+import me.rerere.ai.provider.claudep.bridge.BridgeGenerationRegistry
+import me.rerere.ai.provider.claudep.bridge.BridgeInvokeDecision
+import me.rerere.ai.provider.claudep.bridge.BridgeToolAdapter
+import me.rerere.ai.provider.claudep.bridge.GenerationBinding
+import me.rerere.ai.provider.claudep.bridge.ToolCallOutcome
 import me.rerere.ai.provider.claudep.ClaudePClientHelloBody
 import me.rerere.ai.provider.claudep.ClaudePErrorCode
 import me.rerere.ai.provider.claudep.ClaudePGatewayClient
@@ -102,7 +117,22 @@ class ClaudePProvider(
      * handshake cache.
      */
     private val deviceIdProvider: (suspend () -> String?)? = null,
+    /**
+     * The app's half of the tool bridge. Defaults to the host that has no tools, which is the
+     * text path: no `tool_snapshot` is sent, so the Server registers nothing and no invocation
+     * can arrive.
+     */
+    private val toolHost: ClaudePToolBridgeHost = ClaudePToolBridgeHost.NONE,
 ) : Provider<ProviderSetting.ClaudeP> {
+
+    /**
+     * The per-generation tool adapters, and the only place one exists.
+     *
+     * One registry per provider instance, because a Claude P provider is one device's connection
+     * to one Gateway: generations are sequential for a single user, and an adapter that outlived
+     * its provider could answer a frame after the transport that carried it was gone.
+     */
+    private val toolRegistry = BridgeGenerationRegistry(executions = toolHost.executions)
 
     private val handshakeMutex = Mutex()
 
@@ -125,7 +155,8 @@ class ClaudePProvider(
     ): Flow<MessageChunk> {
         // Ordering is the safety property: validate, then handshake, then dispatch. A rejected
         // input or an incompatible gateway must both produce zero dispatches.
-        rejectUnsupportedInput(messages, params)
+        val hasToolHost = toolHost !== ClaudePToolBridgeHost.NONE
+        rejectUnsupportedInput(messages, params, toolsSupported = hasToolHost)
 
         // Resolved **once** and used for both the handshake and the fingerprint. Two separate
         // resolutions could observe different values — a revocation landing between them — and the
@@ -142,6 +173,13 @@ class ClaudePProvider(
             ?: throw ClaudePUnsupportedInputException(ClaudePUnsupportedInput.EMPTY_TURN)
         val systemPrompt = messages.systemPromptOrNull()
         val requestId = requestIdFactory()
+
+        // The catalog is frozen before dispatch, because it has to travel *in* `generation.start`.
+        // With no tools — or no bridge host — this is [ClaudePToolPreparation.NONE], the snapshot
+        // is null, and the frame is byte-for-byte what it was before the bridge existed.
+        val preparation = toolHost.prepare(params.tools)
+        val toolSnapshot = if (preparation.catalog.isEmpty) null else preparation.snapshot
+
         val fingerprint = ClaudePRequestFingerprint.compute(
             deviceId = deviceId,
             remoteThreadId = remoteThreadId,
@@ -150,6 +188,10 @@ class ClaudePProvider(
             modelAlias = modelAlias,
             systemPrompt = systemPrompt,
             turn = turn,
+            // Part of the fingerprint for the same reason it is part of the generation's
+            // identity: two requests that offer Claude different tools are not the same request,
+            // and idempotency keyed without it would replay the first one's answer.
+            toolSnapshot = toolSnapshot?.toString(),
         )
         val body = ClaudePGenerationStartBody(
             remoteThreadId = remoteThreadId,
@@ -159,7 +201,7 @@ class ClaudePProvider(
             systemPrompt = systemPrompt,
             turn = turn,
             rebuildHistory = null,
-            toolSnapshot = null,
+            toolSnapshot = toolSnapshot,
             limits = ClaudePGenerationLimits(maxOutputTokens = params.maxTokens),
         )
 
@@ -177,13 +219,32 @@ class ClaudePProvider(
             try {
                 val handle = gateway.startGeneration(requestId, fingerprint, body)
                 attempt.bind(handle)
-                pumpFrames(
-                    frames = handle.frames(),
-                    gate = ClaudePTerminalGate(),
-                    generationId = handle.generationId,
-                    onTerminal = attempt::markTerminal,
-                    emit = { emit(it) },
-                )
+
+                // Opened before the first frame is pumped, so an invoke that arrives in the very
+                // first batch already has a ledger to land in. A generation with no tools never
+                // opens one, and `lookup` returning null is then the whole of the tool path.
+                val toolFrames = if (preparation.catalog.isEmpty) {
+                    null
+                } else {
+                    openToolGeneration(handle.generationId, requestId, preparation)
+                }
+
+                try {
+                    pumpFrames(
+                        frames = handle.frames(),
+                        gate = ClaudePTerminalGate(),
+                        generationId = handle.generationId,
+                        onTerminal = attempt::markTerminal,
+                        onToolFrame = { event -> toolFrames?.on(event) { emit(it) } },
+                        emit = { emit(it) },
+                    )
+                } finally {
+                    // Closed after the stream ends, whatever ended it: a terminal, a cancellation,
+                    // or a disconnect. The close is what stops whatever the runtime is still doing
+                    // for this generation and settles the calls by what it can **prove** — which
+                    // is why it is here rather than in the happy path only.
+                    if (toolFrames != null) toolRegistry.close(handle.generationId)
+                }
             } catch (cancelled: CancellationException) {
                 // §8: an explicit cancel is the only thing that stops a remote generation. The
                 // attempt tracker guarantees at most one RPC even if cancellation is observed
@@ -271,6 +332,41 @@ class ClaudePProvider(
     ): Flow<ImageGenerationItem> =
         throw ClaudePUnsupportedInputException(ClaudePUnsupportedInput.IMAGE_GENERATION)
 
+    /**
+     * Opens the tool ledger for one generation, or refuses the generation.
+     *
+     * A refusal here means the generation has tools Claude will be told about and no ledger to
+     * answer them with — every invocation would then sit until its thirty-minute deadline. Failing
+     * the generation is the loud version of that, and loud is what this path has to be: the
+     * alternative is a turn that appears to work and silently answers nothing.
+     */
+    private fun openToolGeneration(
+        generationId: String,
+        requestId: String,
+        preparation: ClaudePToolPreparation,
+    ): ClaudePToolFrameHandler {
+        val binding = GenerationBinding(
+            deviceRef = preparation.deviceRef,
+            assistantId = preparation.assistantId,
+            conversationId = preparation.conversationId,
+            branchId = preparation.branchId,
+            generationId = generationId,
+            requestId = requestId,
+            catalogDigest = preparation.catalog.digest,
+            bridgeAbi = BridgeContract.BRIDGE_ABI,
+            timeoutMs = preparation.timeoutMs,
+        )
+
+        val adapter = toolRegistry.open(binding, preparation.catalog).adapterOrNull
+            ?: throw ClaudePGatewayException(ClaudePErrorCode.PROTOCOL_MISMATCH)
+
+        return ClaudePToolFrameHandler(
+            adapter = adapter,
+            gateway = gateway,
+            host = toolHost,
+        )
+    }
+
     // -----------------------------------------------------------------------------------------
     // Internals
     // -----------------------------------------------------------------------------------------
@@ -313,8 +409,20 @@ class ClaudePProvider(
      * legacy tool turn silently reaching a provider that cannot execute tools.
      */
     @Suppress("DEPRECATION")
-    private fun rejectUnsupportedInput(messages: List<UIMessage>, params: TextGenerationParams) {
-        if (params.tools.isNotEmpty()) {
+    private fun rejectUnsupportedInput(
+        messages: List<UIMessage>,
+        params: TextGenerationParams,
+        toolsSupported: Boolean,
+    ) {
+        // Declaring tools with no bridge host behind them is refused rather than silently
+        // dropped: the user would otherwise believe Claude had tools this build cannot run.
+        //
+        // With a host it is not a refusal, and *not* a guarantee either — a host may still drop
+        // every candidate (a name the frozen namespace cannot carry, an oversize description),
+        // and the answer to that is an empty catalog rather than a failed turn. The catalog the
+        // host actually produced is what is sent, so what Claude sees is always what the app
+        // froze, never what the caller hoped for.
+        if (!toolsSupported && params.tools.isNotEmpty()) {
             throw ClaudePUnsupportedInputException(ClaudePUnsupportedInput.TOOL_DEFINITION)
         }
         messages.forEach { message ->
@@ -424,6 +532,15 @@ private sealed interface ClaudePFrameRouting {
     data object Ignore : ClaudePFrameRouting
 
     data class Chunk(val chunk: MessageChunk) : ClaudePFrameRouting
+
+    /**
+     * A frame the bridge has to answer rather than render.
+     *
+     * Distinct from [Ignore] because answering one means suspending: an `tool.invoke` is a
+     * *question*, and the peer is blocked on it until this side replies. A frame silently
+     * dropped on the acknowledgement path would leave that peer waiting out the whole deadline.
+     */
+    data class Tool(val event: ClaudePServerEvent) : ClaudePFrameRouting
 }
 
 /**
@@ -552,6 +669,14 @@ private fun ClaudePTerminalGate.route(event: ClaudePServerEvent): ClaudePFrameRo
     is ClaudePServerEvent.ReceiptResult,
     is ClaudePServerEvent.StreamResumeResult,
     -> ClaudePFrameRouting.Ignore
+
+    // The three frames the bridge must answer. Note that they are routed **past** the terminal
+    // gate: a cancel arriving after a terminal is still a fact about a call, and the gate's job
+    // is to suppress content, not to decide what the ledger is allowed to hear.
+    is ClaudePServerEvent.ToolInvoke,
+    is ClaudePServerEvent.ToolCancel,
+    is ClaudePServerEvent.ToolQueryResult,
+    -> ClaudePFrameRouting.Tool(event)
 }
 
 /** Collects a frame stream through [routeFrame], tracking terminal state as it goes. */
@@ -560,6 +685,7 @@ private suspend fun pumpFrames(
     gate: ClaudePTerminalGate,
     generationId: String?,
     onTerminal: () -> Unit,
+    onToolFrame: suspend (ClaudePServerEvent) -> Unit = {},
     emit: suspend (MessageChunk) -> Unit,
 ) {
     frames.collect { raw ->
@@ -571,8 +697,142 @@ private suspend fun pumpFrames(
         when (routing) {
             ClaudePFrameRouting.Ignore -> Unit
             is ClaudePFrameRouting.Chunk -> emit(routing.chunk)
+            is ClaudePFrameRouting.Tool -> onToolFrame(routing.event)
         }
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// Tool frames
+// -------------------------------------------------------------------------------------------
+
+/**
+ * Answers the three inbound tool frames for one generation.
+ *
+ * ## What this is, and the one thing it is not
+ *
+ * It is the join between the bridge's ledger and the app's runtime, and it is deliberately thin.
+ * Every question of *policy* — may this tool run, does the user have to approve it, what does it
+ * do — is answered by [ClaudePToolBridgeHost] behind [ClaudePToolBridgeHost.execute], which is
+ * the app's own runtime. What lives here is only the order the frames are answered in, because
+ * that order is the part the wire contract actually constrains.
+ *
+ * ## Why a repeat never executes twice
+ *
+ * [BridgeToolAdapter.onInvoke] records the call **before** returning `Execute`, so by the time the
+ * runtime is asked to run anything there is already a record. A re-delivered invoke — after a
+ * reconnect, or from a Server that never saw the answer — therefore finds that record: `Await`
+ * while it is still running, `Replay` once it has settled. Neither reaches the runtime, which is
+ * the whole of the double-execution defence and the reason this class does not need one of its
+ * own.
+ */
+internal class ClaudePToolFrameHandler(
+    private val adapter: BridgeToolAdapter,
+    private val gateway: ClaudePGatewayClient,
+    private val host: ClaudePToolBridgeHost,
+) {
+    private val generationId: String = adapter.generationId
+
+    suspend fun on(event: ClaudePServerEvent, emit: suspend (MessageChunk) -> Unit) {
+        when (event) {
+            is ClaudePServerEvent.ToolInvoke -> onInvoke(event.body, emit)
+            is ClaudePServerEvent.ToolCancel -> onCancel(event.body)
+            is ClaudePServerEvent.ToolQueryResult -> onQueryResult(event.body)
+            else -> Unit
+        }
+    }
+
+    private suspend fun onInvoke(
+        body: ClaudePToolInvokeBody,
+        emit: suspend (MessageChunk) -> Unit,
+    ) {
+        when (val decision = adapter.onInvoke(body.toolCallId, body.toolName, body.arguments)) {
+            is BridgeInvokeDecision.Execute -> {
+                val execution = host.execute(decision.invocation)
+                // Shown before the answer is sent, so the conversation already holds the call
+                // when the terminal arrives and the two cannot be observed out of order.
+                execution.part?.let { emit(toolCallChunk(it)) }
+
+                val outcome = execution.outcome
+                when (adapter.complete(outcome.toolCallId, outcome.state, outcome.body)) {
+                    is BridgeCompletion.Settled -> report(outcome)
+                    // Already announced, or superseded by a terminal that won the race. Either
+                    // way the peer has an answer and this one would be a second.
+                    is BridgeCompletion.Repeat, is BridgeCompletion.Superseded -> Unit
+                }
+            }
+
+            // A repeat of a call that has settled. The recorded answer is the answer, and
+            // re-sending it is the idempotent-recovery path the Server's own `apply` expects.
+            is BridgeInvokeDecision.Replay -> report(decision.outcome)
+
+            // Still in flight. The answer is already coming; starting a second wait would be
+            // starting a second execution in every way that matters.
+            BridgeInvokeDecision.Await -> Unit
+
+            // Refused, and nothing ran. Nothing is sent because there is no outcome to report:
+            // the Server's own deadline is what concludes a call Android declined.
+            is BridgeInvokeDecision.Refused -> Unit
+
+            // The generation is ending. The close is settling this call, and a second opinion
+            // from here would race it.
+            BridgeInvokeDecision.GenerationClosing -> Unit
+        }
+    }
+
+    /**
+     * Propagates a cancel to the runtime's **real** cancellation capability.
+     *
+     * The adapter's decision is what makes this idempotent: it returns `Propagate` only the first
+     * time it sees a cancel for a call that has not settled, so asking the runtime to stop twice
+     * — which is how one stop becomes two instructions — cannot happen here.
+     *
+     * Nothing is answered. A cancel is not a conclusion, and the conclusion is whatever the
+     * runtime reports when it is done stopping.
+     */
+    private suspend fun onCancel(body: ClaudePToolCancelBody) {
+        if (adapter.onCancel(body.toolCallId) === BridgeCancelDecision.Propagate) {
+            host.executions.requestStop(generationId, listOf(body.toolCallId))
+        }
+    }
+
+    /**
+     * The Server's answer to a `tool.query`.
+     *
+     * Consulted and not merged: it is authoritative about the *Server's* ledger, and this side's
+     * record is authoritative about its own. Nothing is written, because there is nothing this
+     * answer could change — a call this generation holds is settled by its own runtime, and a
+     * call it does not hold is one it must not adopt an opinion about.
+     */
+    private fun onQueryResult(body: ClaudePToolQueryResultBody) {
+        adapter.onQueryResult(body.toolCallId, body.safeState.toBridgeState(), body.body)
+    }
+
+    /**
+     * Sends one terminal, if it is one Android may send.
+     *
+     * [ClaudePToolFrames.asOutboundResult] is the same gate the wire rules already enforce, and
+     * the `null` is load-bearing: a state Android may not report produces **no frame at all**
+     * rather than a guessed one, because the Server closes the connection on a malformed outcome
+     * — which would conclude every other call this device is holding.
+     */
+    private suspend fun report(outcome: ToolCallOutcome) {
+        val frame = ClaudePToolFrames.asOutboundResult(outcome) ?: return
+        gateway.sendToolResult(generationId, frame)
+    }
+
+    private fun toolCallChunk(part: UIMessagePart.Tool): MessageChunk = MessageChunk(
+        id = generationId,
+        model = PROVIDER_MODEL_FALLBACK,
+        choices = listOf(
+            UIMessageChoice(
+                index = 0,
+                delta = UIMessage(role = MessageRole.ASSISTANT, parts = listOf(part)),
+                message = null,
+                finishReason = null,
+            ),
+        ),
+    )
 }
 
 // -------------------------------------------------------------------------------------------
