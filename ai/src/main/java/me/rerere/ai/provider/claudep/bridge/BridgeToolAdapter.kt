@@ -40,6 +40,17 @@ sealed interface BridgeInvokeDecision {
      * carrying different content.
      */
     data class Refused(val reason: BridgeRejection) : BridgeInvokeDecision
+
+    /**
+     * Refused because this generation is ending.
+     *
+     * Deliberately **not** a [Refused]: [BridgeRejection] is the contract's closed vocabulary,
+     * which the Server also holds, and there is no value in it for "the generation you are
+     * asking about is closing". The Server never sends an invoke to a generation it has ended,
+     * so this case is a local lifecycle fact rather than a protocol verdict — and giving it its
+     * own variant is what makes an inbound handler that forgets it fail to compile.
+     */
+    data object GenerationClosing : BridgeInvokeDecision
 }
 
 /** What the adapter decided about one inbound `tool.cancel`. */
@@ -103,11 +114,34 @@ sealed interface BridgeCompletion {
 class BridgeToolAdapter(
     private val binding: GenerationBinding,
     val catalog: FrozenCatalog,
+    /**
+     * The app's real execution layer, as a question this side may ask it.
+     *
+     * Defaults to the host that stops nothing and proves nothing, which is the correct answer
+     * for a bridge with no executor behind it: every call it is asked to conclude reports
+     * `failed` rather than claiming a stop it never observed.
+     */
+    private val executions: BridgeExecutionHost = BridgeExecutionHost.NONE,
     private val ledger: BridgeLedger = BridgeLedger(),
 ) {
 
     /** Call ids a cancel has already been propagated for. Sent at most once each. */
     private val cancelPropagated = mutableSetOf<String>()
+
+    /**
+     * True once this generation has begun to end.
+     *
+     * Volatile because the two halves run on different paths: a close is driven by whoever owns
+     * the generation's lifetime, and an invoke arrives on the inbound frame path. A frame that
+     * slips in between the two must see the flag, and it must be the flag rather than the
+     * adapter's absence — during closing the adapter is still in the registry and still the
+     * answer to a lookup by its exact id.
+     */
+    @Volatile
+    private var closing = false
+
+    /** True when this generation has begun to end, whether or not it has been released yet. */
+    val isClosing: Boolean get() = closing
 
     /** True when this adapter serves the generation the frame names. */
     fun serves(generationId: String?): Boolean = generationId == binding.generationId
@@ -125,6 +159,10 @@ class BridgeToolAdapter(
      *
      * The order of the checks is the security-relevant part, so it is fixed:
      *
+     * 0. **The generation must not be ending.** This is checked before anything else and before
+     *    any record is consulted, because the ledger is about to be settled by a close and a
+     *    call admitted into that window would be a call whose execution nobody is waiting to
+     *    stop.
      * 1. The call id must be one this contract accepts. A malformed id is not a call.
      * 2. The tool must be in **this generation's frozen catalog**. A tool the assistant did not
      *    offer is not reachable by naming it, which is what makes the catalog a boundary rather
@@ -133,10 +171,12 @@ class BridgeToolAdapter(
      * 4. Only then is the binding built and the ledger asked — so a repeat is judged against a
      *    binding that was derived from verified inputs rather than from whatever arrived.
      *
-     * @throws BridgeRejected never — every refusal is returned as [BridgeInvokeDecision.Refused],
-     *   because a caller that has to catch does not see which of these it hit.
+     * @throws BridgeRejected never — every refusal is returned as a decision value, because a
+     *   caller that has to catch does not see which of these it hit.
      */
     fun onInvoke(toolCallId: String?, toolName: String?, arguments: JsonElement?): BridgeInvokeDecision {
+        if (closing) return BridgeInvokeDecision.GenerationClosing
+
         if (!BridgeBinding.isToolCallId(toolCallId)) {
             return BridgeInvokeDecision.Refused(BridgeRejection.INVOCATION_ID_INVALID)
         }
@@ -327,18 +367,98 @@ class BridgeToolAdapter(
     /**
      * Concludes every outstanding call because **this generation ended**.
      *
-     * Returns what each became, so the caller can stop whatever the runtime is still doing for
-     * them and close the matching UI. The adapter is spent afterwards and its owner must drop
-     * it: it holds a terminal for every call it ever saw, so a frame arriving late attaches to a
-     * concluded record rather than creating a new one.
+     * ## The order, and why it is this order
      *
-     * The state is [ToolCallState.CANCELLED] rather than `failed`: the user did not lose a tool
-     * call, the turn it belonged to ended, and the honest description of an execution that was
-     * stopped is that it was cancelled. Nothing here is sent to the Server — a generation that
-     * has ended has no waiter — and no tool is re-dispatched.
+     * 1. **Stop admitting.** [closing] is set first, so no invoke can enter between the moment
+     *    the pending set is read and the moment it is settled. A call admitted in that window
+     *    would be one nobody stops.
+     * 2. **Close the approvals.** A prompt still on screen for this generation is a prompt whose
+     *    answer has nowhere to go; it is closed before anything is stopped, so an "approve" tap
+     *    cannot race the stop and start a tool for a generation that is already gone.
+     * 3. **Ask the runtime to stop.** Through the runtime's own cancellation capability, for
+     *    every call still pending. Already-propagated cancels are not asked for twice.
+     * 4. **Wait, bounded, for real conclusions.** [BridgeExecutionHost.awaitConclusions] returns
+     *    only what the runtime can prove.
+     * 5. **Settle by what was actually proven.** Each pending record takes the state the runtime
+     *    reported; a call with no proof ends `failed`, never `cancelled`.
+     *
+     * The adapter is spent afterwards and its owner must drop it: it holds a terminal for every
+     * call it ever saw, so a frame arriving late attaches to a concluded record rather than
+     * creating a new one.
+     *
+     * ## Why nothing here says `cancelled` on its own
+     *
+     * The previous version of this method recorded `cancelled` for everything still pending, on
+     * the reasoning that the turn had ended so the execution had stopped. That reasoning is not
+     * sound: a tool the runtime could not interrupt — one already inside a write, one whose
+     * handle was lost when the scope that owned it was cancelled — keeps running and keeps its
+     * side effect, and calling it `cancelled` would tell the peer that a write did not happen
+     * when it did. `cancelled` here means one thing only: **a cancel was requested and the
+     * runtime proved the call is over.** Everything else that cannot be proven is `failed`,
+     * which claims nothing and cannot mislead.
+     *
+     * Nothing here is sent to the Server — a generation that has ended has no waiter — and no
+     * tool is re-dispatched.
      */
-    fun concludeForClosedGeneration(): List<ToolCallOutcome> =
-        ledger.concludeAll(ToolCallState.CANCELLED)
+    fun concludeForClosedGeneration(
+        waitMs: Long = BridgeClosing.DEFAULT_STOP_WAIT_MS,
+    ): List<BridgeClosedCall> {
+        // 1. Stop admitting, before reading what is pending.
+        closing = true
+
+        val pending = ledger.pendingToolCallIds()
+        if (pending.isEmpty()) return emptyList()
+
+        // 2. Close or reject every pending approval.
+        for (toolCallId in pending) {
+            executions.abandonApproval(binding.generationId, toolCallId)
+        }
+
+        // 3. Ask for a real stop, once, for the calls that have not been asked about already.
+        val toStop = pending.filter { cancelPropagated.add(it) }
+        if (toStop.isNotEmpty()) {
+            executions.requestStop(binding.generationId, toStop)
+        }
+
+        // 4. Wait, bounded, for whatever the runtime can prove.
+        val proven = try {
+            executions.awaitConclusions(binding.generationId, pending, waitMs)
+        } catch (error: Exception) {
+            // A host that threw has proven nothing. The catch is here rather than at the call
+            // site because a throw between the stop request and the settle would otherwise
+            // leave records pending forever — which is the one shape the nine-state vocabulary
+            // is written to exclude.
+            emptyMap()
+        }
+
+        // 5. Settle by what was proven, and only by what was proven.
+        val concluded = mutableListOf<BridgeClosedCall>()
+        for (toolCallId in pending) {
+            val proof = proven[toolCallId]?.takeIf { it.state.isAndroidReportable() }
+            val outcome = if (proof == null) {
+                BridgeOutcomes.lostCallOutcome(toolCallId)
+            } else {
+                proof
+            }
+            val settled = try {
+                ledger.apply(outcome)
+            } catch (error: BridgeRejected) {
+                // Settled by someone else in the meantime — the runtime's own result won the
+                // race. Its record stands; this close has nothing further to say about it.
+                ledger.find(toolCallId) ?: continue
+            }
+            concluded += BridgeClosedCall(
+                toolCallId = toolCallId,
+                outcome = BridgeRules.recordToOutcome(settled),
+                reason = if (proof == null) {
+                    BridgeCloseReason.STOP_UNPROVEN
+                } else {
+                    BridgeCloseReason.RUNTIME_CONCLUDED
+                },
+            )
+        }
+        return concluded
+    }
 
     /** The outcome recorded for this call, or `null` when this generation holds no record. */
     fun recordedOutcome(toolCallId: String): ToolCallOutcome? =

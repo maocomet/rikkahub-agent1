@@ -198,6 +198,17 @@ class BridgeLedger {
     /** Calls still awaiting a terminal. */
     val pendingCount: Int get() = calls.values.count { !it.state.isTerminal() }
 
+    /**
+     * The tool call ids still awaiting a terminal, in the order they were admitted.
+     *
+     * Returns the ids rather than the records because every caller of this is about to ask the
+     * *runtime* about them — to stop them, or to find out what became of them — and the runtime
+     * knows a call by its id. Handing out records would invite a caller to read a state that is
+     * about to be superseded by the answer it is on its way to fetch.
+     */
+    fun pendingToolCallIds(): List<String> =
+        calls.values.filter { !it.state.isTerminal() }.map { it.toolCallId }
+
     /** Every call this generation holds, pending or terminal. */
     val size: Int get() = calls.size
 
@@ -244,29 +255,6 @@ class BridgeLedger {
      * calls moved, and the only way to do that is to look at the whole ledger again — which is
      * the second definition of "what expired" that this exists to avoid.
      */
-    /**
-     * Concludes every still-pending call in [state], and returns what each became.
-     *
-     * Used when the *generation* ends rather than when one call does. A generation that is
-     * over can never answer its outstanding calls — there is no longer anything to answer them
-     * *for* — so leaving them pending would leave records that can never become terminal,
-     * which is the one shape the contract's nine-state vocabulary is written to exclude.
-     *
-     * The calls are concluded locally and **nothing is re-dispatched**: a concluded call is
-     * terminal, so a late result for it is dropped by [BridgeRules.applyOutcome] rather than
-     * announced, and a re-delivered invocation finds a terminal record rather than a fresh one.
-     */
-    fun concludeAll(state: ToolCallState): List<ToolCallOutcome> {
-        val concluded = mutableListOf<ToolCallOutcome>()
-        for (record in calls.values.toList()) {
-            if (record.state.isTerminal()) continue
-            val settled = record.copy(state = state)
-            calls[settled.key] = settled
-            concluded += BridgeRules.recordToOutcome(settled)
-        }
-        return concluded
-    }
-
     fun expire(nowMonotonicMs: Long): List<ToolCallOutcome> {
         val settled = mutableListOf<ToolCallOutcome>()
         for (record in calls.values.toList()) {
