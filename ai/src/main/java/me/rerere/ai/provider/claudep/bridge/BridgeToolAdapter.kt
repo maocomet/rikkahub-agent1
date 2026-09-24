@@ -324,6 +324,22 @@ class BridgeToolAdapter(
      */
     fun expire(nowMonotonicMs: Long): List<ToolCallOutcome> = ledger.expire(nowMonotonicMs)
 
+    /**
+     * Concludes every outstanding call because **this generation ended**.
+     *
+     * Returns what each became, so the caller can stop whatever the runtime is still doing for
+     * them and close the matching UI. The adapter is spent afterwards and its owner must drop
+     * it: it holds a terminal for every call it ever saw, so a frame arriving late attaches to a
+     * concluded record rather than creating a new one.
+     *
+     * The state is [ToolCallState.CANCELLED] rather than `failed`: the user did not lose a tool
+     * call, the turn it belonged to ended, and the honest description of an execution that was
+     * stopped is that it was cancelled. Nothing here is sent to the Server — a generation that
+     * has ended has no waiter — and no tool is re-dispatched.
+     */
+    fun concludeForClosedGeneration(): List<ToolCallOutcome> =
+        ledger.concludeAll(ToolCallState.CANCELLED)
+
     /** The outcome recorded for this call, or `null` when this generation holds no record. */
     fun recordedOutcome(toolCallId: String): ToolCallOutcome? =
         ledger.find(toolCallId)?.let { BridgeRules.recordToOutcome(it) }

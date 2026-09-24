@@ -13,23 +13,91 @@ import kotlinx.serialization.json.JsonPrimitive
  * are, and nothing here re-registers them: [name] is the name the runtime will be asked to
  * execute, and [inputSchema] is the schema the runtime already holds. A second tool registry
  * is exactly what this stage must not grow.
+ *
+ * ## [readOnly] is not a constructor argument, and that is the point
+ *
+ * `readOnly` is carried into the served catalog and into its digest, and a reviewer reading
+ * `readOnly: true` reads it as "calling this cannot change anything". It must therefore be
+ * impossible to set from a value that arrived over the wire — a Server response, a tool
+ * frame, an MCP server's own description of itself, or an unvetted boolean from a caller.
+ *
+ * So there is no public constructor and no boolean parameter. A caller states a **claim** by
+ * choosing a factory whose name is the claim, and the only one that can produce `true` is
+ * [provenReadOnly], whose contract is that the tool has no side effect for *every* argument
+ * its schema admits. [tool] is the default and asserts the weaker claim.
+ *
+ * This is deliberately not a policy engine. It is one constructor boundary, because the
+ * danger is not that a caller decides wrongly — that can happen at any altitude — but that a
+ * value from somewhere else reaches the field without anyone choosing anything.
  */
-data class BridgeToolCandidate(
+class BridgeToolCandidate private constructor(
     /** The name the Android runtime knows this tool by. */
     val name: String,
     val description: String,
     val inputSchema: JsonElement,
     /**
-     * Whether this tool is asserted to have no side effects.
+     * Whether this tool is asserted to have no side effects for every valid argument.
      *
-     * Supplied by the caller from its authoritative policy, and **not** inferred here. The
-     * caller's default must be `false`: claiming a write tool is read-only is the one direction
-     * of error that misrepresents what a call may do, and the safe default asserts the weaker
-     * claim.
+     * Set only by [provenReadOnly]; `false` for every other way a candidate can be built.
      */
     val readOnly: Boolean,
     val source: ToolSource,
-)
+) {
+    /** The same tool, asserted to be merely effectful. Used to downgrade when in doubt. */
+    fun asEffectful(): BridgeToolCandidate =
+        BridgeToolCandidate(name, description, inputSchema, false, source)
+
+    companion object {
+        /**
+         * A tool that may have a side effect, or whose effect could not be proven absent.
+         *
+         * **This is the default and the correct answer for anything unknown.** It covers a
+         * tool whose behaviour depends on its arguments, a tool this side did not write, and
+         * every MCP tool — Android cannot prove a remote implementation is effect-free by
+         * inspecting it, so it does not claim to.
+         */
+        fun tool(
+            name: String,
+            description: String,
+            inputSchema: JsonElement,
+            source: ToolSource,
+        ): BridgeToolCandidate = BridgeToolCandidate(name, description, inputSchema, false, source)
+
+        /**
+         * A tool proven to have **no side effect for every argument its schema admits**.
+         *
+         * The proof is the caller's, and it must come from the code that owns the tool — not
+         * from a description, a schema annotation, a remote claim, or a catalog entry. A tool
+         * that is read-only for some arguments and not others does **not** qualify; it is
+         * [tool], because the catalog describes the tool, not the call, and the call is what
+         * decides.
+         *
+         * Restricted to [ToolSource.LOCAL]. Android cannot inspect an MCP server's
+         * implementation, so it cannot hold this proof for one, and asserting it anyway would
+         * be the exact overclaim this factory exists to prevent. This is stricter than the
+         * ruling requires — the ruling asks MCP tools to *default* to false — and it is
+         * stricter on purpose: a default is a thing a caller can override by not thinking,
+         * and this one cannot be overridden at all.
+         *
+         * **This is never an authorization.** A `true` here does not skip `assess()`, does not
+         * skip `ToolExecutionGate`, and does not skip human approval. It is a statement of fact
+         * about a tool, carried so that the catalog describes the tool truthfully — nothing
+         * downstream may branch on it to permit anything.
+         */
+        fun provenReadOnly(
+            name: String,
+            description: String,
+            inputSchema: JsonElement,
+            source: ToolSource,
+        ): BridgeToolCandidate {
+            require(source == ToolSource.LOCAL) {
+                "provenReadOnly is a claim about an implementation this side can inspect; " +
+                    "it cannot be made for a $source tool"
+            }
+            return BridgeToolCandidate(name, description, inputSchema, true, source)
+        }
+    }
+}
 
 /** Why one tool could not be frozen into a catalog. A closed set; never carries the value. */
 enum class BridgeToolEligibility {

@@ -44,12 +44,16 @@ class ClaudePToolBridgeTest {
         ),
     )
 
+    /** The default candidate: effectful, which is what an unproven tool must be. */
     private fun candidate(
         name: String,
         source: ToolSource = ToolSource.LOCAL,
-        readOnly: Boolean = true,
         description: String = "does a thing",
-    ) = BridgeToolCandidate(name, description, schema("path"), readOnly, source)
+    ) = BridgeToolCandidate.tool(name, description, schema("path"), source)
+
+    /** A candidate whose tool is proven to have no side effects for any valid argument. */
+    private fun provenReadOnlyCandidate(name: String) =
+        BridgeToolCandidate.provenReadOnly(name, "reads a thing", schema("path"), ToolSource.LOCAL)
 
     private fun generation(
         generationId: String = "gen-1",
@@ -81,13 +85,9 @@ class ClaudePToolBridgeTest {
     private fun args(vararg pairs: Pair<String, String>): JsonObject =
         JsonObject(pairs.associate { (key, value) -> key to JsonPrimitive(value) })
 
-    private val readFile = candidate("read_file")
-    private val writeFile = candidate("write_file", readOnly = false)
-    private val mcpTool = candidate(
-        "mcp__a1b2c3d4_files__read",
-        source = ToolSource.MCP,
-        readOnly = false,
-    )
+    private val readFile = provenReadOnlyCandidate("read_file")
+    private val writeFile = candidate("write_file")
+    private val mcpTool = candidate("mcp__a1b2c3d4_files__read", source = ToolSource.MCP)
 
     // -----------------------------------------------------------------------------------------
     // 1. Catalog stability, ordering and digest
@@ -145,6 +145,116 @@ class ClaudePToolBridgeTest {
         val build = BridgeToolCatalog.build(listOf(readFile, writeFile))
         assertTrue(build.catalog.findEntry("read_file")!!.readOnly)
         assertFalse(build.catalog.findEntry("write_file")!!.readOnly)
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Ruling 2. `readOnly` cannot be set from a value that arrived over the wire
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * There is no public constructor and no boolean parameter, so the only ways to build a
+     * candidate are two factories whose *names* are the claim being made.
+     *
+     * Checked by reflection rather than by reading the source, because the property is about
+     * the shape of the type: a future change that re-exposes a constructor taking a boolean
+     * would pass a source review and fail here.
+     */
+    @Test
+    fun `there is no way to construct a read-only candidate from a boolean`() {
+        val constructors = BridgeToolCandidate::class.java.declaredConstructors
+        val real = constructors.filterNot { it.isSynthetic }
+
+        assertEquals("exactly one constructor is written in the source", 1, real.size)
+        assertTrue(
+            "the constructor must be private, or a caller can state read-only directly",
+            java.lang.reflect.Modifier.isPrivate(real.single().modifiers),
+        )
+
+        // Kotlin emits an additional **synthetic** public constructor carrying a
+        // `DefaultConstructorMarker` so the companion can reach the private one. It is a
+        // compiler artifact rather than a reachable API — Kotlin source cannot call it — and it
+        // is checked here so that a change in what the compiler emits is noticed rather than
+        // silently widening the surface.
+        for (synthetic in constructors.filter { it.isSynthetic }) {
+            assertTrue(
+                "a synthetic constructor exists only to carry the companion marker",
+                synthetic.parameterTypes.any { it.name.endsWith("DefaultConstructorMarker") },
+            )
+        }
+
+        // The only public ways to build one name the claim they make. `tool` asserts the weaker
+        // claim and is always available; `provenReadOnly` is the only source of `true`.
+        val factories = BridgeToolCandidate.Companion::class.java.declaredMethods
+            .filter { java.lang.reflect.Modifier.isPublic(it.modifiers) }
+            .filter { it.returnType == BridgeToolCandidate::class.java }
+            .map { it.name }
+            .sorted()
+        assertEquals(listOf("provenReadOnly", "tool"), factories)
+    }
+
+    @Test
+    fun `the default candidate is effectful and only the explicit one is read-only`() {
+        assertFalse(
+            "an unproven tool must never be reported as having no side effects",
+            BridgeToolCandidate.tool("t", "d", schema("path"), ToolSource.LOCAL).readOnly,
+        )
+        assertTrue(
+            BridgeToolCandidate.provenReadOnly("t", "d", schema("path"), ToolSource.LOCAL).readOnly,
+        )
+    }
+
+    /**
+     * Android cannot inspect an MCP server's implementation, so it cannot hold this proof for
+     * one. The factory refuses rather than quietly producing a false `true`.
+     */
+    @Test
+    fun `a proven-read-only claim cannot be made for an MCP tool`() {
+        val refused = try {
+            BridgeToolCandidate.provenReadOnly("t", "d", schema("path"), ToolSource.MCP)
+            false
+        } catch (error: IllegalArgumentException) {
+            true
+        }
+        assertTrue("an MCP tool must not be claimable as proven read-only", refused)
+    }
+
+    @Test
+    fun `every MCP tool in a built catalog is effectful`() {
+        val build = BridgeToolCatalog.build(listOf(mcpTool))
+        assertFalse(
+            "an MCP tool's side effects are not Android's to rule out",
+            build.catalog.findEntry("mcp__a1b2c3d4_files__read")!!.readOnly,
+        )
+    }
+
+    @Test
+    fun `a candidate can always be downgraded when the proof does not hold`() {
+        assertFalse(provenReadOnlyCandidate("t").asEffectful().readOnly)
+    }
+
+    /**
+     * The catalog's `readOnly` is a description, never an authorization.
+     *
+     * A call to a tool the catalog marked read-only is admitted and refused by exactly the same
+     * rules as any other — nothing in the adapter branches on the flag. This is asserted here
+     * because the flag is the one field a reviewer might expect to unlock something.
+     */
+    @Test
+    fun `a read-only catalog entry grants no shortcut through the adapter`() {
+        val adapter = adapterFor(listOf(readFile))
+
+        // The same identity rules apply: an unfrozen tool is refused even if some other entry
+        // in the catalog claims to be read-only.
+        val refused = adapter.onInvoke("call-1", "some_other_tool", args("path" to "/a"))
+        assertEquals(
+            BridgeRejection.TOOL_NOT_IN_CATALOG,
+            (refused as BridgeInvokeDecision.Refused).reason,
+        )
+
+        // And an admitted call is still just admitted: awaiting a terminal, not pre-approved.
+        val admitted = adapter.onInvoke("call-2", "read_file", args("path" to "/a"))
+        assertTrue(admitted is BridgeInvokeDecision.Execute)
+        assertEquals(ToolCallState.PENDING, adapter.recordedOutcome("call-2")?.state)
     }
 
     // -----------------------------------------------------------------------------------------

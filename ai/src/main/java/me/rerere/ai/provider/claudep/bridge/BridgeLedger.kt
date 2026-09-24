@@ -244,6 +244,29 @@ class BridgeLedger {
      * calls moved, and the only way to do that is to look at the whole ledger again — which is
      * the second definition of "what expired" that this exists to avoid.
      */
+    /**
+     * Concludes every still-pending call in [state], and returns what each became.
+     *
+     * Used when the *generation* ends rather than when one call does. A generation that is
+     * over can never answer its outstanding calls — there is no longer anything to answer them
+     * *for* — so leaving them pending would leave records that can never become terminal,
+     * which is the one shape the contract's nine-state vocabulary is written to exclude.
+     *
+     * The calls are concluded locally and **nothing is re-dispatched**: a concluded call is
+     * terminal, so a late result for it is dropped by [BridgeRules.applyOutcome] rather than
+     * announced, and a re-delivered invocation finds a terminal record rather than a fresh one.
+     */
+    fun concludeAll(state: ToolCallState): List<ToolCallOutcome> {
+        val concluded = mutableListOf<ToolCallOutcome>()
+        for (record in calls.values.toList()) {
+            if (record.state.isTerminal()) continue
+            val settled = record.copy(state = state)
+            calls[settled.key] = settled
+            concluded += BridgeRules.recordToOutcome(settled)
+        }
+        return concluded
+    }
+
     fun expire(nowMonotonicMs: Long): List<ToolCallOutcome> {
         val settled = mutableListOf<ToolCallOutcome>()
         for (record in calls.values.toList()) {
@@ -261,6 +284,23 @@ class BridgeLedger {
 object BridgeOutcomes {
 
     private val OUTCOME_KEYS = setOf("toolCallId", "state", "body")
+
+    /**
+     * The honest answer for a call this side can no longer prove anything about.
+     *
+     * After a process restart there is no record of what a tool did, and the contract is
+     * explicit about what that means: Android "may not send" `not_found` or `conflict`, because
+     * those are verdicts about the *Server's* ledger and Android does not hold that ledger. The
+     * honest word is `failed`, and this function exists so that answer is produced by name
+     * rather than assembled from two states at a call site — where the tempting mistake is to
+     * reach for `not_found` because that is what the local lookup actually returned.
+     *
+     * It is also **not** permission to re-run the tool. A write whose result was never
+     * persisted must not be executed a second time to discover what it did; reporting failure
+     * costs the user a tool call and cannot cost them a side effect.
+     */
+    fun lostCallOutcome(toolCallId: String): ToolCallOutcome =
+        ToolCallOutcome(toolCallId, ToolCallState.FAILED)
 
     /**
      * Validates an outcome frame.
