@@ -96,39 +96,31 @@ object ImportedDatabaseReconciler {
     internal const val EXPECTED_VERSION = 52
 
     /**
-     * **NOT A VALID RELEASE VALUE.** A placeholder standing in for an identity hash Room has not
-     * computed yet.
+     * Copied verbatim from the `identityHash` KSP wrote into `AppDatabase/52.json`.
      *
      * Room derives this from the schema, so it cannot be derived by hand and must never be guessed
      * or copied from a neighbouring version: a wrong value fails closed at cold restore with no
-     * symptom until somebody tries to restore a backup.
-     * `AppDatabaseSchemaIdentityContractTest` keeps this copy honest by comparing it against the
-     * export the compiler produced during the same build — which is exactly why a sentinel makes
-     * the suite red until it is replaced.
+     * symptom until somebody tries to restore a backup. `AppDatabaseSchemaIdentityContractTest`
+     * keeps this copy honest by comparing it against the export the compiler produced during the
+     * same build.
      *
-     * The replacement is the `identityHash` KSP writes into `AppDatabase/52.json`, copied verbatim,
-     * in the same change that commits that file. Until then this tree is a schema bootstrap rather
-     * than a release state: cold restore of a v52 database and the identity contract test both
-     * fail closed. That is a declared outcome, not a surprise.
+     * ## How this value was obtained
      *
-     * ## `AppDatabase/52.json` must be **absent** from the tree for that to work
+     * It cannot be computed on a machine without the Android SDK, so it is taken from a build that
+     * has one. That turned out to have a trap worth recording, because the failure mode is silent.
      *
-     * A first attempt committed a hand-written `52.json` carrying this same sentinel, on the
-     * assumption that KSP would regenerate it. It did not: the bootstrap build ran
-     * `:app:kspDebugKotlin` successfully and the uploaded `app/schemas/**` artifact was
-     * **byte-identical** to the committed file
-     * (`sha256 31584d6d6873cc42675761ce690649e42892fbb30c4b7bcd6961318776f567ae`), sentinel
-     * included. KSP exports a schema version by *creating* its file; it does not overwrite one that
-     * is already there. A committed placeholder therefore does not get replaced — it blocks the
-     * very value it stands in for, and the block is invisible because the build stays green.
+     * A first attempt committed a hand-written `52.json` carrying a sentinel in this same position,
+     * expecting KSP to regenerate it with the real identity. KSP does not: it exports a schema
+     * version by *creating* its file, and leaves an existing one alone even when the identity it
+     * would write differs. The build stayed green and the uploaded export was byte-identical to the
+     * placeholder, sentinel included — so the placeholder had blocked the very value it stood in
+     * for, with nothing failing to say so. v51 only worked because its file was absent at the time.
      *
-     * v51 only worked because `51.json` did not exist when its bootstrap ran. So the file must be
-     * absent from the checkout, and the cost is the intended one: `MigrationTestHelper` reads the
-     * target version's export from androidTest assets, so every v52 migration test fails with
-     * "Cannot find the schema file in the assets folder" until the real export is committed. That
-     * failure is the declared state of this commit, not a regression.
+     * The working arrangement is therefore: the export must be **absent** from the checkout for the
+     * bootstrap build, so that KSP creates it, and the value it writes is then pinned here and the
+     * export committed in the same change. This is that change.
      */
-    internal const val EXPECTED_IDENTITY_HASH = "SENTINEL_KSP_IDENTITY_HASH_PENDING_V52"
+    internal const val EXPECTED_IDENTITY_HASH = "8913bf388a5e5ea42c7dbb80f19518df"
 
     /** v51 is now a frozen predecessor; its hash is the value [EXPECTED_IDENTITY_HASH] held. */
     internal const val FINAL_V51_IDENTITY_HASH = "f5f091510499424dbdb5642cc3f5291f"
