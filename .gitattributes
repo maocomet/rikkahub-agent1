@@ -20,3 +20,12 @@ app/src/release/generated/baselineProfiles/*.txt text eol=lf
 claudep/conformance/** text eol=lf
 claudep/02-wire-protocol-v1.md text eol=lf
 claudep/01-architecture-and-trust-boundaries.md text eol=lf
+
+# Claude P M2 bridge conformance corpus.
+#
+# Authored in `rikkahub-claude-p-server` and vendored here byte-for-byte for M2-B, which
+# implements the Kotlin half of the same byte contract. Same reasoning as the block above:
+# `MANIFEST.sha256` hashes raw bytes, so the working-tree form must not depend on the
+# machine that checked it out. The server copy is authoritative; this one is verified
+# against it and is never regenerated to make a build green.
+claudep/conformance-bridge/vectors/** text eol=lf

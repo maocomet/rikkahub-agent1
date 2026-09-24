@@ -1,0 +1,738 @@
+{
+  "format_version": 1,
+  "digestRule": "SHA-256 over the canonical JSON of {bridge_abi, server, tools:[{name, display_name, description, schema_digest, read_only, source}]}, with tools in ascending frozen-name order regardless of the order supplied.",
+  "emptyCatalogDigest": "7636a39d3162c03ccaf22a5f5d2ceddd863b7bac66299775458d822e5815ee9a",
+  "accepted": [
+    {
+      "id": "empty-object",
+      "note": "No tools member at all. An empty catalog is legal: it is the Phase-1 text path, and it creates no bridge, no broker and no MCP config.",
+      "catalog": {},
+      "aliases": [],
+      "digest": "7636a39d3162c03ccaf22a5f5d2ceddd863b7bac66299775458d822e5815ee9a",
+      "names": [],
+      "bridgedNames": [],
+      "reason": null
+    },
+    {
+      "id": "empty-tools",
+      "note": "An empty tools array means the same thing as an absent one, and must produce the same digest.",
+      "catalog": {
+        "tools": []
+      },
+      "aliases": [
+        "empty-object"
+      ],
+      "digest": "7636a39d3162c03ccaf22a5f5d2ceddd863b7bac66299775458d822e5815ee9a",
+      "names": [],
+      "bridgedNames": [],
+      "reason": null
+    },
+    {
+      "id": "null-tools",
+      "note": "A null tools member means the same thing again.",
+      "catalog": {
+        "tools": null
+      },
+      "aliases": [
+        "empty-object"
+      ],
+      "digest": "7636a39d3162c03ccaf22a5f5d2ceddd863b7bac66299775458d822e5815ee9a",
+      "names": [],
+      "bridgedNames": [],
+      "reason": null
+    },
+    {
+      "id": "single-read-only-local",
+      "note": "One Local read-only tool. The frozen name is the lowercased raw name and the bridged name carries the one permitted prefix.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read_file",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "aliases": [],
+      "digest": "5779f1b65076939976f456583ec92b8244bd04c3b6d51fe92f4423e2d2007205",
+      "names": [
+        "read_file"
+      ],
+      "bridgedNames": [
+        "mcp__rikkahub_bridge__read_file"
+      ],
+      "reason": null
+    },
+    {
+      "id": "name-normalized",
+      "note": "A mixed-case raw name is normalized to lowercase, and the display name is carried through unchanged so the original spelling survives for the UI.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "Read_File",
+            "displayName": "Read File",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "aliases": [],
+      "digest": "5bb1c0445304115abd1ccff0447791e8a8a6dd301bd8d13868acaf0237b86ae5",
+      "names": [
+        "read_file"
+      ],
+      "bridgedNames": [
+        "mcp__rikkahub_bridge__read_file"
+      ],
+      "reason": null
+    },
+    {
+      "id": "two-tools-ascending",
+      "note": "Two tools, supplied in ascending name order.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "alpha",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          },
+          {
+            "name": "beta",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": false,
+            "source": "mcp"
+          }
+        ]
+      },
+      "aliases": [],
+      "digest": "81ed1f9661276d6186f94f4e8df3fc7317e2b20838a081482c414e2b551e5231",
+      "names": [
+        "alpha",
+        "beta"
+      ],
+      "bridgedNames": [
+        "mcp__rikkahub_bridge__alpha",
+        "mcp__rikkahub_bridge__beta"
+      ],
+      "reason": null
+    },
+    {
+      "id": "two-tools-descending",
+      "note": "The same two tools in the opposite order. The frozen order is the sorted order, so this must produce the same digest as two-tools-ascending: two peers that agree on the set of tools agree on its digest.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "beta",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": false,
+            "source": "mcp"
+          },
+          {
+            "name": "alpha",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "aliases": [
+        "two-tools-ascending"
+      ],
+      "digest": "81ed1f9661276d6186f94f4e8df3fc7317e2b20838a081482c414e2b551e5231",
+      "names": [
+        "alpha",
+        "beta"
+      ],
+      "bridgedNames": [
+        "mcp__rikkahub_bridge__alpha",
+        "mcp__rikkahub_bridge__beta"
+      ],
+      "reason": null
+    },
+    {
+      "id": "ordinary-property-names",
+      "note": "THE RULING, as a vector. path, env, endpoint, header and token are ordinary argument names. The Server does not act on a property name and must not refuse one: doing so would take a working Local or MCP tool off the phone while stopping no secret.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "deploy",
+            "displayName": "Deploy",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "env": {
+                  "type": "string"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "string"
+                },
+                "token": {
+                  "type": "string"
+                },
+                "api_key": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ]
+            },
+            "readOnly": false,
+            "source": "local"
+          }
+        ]
+      },
+      "aliases": [],
+      "digest": "86674ad969d996344c1e1bb9e0e2ac9b1ea12b7b1092326944df0252cf5b9c36",
+      "names": [
+        "deploy"
+      ],
+      "bridgedNames": [
+        "mcp__rikkahub_bridge__deploy"
+      ],
+      "reason": null
+    },
+    {
+      "id": "boolean-subschema",
+      "note": "A boolean is a valid JSON Schema subschema and is accepted.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read_file",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "anything": true
+              }
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "aliases": [],
+      "digest": "364d0333aaafb3447bc69e0b9b21888766c92f6c8155ff9fe13c4c90afffc116",
+      "names": [
+        "read_file"
+      ],
+      "bridgedNames": [
+        "mcp__rikkahub_bridge__read_file"
+      ],
+      "reason": null
+    },
+    {
+      "id": "reserved-adjacent-names",
+      "note": "A tool named after a Claude Code built-in is accepted. Frozen names are namespaced, so `mcp__rikkahub_bridge__read` cannot collide with the built-in `Read`; what keeps built-ins out is argv, not this list.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          },
+          {
+            "name": "grep",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          },
+          {
+            "name": "bash",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "aliases": [],
+      "digest": "3684c34ba029817244f3eb3be08b3a790dcd58671243771776adc7cbbd33b88c",
+      "names": [
+        "bash",
+        "grep",
+        "read"
+      ],
+      "bridgedNames": [
+        "mcp__rikkahub_bridge__bash",
+        "mcp__rikkahub_bridge__grep",
+        "mcp__rikkahub_bridge__read"
+      ],
+      "reason": null
+    }
+  ],
+  "rejected": [
+    {
+      "id": "unknown-catalog-field",
+      "note": "The request body is a closed envelope. A member outside it is refused rather than ignored, because an ignored field is where a reader later assumes something travelled.",
+      "catalog": {
+        "tools": [],
+        "extra": 1
+      },
+      "reason": "catalog_field_unknown"
+    },
+    {
+      "id": "unknown-entry-field",
+      "note": "The entry envelope is closed in the same way.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read_file",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local",
+            "endpoint": "https://example.invalid"
+          }
+        ]
+      },
+      "reason": "catalog_field_unknown"
+    },
+    {
+      "id": "duplicate-name",
+      "note": "The same raw name sent twice.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "alpha",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          },
+          {
+            "name": "alpha",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "reason": "catalog_duplicate_name"
+    },
+    {
+      "id": "case-collision",
+      "note": "Two raw names that differ only in case normalize to one frozen name. Refused rather than aliased, which is what makes the frozen name a sound identity.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "Alpha",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          },
+          {
+            "name": "alpha",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "reason": "catalog_name_collision"
+    },
+    {
+      "id": "invalid-name",
+      "note": "A name outside [A-Za-z][A-Za-z0-9_-]*.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "has space",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "reason": "catalog_name_invalid"
+    },
+    {
+      "id": "reserved-name",
+      "note": "A tool that would share the bridge's own name.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "rikkahub_bridge",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "reason": "catalog_name_reserved"
+    },
+    {
+      "id": "schema-not-an-object",
+      "note": "A schema that is not an object cannot describe arguments.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read_file",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": "object",
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "reason": "schema_invalid"
+    },
+    {
+      "id": "properties-member-not-a-schema",
+      "note": "A properties member that is a string is not a schema.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read_file",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "a": "string"
+              }
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "reason": "schema_invalid"
+    },
+    {
+      "id": "required-not-string-array",
+      "note": "required must be an array of distinct non-empty strings.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read_file",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "required": [
+                1
+              ]
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "reason": "schema_invalid"
+    },
+    {
+      "id": "required-duplicate",
+      "note": "A repeated name in required is refused: it is a caller that built the list wrong, and the two ends would disagree about what it means.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read_file",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "required": [
+                "a",
+                "a"
+              ]
+            },
+            "readOnly": true,
+            "source": "local"
+          }
+        ]
+      },
+      "reason": "schema_invalid"
+    },
+    {
+      "id": "missing-read-only",
+      "note": "readOnly is an assertion Android must make. Its absence is refused rather than defaulted, because a default is a Server-side guess about whether a write is safe.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read_file",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "source": "local"
+          }
+        ]
+      },
+      "reason": "catalog_field_invalid"
+    },
+    {
+      "id": "unknown-source",
+      "note": "source is a closed enum.",
+      "catalog": {
+        "tools": [
+          {
+            "name": "read_file",
+            "displayName": "Read file",
+            "description": "Reads a file from the device.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path to read."
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "readOnly": true,
+            "source": "remote"
+          }
+        ]
+      },
+      "reason": "catalog_field_invalid"
+    }
+  ]
+}

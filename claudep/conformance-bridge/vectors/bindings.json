@@ -1,0 +1,367 @@
+{
+  "format_version": 1,
+  "digestRule": "SHA-256 over the canonical JSON of the invocation binding, with snake_case member names.",
+  "accepted": [
+    {
+      "id": "generation-minimal",
+      "note": "The smallest valid generation binding, and the invocation binding built on it.",
+      "generation": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000
+      },
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "invocationDigest": "e100e56af875edb4ddc7cdc5f92f6d486b44229d3b24e5691765bd4e3a41aeb5",
+      "invocationKey": "7e652c6507cca1fb0c5c99d23135c3801e82870fc1ee708ed2865981da18f0be",
+      "reason": null
+    },
+    {
+      "id": "generation-unicode-ids",
+      "note": "Identity strings are opaque and may carry non-ASCII; they are bounded by bytes and by control characters, not by alphabet.",
+      "generation": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "会话-1",
+        "branchId": "分支-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000
+      },
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "会话-1",
+        "branchId": "分支-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "invocationDigest": "97506e7d53934e9a03f5d4820aae0cc14322d98d08f578738d1e2538ccbe804b",
+      "invocationKey": "7e652c6507cca1fb0c5c99d23135c3801e82870fc1ee708ed2865981da18f0be",
+      "reason": null
+    }
+  ],
+  "rejected": [
+    {
+      "id": "unknown-field",
+      "note": "A binding envelope is closed.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "extra": 1
+      },
+      "reason": "binding_field_unknown"
+    },
+    {
+      "id": "abi-mismatch",
+      "note": "The ABI is compared exactly, never by major version. A catalog frozen under different rules is not a catalog this build can interpret.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/2",
+        "timeoutMs": 60000,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "reason": "bridge_abi_mismatch"
+    },
+    {
+      "id": "empty-identity",
+      "note": "An identity may not be empty.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "reason": "binding_field_invalid"
+    },
+    {
+      "id": "control-character-in-identity",
+      "note": "A newline in an identity is a framing injection into the log line or IPC frame that carries it. Refused at the boundary.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch\n1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "reason": "binding_field_invalid"
+    },
+    {
+      "id": "timeout-zero",
+      "note": "A generation must be allowed to run for a positive duration.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 0,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "reason": "timeout_invalid"
+    },
+    {
+      "id": "timeout-beyond-bound",
+      "note": "A duration above the bound is refused. Note it is a duration, not an instant: an absolute deadline would be a cross-device clock comparison.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 1800001,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "reason": "timeout_invalid"
+    },
+    {
+      "id": "timeout-not-an-integer",
+      "note": "A fractional duration is refused rather than rounded.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 1000.5,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "reason": "timeout_invalid"
+    },
+    {
+      "id": "catalog-digest-not-hex",
+      "note": "Every digest in this contract is 64 lowercase hex characters.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "not-a-digest",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "reason": "binding_field_invalid"
+    },
+    {
+      "id": "tool-name-not-frozen",
+      "note": "The tool name is the frozen one, already normalized: lowercase by construction.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000,
+        "toolCallId": "toolu_01A2b3C4d5E6f7G8h9I0j1K2",
+        "toolName": "Read_File",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "reason": "tool_name_not_bridged"
+    },
+    {
+      "id": "tool-call-id-empty",
+      "note": "A call must be identifiable.",
+      "binding": {
+        "deviceRef": "3f2a1c0b9e8d7c6b5a4938271605f4e3",
+        "assistantId": "assistant-1",
+        "conversationId": "conversation-1",
+        "branchId": "branch-1",
+        "generationId": "generation-1",
+        "requestId": "request-1",
+        "catalogDigest": "ed729a01b57c3f8d0e1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "bridgeAbi": "rikkahub-bridge/1",
+        "timeoutMs": 60000,
+        "toolCallId": "",
+        "toolName": "read_file",
+        "schemaDigest": "aa11bb22cc33dd44ee55ff6600778899aabbccddeeff00112233445566778899",
+        "argsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "reason": "invocation_id_invalid"
+    }
+  ],
+  "arguments": {
+    "accepted": [
+      {
+        "id": "empty-object",
+        "note": "A tool with no arguments. The digest of {} is the empty-object digest every other vector can be compared against.",
+        "args": {},
+        "canonical": "{}",
+        "digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "reason": null
+      },
+      {
+        "id": "member-order-irrelevant",
+        "note": "THE property the arguments digest exists for: two spellings of the same arguments produce the same digest, so a retry is a replay rather than a conflict.",
+        "args": {
+          "b": 2,
+          "a": 1
+        },
+        "canonical": "{\"a\":1,\"b\":2}",
+        "digest": "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777",
+        "reason": null
+      },
+      {
+        "id": "nested",
+        "note": "Nesting is preserved through canonicalization.",
+        "args": {
+          "path": "/sdcard/a.txt",
+          "options": {
+            "encoding": "utf8",
+            "lines": [
+              1,
+              2,
+              3
+            ]
+          }
+        },
+        "canonical": "{\"options\":{\"encoding\":\"utf8\",\"lines\":[1,2,3]},\"path\":\"/sdcard/a.txt\"}",
+        "digest": "9d60a2bb98b72d9897f9632cc02fc5196c2e1b623f554512580250849e125952",
+        "reason": null
+      }
+    ],
+    "rejected": [
+      {
+        "id": "not-an-object",
+        "note": "Arguments are an object. An array cannot be bound to named parameters.",
+        "args": [
+          1,
+          2
+        ],
+        "reason": "args_not_an_object"
+      },
+      {
+        "id": "too-deep",
+        "note": "Deeper than the arguments bound.",
+        "args": {
+          "a": {
+            "b": {
+              "c": {
+                "d": {
+                  "e": {
+                    "f": {
+                      "g": {
+                        "h": {
+                          "i": {
+                            "j": {
+                              "k": {
+                                "l": {
+                                  "m": {
+                                    "n": {
+                                      "o": {
+                                        "p": {
+                                          "q": 1
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "reason": "args_too_deep"
+      }
+    ]
+  }
+}

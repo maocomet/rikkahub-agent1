@@ -1,0 +1,216 @@
+{
+  "format_version": 1,
+  "algorithm": "UTF-8; object members sorted by UTF-16 code unit of the key; no whitespace; strings escaped as JSON.stringify does (quote, backslash, the five short escapes, lowercase \\u00xx for other C0, lowercase \\udxxx for an unpaired surrogate, everything else raw); numbers in ECMAScript Number::toString shortest round-tripping form.",
+  "accepted": [
+    {
+      "id": "member-order-sorted",
+      "note": "Members are emitted in code-unit order of the key, not the order they were written.",
+      "inputText": "{\"b\":1,\"a\":2,\"C\":3}",
+      "canonical": "{\"C\":3,\"a\":2,\"b\":1}",
+      "sha256": "27e01c26743085bff8e4a98d76dca93ebdb6c805f8136fae1216ee257d33f5c5",
+      "reason": null
+    },
+    {
+      "id": "code-unit-not-locale",
+      "note": "Uppercase sorts before lowercase because U+005A < U+0061. A locale-aware sort would reverse these two.",
+      "inputText": "{\"a\":1,\"Z\":2}",
+      "canonical": "{\"Z\":2,\"a\":1}",
+      "sha256": "af48b698ce9bd15b9177108d44f2971b1f69eb5848c22c09a486b89ce97ecb9e",
+      "reason": null
+    },
+    {
+      "id": "code-unit-not-code-point",
+      "note": "An astral key (surrogate pair, first unit U+D83D) sorts BEFORE U+FFFF, because the comparison is over UTF-16 code units. A code-point comparison would order them the other way; Kotlin String.compareTo agrees with this vector.",
+      "inputText": "{\"￿\":1,\"😀\":2}",
+      "canonical": "{\"😀\":2,\"￿\":1}",
+      "sha256": "48c5d098713870a7b88be7fc0ffc0a79e912d20f80ea8a4a5604426f49add103",
+      "reason": null
+    },
+    {
+      "id": "string-escapes",
+      "note": "Quote, backslash and the five short escapes; a C0 control as lowercase \\u00xx; a solidus NOT escaped; non-ASCII emitted raw as UTF-8.",
+      "inputText": "{\"s\":\"q\\\"b\\\\n\\t\\r\\f/\\u0001é\"}",
+      "canonical": "{\"s\":\"q\\\"b\\\\n\\t\\r\\f/\\u0001é\"}",
+      "sha256": "735e7c0c8897e9c8c537d0c8464204f90134c2c84377a66ed85407dd972a1112",
+      "reason": null
+    },
+    {
+      "id": "string-astral-raw",
+      "note": "An astral character survives as a surrogate pair, emitted raw rather than escaped.",
+      "inputText": "{\"s\":\"😀\"}",
+      "canonical": "{\"s\":\"😀\"}",
+      "sha256": "f9949e1006d1ca22bc0b60ea94f09779f11a8f0a29bae250fc7ab313d879f5e7",
+      "reason": null
+    },
+    {
+      "id": "string-lone-surrogate",
+      "note": "An unpaired surrogate is escaped as \\udxxx. This is the one place a JSON writer must not emit raw bytes, because the result would not be valid UTF-8.",
+      "inputText": "{\"s\":\"\\ud800\"}",
+      "canonical": "{\"s\":\"\\ud800\"}",
+      "sha256": "d06a70a1ca4d3ac4099cd5f35ecbb551be652247e0950c05790e8f0c58010851",
+      "reason": null
+    },
+    {
+      "id": "number-integers",
+      "note": "Integers have no decimal point and no exponent.",
+      "inputText": "[0,1,-1,42,-42,1000000]",
+      "canonical": "[0,1,-1,42,-42,1000000]",
+      "sha256": "723b9e641370e202e46db5e1a018ac803e27798e866e69065b124849467cc03f",
+      "reason": null
+    },
+    {
+      "id": "number-spelling-collapse",
+      "note": "Four spellings of one number collapse to one canonical form. This is intended: the value is the same, so one digest is right. Note the -0 in the input is written as 0 here because -0 is refused outright (see negative-zero).",
+      "inputText": "[1,1.0,1e0,0.1e1]",
+      "canonical": "[1,1,1,1]",
+      "sha256": "ac91b3ec501b23593f3981b92775f32afb157e91b50c4fcc1b9f70164ac1214c",
+      "reason": null
+    },
+    {
+      "id": "number-fractions",
+      "note": "Shortest round-tripping decimal. 0.1 is not exactly representable and neither is its shortest form.",
+      "inputText": "[0.1,1.5,-2.25,0.000001,0.5]",
+      "canonical": "[0.1,1.5,-2.25,0.000001,0.5]",
+      "sha256": "51d9675eef2b354ca1a90c7820c1fb6a7e9f2669ed953bd33a7e0cfafa366aba",
+      "reason": null
+    },
+    {
+      "id": "number-exponent-high-threshold",
+      "note": "The upper threshold: at 1e21 the notation switches from plain decimal to exponent form, and the exponent carries an explicit +.",
+      "inputText": "[1e20,1e21,1e22,1.5e21]",
+      "canonical": "[100000000000000000000,1e+21,1e+22,1.5e+21]",
+      "sha256": "eb86d6287159dc966910f32192a5f91f2b1863e346f3a17edd13d37b21306878",
+      "reason": null
+    },
+    {
+      "id": "number-exponent-low-threshold",
+      "note": "The lower threshold: at 1e-7 the notation switches to exponent form, without a leading zero in the exponent.",
+      "inputText": "[1e-6,1e-7,1.5e-7,1e-21]",
+      "canonical": "[0.000001,1e-7,1.5e-7,1e-21]",
+      "sha256": "884bdf4f31af9e4a793f483ba85a183b5abf852531331c469dc7569b59cb366e",
+      "reason": null
+    },
+    {
+      "id": "number-double-extremes",
+      "note": "The largest finite double and the smallest denormal. Kotlin Double.toString does not produce these spellings; the ECMAScript algorithm does.",
+      "inputText": "[1.7976931348623157e308,5e-324]",
+      "canonical": "[1.7976931348623157e+308,5e-324]",
+      "sha256": "c239df166d466ce06c1ab897774bebadf66d7b6ad672a917b578f18fc516cc06",
+      "reason": null
+    },
+    {
+      "id": "number-precision-edge",
+      "note": "The last exactly-representable integer and the first that is not: 9007199254740993 parses to 9007199254740992.",
+      "inputText": "[9007199254740991,9007199254740992,9007199254740993]",
+      "canonical": "[9007199254740991,9007199254740992,9007199254740992]",
+      "sha256": "9f53956c0b093491fd6f60c2f3965003f4dff4a6054815751e0eab91925db8a3",
+      "reason": null
+    },
+    {
+      "id": "number-huge-integer",
+      "note": "A value above the safe-integer range is still finite and is emitted in exponent form.",
+      "inputText": "1000000000000000128",
+      "canonical": "1000000000000000100",
+      "sha256": "8fa4a0cdb0a98b4d9a79cc496f69b1d9ea172390094239961266446383d2988b",
+      "reason": null
+    },
+    {
+      "id": "null-empty-absent",
+      "note": "null, the empty string and the empty array are three distinct values with three distinct encodings. A missing member is a fourth thing: it is not in the object at all.",
+      "inputText": "{\"n\":null,\"e\":\"\",\"a\":[]}",
+      "canonical": "{\"a\":[],\"e\":\"\",\"n\":null}",
+      "sha256": "4bdd1af478b4f0e464da536b78e3d9e7c67478d44ec16f7cc139fb77c1e36284",
+      "reason": null
+    },
+    {
+      "id": "null-is-not-absent",
+      "note": "The encoding of an object with an explicit null member differs from the encoding of an object without it, so the two cannot share a digest.",
+      "inputText": "{\"n\":null}",
+      "canonical": "{\"n\":null}",
+      "sha256": "5b4da02351c1c20974b216a5e3a4edb59ac51cbda6be3e9d82952b4f5beea463",
+      "reason": null
+    },
+    {
+      "id": "empty-containers",
+      "note": "The two empty containers have no whitespace between their delimiters.",
+      "inputText": "{\"o\":{},\"a\":[]}",
+      "canonical": "{\"a\":[],\"o\":{}}",
+      "sha256": "9bee7ebfc94b459dacb8cbc72cb2900e61f0aa42189df18329f84f92568f4f89",
+      "reason": null
+    },
+    {
+      "id": "nesting-preserved",
+      "note": "Nesting is preserved exactly; only member order and whitespace are normalized.",
+      "inputText": "{ \"z\" : [ 1 , { \"b\" : true , \"a\" : false } ] , \"y\" : null }",
+      "canonical": "{\"y\":null,\"z\":[1,{\"a\":false,\"b\":true}]}",
+      "sha256": "7749dc2b223de7d93c51fdbc3bfdb6a3da63600b356d7e45307cf4fe0aafc577",
+      "reason": null
+    },
+    {
+      "id": "duplicate-inside-a-string",
+      "note": "A control vector: text that looks duplicated but is inside a string value is not a duplicate member and must be accepted.",
+      "inputText": "{\"s\":\"{\\\"a\\\":1,\\\"a\\\":2}\"}",
+      "canonical": "{\"s\":\"{\\\"a\\\":1,\\\"a\\\":2}\"}",
+      "sha256": "03553e5aaa5a59c124b5312f16b7ca654d04f19261927abce2413b477f786e64",
+      "reason": null
+    },
+    {
+      "id": "duplicate-across-siblings",
+      "note": "A control vector: the same member name in two different objects is not a duplicate. Duplicate detection is per object, not per document.",
+      "inputText": "[{\"a\":1},{\"a\":2}]",
+      "canonical": "[{\"a\":1},{\"a\":2}]",
+      "sha256": "99fadecef60e156ff21aff799671271e5fba37d003cce74da416587190ad9b14",
+      "reason": null
+    }
+  ],
+  "rejected": [
+    {
+      "id": "negative-zero",
+      "note": "The one double whose canonical form describes a different value. JSON.stringify(-0) is \"0\", so -0 and 0 would share a digest while Object.is distinguishes them.",
+      "inputText": "-0",
+      "reason": "negative_zero"
+    },
+    {
+      "id": "negative-zero-nested",
+      "note": "The same rule applies wherever the value sits, not only at the root.",
+      "inputText": "{\"a\":[-0]}",
+      "reason": "negative_zero"
+    },
+    {
+      "id": "duplicate-member",
+      "note": "The same member named twice. JSON.parse keeps the last and discards the first, so the document has two readings.",
+      "inputText": "{\"a\":1,\"a\":2}",
+      "reason": "duplicate_key"
+    },
+    {
+      "id": "duplicate-member-escaped",
+      "note": "The same member named twice, the second time as an escape sequence. Comparing raw quoted slices would miss this; the names are compared after unescaping.",
+      "inputText": "{\"a\":1,\"\\u0061\":2}",
+      "reason": "duplicate_key"
+    },
+    {
+      "id": "duplicate-member-nested",
+      "note": "Duplicate detection reaches every object in the document, not only the root.",
+      "inputText": "{\"x\":{\"a\":1,\"a\":2}}",
+      "reason": "duplicate_key"
+    },
+    {
+      "id": "non-finite-number",
+      "note": "A number literal that overflows the double range parses to Infinity, which has no JSON encoding. It is refused rather than mapped to null.",
+      "inputText": "1e999",
+      "reason": "non_finite_number"
+    },
+    {
+      "id": "depth-exceeded",
+      "note": "Thirty-four nested arrays put the innermost container at depth 33, one past the canonical bound of 32. Thirty-three is accepted, which is why this vector uses thirty-four: the bound counts containers from the root at 0, not nesting levels from 1.",
+      "inputText": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "reason": "depth_exceeded"
+    },
+    {
+      "id": "not-json-text",
+      "note": "Text that is not JSON at all.",
+      "inputText": "{\"a\":}",
+      "reason": "not_json_text"
+    }
+  ]
+}
