@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -615,50 +616,109 @@ class ClaudePWssTransportTest {
     }
 
     /**
-     * A send that never reached the socket is not counted.
+     * A frame over the negotiated cap never reaches the socket, and is not counted.
      *
-     * The server advertises a 200-byte frame cap here, so every frame this client builds is
-     * refused as oversized by `sendSafely` — which returns `false` without dispatching. That is
-     * the same `false` a send that throws because the connection went away produces, because both
-     * leaves of `sendSafely` return the same value, so this one assertion covers the guard for
-     * both. What it must not do is increment: the peer was told nothing.
+     * The cap has to be beaten by *size*, not by hope: an earlier version of this test advertised
+     * a 200-byte cap and sent an ordinary result, which turned out to fit inside it — so the send
+     * succeeded, the counter moved to 1, and the test failed for asserting its own premise rather
+     * than the behaviour. Here the advertised cap is small **and** the result body is
+     * deliberately far larger than it, so the frame is over the cap by a wide margin whatever the
+     * envelope's exact overhead happens to be.
+     *
+     * The body stays well inside the DTO's own bound (`MAX_RESULT_BYTES`, 64 KiB): this is testing
+     * the transport's frame cap, not the result-size rule, and conflating the two would leave it
+     * unclear which one refused the frame.
      */
     @Test
-    fun `a tool result that could not be sent is not counted`() = withClient(
-        connector = { FakeClaudePWebSocketConnector(server = FakeClaudePFrameServer(maxFrameBytes = 200)) },
+    fun `an oversized tool result is refused by the frame cap and not counted`() = withClient(
+        connector = { FakeClaudePWebSocketConnector(server = FakeClaudePFrameServer(maxFrameBytes = 512)) },
     ) { client, connector ->
         client.hello(helloRequest())
         val session = connector.lastSession!!
 
-        client.sendToolResult("gen-1", ClaudePToolResultBody("call-1", "completed", "done"))
+        // 4096 bytes of body against a 512-byte cap: over the limit by construction, and inside
+        // MAX_RESULT_BYTES so the DTO bound is not what refuses it.
+        val bigBody = "x".repeat(4096)
+        client.sendToolResult("gen-1", ClaudePToolResultBody("call-1", "completed", bigBody))
 
-        assertEquals("nothing reached the socket", 0, client.toolResultCallCount)
+        assertEquals("the peer was told nothing", 0, client.toolResultCallCount)
         assertEquals(0, session.sent.count { it.contains(ClaudePEventType.TOOL_RESULT) })
     }
 
     /**
-     * A tool result attempted after the connection dropped is not counted either.
+     * A tool result sent after the socket dropped is counted — on the **new** session.
      *
-     * The attempt may surface as a failed send or as a reconnect failure — both are honest and
-     * neither is a report to the Server — so this asserts the property that matters rather than
-     * which exception came out.
+     * This is what the transport is for, and an earlier version of this test called it failure.
+     * Dropping the socket with no generation in flight moves the client to DISCONNECTED rather
+     * than offline, so the next send re-establishes a session and the result goes out. The
+     * counter moving to 1 is correct: a frame really did reach the peer.
+     *
+     * What the test pins is *where* it went, because that is the part that could silently be
+     * wrong — the dead session must receive nothing, and the replacement must receive exactly one.
      */
     @Test
-    fun `a tool result attempted on a dropped connection is not counted`() = withClient { client, connector ->
-        client.hello(helloRequest())
-        val session = connector.lastSession!!
-        session.dropConnection()
+    fun `a tool result sent after a successful reconnect is counted once, on the new session`() =
+        withClient { client, connector ->
+            client.hello(helloRequest())
+            val first = connector.lastSession!!
+            first.dropConnection()
 
-        try {
             client.sendToolResult("gen-1", ClaudePToolResultBody("call-1", "completed", "done"))
-        } catch (_: ClaudePGatewayException) {
-            // A transport that could not re-establish itself reports the failure. That is a
-            // legitimate outcome here, and not a tool result.
+
+            // A replacement socket was opened, and it is a different object from the dead one.
+            assertEquals("exactly one reconnect, no more", 2, connector.sessions.size)
+            val second = connector.sessions.last()
+            assertNotSame(first, second)
+
+            assertEquals(
+                "the dead socket must not be the one that carried the answer",
+                0,
+                first.sent.count { it.contains(ClaudePEventType.TOOL_RESULT) },
+            )
+            assertEquals(
+                "exactly one result on the replacement",
+                1,
+                second.sent.count { it.contains(ClaudePEventType.TOOL_RESULT) },
+            )
+            assertEquals(1, client.toolResultCallCount)
         }
 
-        assertEquals(0, client.toolResultCallCount)
-        assertEquals(0, session.sent.count { it.contains(ClaudePEventType.TOOL_RESULT) })
-    }
+    /**
+     * When the reconnect itself fails, nothing is sent and nothing is counted.
+     *
+     * This is the case the previous version of this suite never actually reached: it dropped the
+     * socket and assumed the send would fail, and the send quietly succeeded on a new connection
+     * instead. Here the connector is told to refuse every connection after the first, so the
+     * re-establishment genuinely cannot happen.
+     *
+     * The call may surface either as a failed send or as a gateway exception — both are honest
+     * outcomes for a transport that could not re-establish itself — so the test asserts the
+     * property rather than the exception, and neither outcome is a tool result. Nothing sleeps
+     * and nothing races: the client's scope is `Unconfined`, so the disconnect is processed
+     * inline, and the connector's refusal is a field, not a timing.
+     */
+    @Test
+    fun `a tool result that cannot be sent because the reconnect failed is not counted`() =
+        withClient { client, connector ->
+            client.hello(helloRequest())
+            val session = connector.lastSession!!
+
+            // Set before the drop, so a reconnect attempted during the drop is refused too.
+            connector.failConnectAfter = 1
+            session.dropConnection()
+
+            try {
+                client.sendToolResult("gen-1", ClaudePToolResultBody("call-1", "completed", "done"))
+            } catch (_: ClaudePGatewayException) {
+                // A transport that could not re-establish itself reports the failure. That is a
+                // legitimate outcome here, and not a tool result.
+            }
+
+            assertEquals("no replacement socket was opened", 1, connector.sessions.size)
+            assertEquals(1, connector.connectFailureCount)
+            assertEquals(0, session.sent.count { it.contains(ClaudePEventType.TOOL_RESULT) })
+            assertEquals(0, client.toolResultCallCount)
+        }
 
     /**
      * A query is not an answer.
