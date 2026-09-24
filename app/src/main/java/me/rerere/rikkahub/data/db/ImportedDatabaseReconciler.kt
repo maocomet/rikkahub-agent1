@@ -110,6 +110,23 @@ object ImportedDatabaseReconciler {
      * in the same change that commits that file. Until then this tree is a schema bootstrap rather
      * than a release state: cold restore of a v52 database and the identity contract test both
      * fail closed. That is a declared outcome, not a surprise.
+     *
+     * ## `AppDatabase/52.json` must be **absent** from the tree for that to work
+     *
+     * A first attempt committed a hand-written `52.json` carrying this same sentinel, on the
+     * assumption that KSP would regenerate it. It did not: the bootstrap build ran
+     * `:app:kspDebugKotlin` successfully and the uploaded `app/schemas/**` artifact was
+     * **byte-identical** to the committed file
+     * (`sha256 31584d6d6873cc42675761ce690649e42892fbb30c4b7bcd6961318776f567ae`), sentinel
+     * included. KSP exports a schema version by *creating* its file; it does not overwrite one that
+     * is already there. A committed placeholder therefore does not get replaced — it blocks the
+     * very value it stands in for, and the block is invisible because the build stays green.
+     *
+     * v51 only worked because `51.json` did not exist when its bootstrap ran. So the file must be
+     * absent from the checkout, and the cost is the intended one: `MigrationTestHelper` reads the
+     * target version's export from androidTest assets, so every v52 migration test fails with
+     * "Cannot find the schema file in the assets folder" until the real export is committed. That
+     * failure is the declared state of this commit, not a regression.
      */
     internal const val EXPECTED_IDENTITY_HASH = "SENTINEL_KSP_IDENTITY_HASH_PENDING_V52"
 

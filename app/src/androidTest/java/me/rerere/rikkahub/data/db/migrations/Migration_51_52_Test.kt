@@ -120,17 +120,24 @@ class Migration_51_52_Test {
         val upgraded = helper.runMigrationsAndValidate(DB_NAME_UPGRADED, 52, true, MIGRATION_51_52)
         val fresh = helper.createDatabase(DB_NAME_DEFAULT, 52)
 
+        val freshShape = columnShape(fresh)
+        val upgradedShape = columnShape(upgraded)
+
         // A fresh v52 database is created from the exported schema and an upgraded one from this
         // migration. If the two disagree about the column's shape, then which install a user has
         // decides what the column means — which is the failure mode a hand-written `CHECK` would
         // also have produced, since Room's generated DDL would not have carried it.
         assertEquals(
             "a fresh v52 database and an upgraded one disagree on continuation_mode",
-            columnShape(fresh),
-            columnShape(upgraded),
+            freshShape,
+            upgradedShape,
         )
+        assertNotNull("v52 did not add continuation_mode", freshShape)
 
-        val shape = assertNotNull(columnShape(fresh))
+        // JUnit 4's `assertNotNull` returns Unit, so the non-null value is taken explicitly after
+        // the assertion rather than from it. The first version of this test treated it as a
+        // value-returning assertion — that shape is JUnit 5's — and did not compile.
+        val shape = requireNotNull(freshShape)
         assertEquals("continuation_mode must be NOT NULL", 1, shape.first)
         assertEquals(
             "continuation_mode must default to the pre-v52 meaning",
