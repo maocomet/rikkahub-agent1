@@ -1,5 +1,7 @@
 package me.rerere.ai.provider.claudep
 
+import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.TextGenerationParams
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -224,6 +226,82 @@ class ClaudePToolFrameTest {
             "a frame for one generation must not advance another",
             0L,
             recorder.router.streamOf("gen-2")!!.lastEventSeq,
+        )
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The generation-identity seam
+    //
+    // The context rides the request parameters as a `@Transient` property, so the two claims that
+    // matter are that it cannot reach an encoded request and that its absence leaves the frame as
+    // it was. Both need an encoder, which is why they live here rather than in
+    // `ClaudePToolGenerationContextTest`: that class runs on machines without the serialization
+    // compiler plugin, and these two cannot.
+    // -----------------------------------------------------------------------------------------
+
+    private fun context() = ClaudePToolGenerationContext(
+        runId = "run-SENTINEL-8f21c4",
+        commandId = "command-SENTINEL-3aa9d1",
+        conversationId = "conversation-SENTINEL-77b2e0",
+        assistantId = "assistant-SENTINEL-c5f4a8",
+        branchId = "branch-SENTINEL-19de63",
+        callOrigin = "origin-SENTINEL-4b7f",
+    )
+
+    private fun textParams(withContext: Boolean) = TextGenerationParams(
+        model = Model(modelId = "sonnet"),
+        claudePToolGenerationContext = if (withContext) context() else null,
+    )
+
+    @Test
+    fun `carrying a generation context changes no byte of the encoded request`() {
+        assertEquals(
+            "a request that names a generation must encode exactly like one that does not",
+            ClaudePProtocol.json.encodeToString(textParams(withContext = false)),
+            ClaudePProtocol.json.encodeToString(textParams(withContext = true)),
+        )
+    }
+
+    @Test
+    fun `no identity on the parameters reaches the encoded request`() {
+        val encoded = ClaudePProtocol.json.encodeToString(textParams(withContext = true))
+
+        listOf(
+            "run-SENTINEL-8f21c4",
+            "command-SENTINEL-3aa9d1",
+            "conversation-SENTINEL-77b2e0",
+            "assistant-SENTINEL-c5f4a8",
+            "branch-SENTINEL-19de63",
+            "origin-SENTINEL-4b7f",
+            "claudePToolGenerationContext",
+        ).forEach { identity ->
+            assertFalse("the encoded request carried <$identity>: $encoded", encoded.contains(identity))
+        }
+    }
+
+    @Test
+    fun `a text-path generation start still omits the tool snapshot entirely`() {
+        // The pre-bridge frame shape, asserted rather than assumed: with no bridge host the
+        // catalog is empty, the snapshot is null, and `explicitNulls = false` leaves the field out
+        // of the body instead of sending it as `null`. That omission is what makes "no tools"
+        // byte-for-byte the frame this provider sent before the bridge existed.
+        val body = ClaudePGenerationStartBody(
+            remoteThreadId = "thread-1",
+            remoteBranchId = "branch-1",
+            mode = "new",
+            modelAlias = "sonnet",
+            turn = ClaudePTurn(role = "user", parts = listOf(ClaudePTurnPart("text", "hi"))),
+        )
+
+        val encoded = ClaudePProtocol.json.encodeToString(body)
+
+        assertFalse(
+            "a body with no tools must not name a snapshot: $encoded",
+            encoded.contains("tool_snapshot"),
+        )
+        assertFalse(
+            "a body with no tools must not carry a null placeholder: $encoded",
+            encoded.contains("null"),
         )
     }
 
