@@ -101,6 +101,7 @@ class WssClaudePGatewayClient(
     private val startGenerationCalls = AtomicInteger(0)
     private val remoteDispatches = AtomicInteger(0)
     private val cancelCalls = AtomicInteger(0)
+    private val toolResultCalls = AtomicInteger(0)
 
     private val idempotencyLock = Any()
     private val idempotency = LinkedHashMap<String, IdempotencyEntry>()
@@ -111,6 +112,7 @@ class WssClaudePGatewayClient(
     override val startGenerationCallCount: Int get() = startGenerationCalls.get()
     override val remoteDispatchCount: Int get() = remoteDispatches.get()
     override val cancelCallCount: Int get() = cancelCalls.get()
+    override val toolResultCallCount: Int get() = toolResultCalls.get()
 
     /** The negotiated `server.hello`, once a handshake has completed. */
     val serverHello: ClaudePServerHelloBody? get() = negotiatedHello
@@ -349,10 +351,19 @@ class WssClaudePGatewayClient(
      * at. [sendSafely] returning false (an oversized frame, or a socket that went away) is not
      * retried: the call's own deadline is the backstop, and re-sending a tool outcome on a
      * guessed-at connection is how one answer becomes two.
+     *
+     * ## What the counter means
+     *
+     * [toolResultCallCount] counts frames that **reached the socket**, not attempts. A send that
+     * was refused as oversized and a send that threw because the connection went away both leave
+     * it unchanged, which is what makes it usable as evidence that a tool outcome was actually
+     * reported rather than merely attempted. A counter that moved on a failed send would let a
+     * test prove "we tried" while the Server was never told anything — and the Server's deadline,
+     * not this side, is what decides the call in that case.
      */
     override suspend fun sendToolResult(generationId: String, body: ClaudePToolResultBody) {
         val ready = ensureSession()
-        sendSafely(
+        val sent = sendSafely(
             ready,
             clientFrame(
                 type = ClaudePEventType.TOOL_RESULT,
@@ -361,6 +372,7 @@ class WssClaudePGatewayClient(
                 body = ClaudePProtocol.json.encodeToJsonElement(body).jsonObject,
             ),
         )
+        if (sent) toolResultCalls.incrementAndGet()
     }
 
     /**
@@ -369,6 +381,10 @@ class WssClaudePGatewayClient(
      * Also not an RPC. The answer comes back as a `tool.query.result` event on the generation's
      * own stream, so that it is ordered with everything else and so that a reconnect replaying
      * frames cannot deliver an answer that skipped the replay.
+     *
+     * It does **not** touch [toolResultCallCount]. A query asks what the Server holds; it is not
+     * Android answering a call, and counting it as one would inflate the only number that says
+     * how many tool outcomes this side actually reported.
      */
     override suspend fun queryToolCall(generationId: String, body: ClaudePToolQueryBody) {
         val ready = ensureSession()

@@ -572,6 +572,113 @@ class ClaudePWssTransportTest {
         }
 
     // ---------------------------------------------------------------------------------------
+    // tool.result accounting
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The counter means "frames that reached the socket".
+     *
+     * It is the only number that says how many tool outcomes this side actually reported, so it
+     * has to move on a real send and nowhere else. A counter that moved on an *attempt* would let
+     * a test prove "we tried" while the Server was told nothing — and on this path the Server's
+     * deadline, not this side, is what concludes the call in that case.
+     */
+    @Test
+    fun `a tool result that reached the socket is counted once`() = withClient { client, connector ->
+        client.hello(helloRequest())
+        val session = connector.lastSession!!
+
+        client.sendToolResult("gen-1", ClaudePToolResultBody("call-1", "completed", "done"))
+
+        assertEquals(1, client.toolResultCallCount)
+        // The frame is the evidence the counter is counting: a count with no frame would be a
+        // number about nothing.
+        val sent = session.sent.filter { it.contains(ClaudePEventType.TOOL_RESULT) }
+        assertEquals(1, sent.size)
+        val frame = session.lastSentOfType(ClaudePEventType.TOOL_RESULT)!!
+        assertEquals("gen-1", frame.generationId)
+        assertEquals("call-1", frame.body["tool_call_id"].toString().trim('"'))
+        assertEquals("completed", frame.body["state"].toString().trim('"'))
+    }
+
+    @Test
+    fun `consecutive tool results accumulate exactly`() = withClient { client, connector ->
+        client.hello(helloRequest())
+        val session = connector.lastSession!!
+
+        repeat(3) { index ->
+            client.sendToolResult("gen-1", ClaudePToolResultBody("call-$index", "failed"))
+        }
+
+        assertEquals(3, client.toolResultCallCount)
+        assertEquals(3, session.sent.count { it.contains(ClaudePEventType.TOOL_RESULT) })
+    }
+
+    /**
+     * A send that never reached the socket is not counted.
+     *
+     * The server advertises a 200-byte frame cap here, so every frame this client builds is
+     * refused as oversized by `sendSafely` — which returns `false` without dispatching. That is
+     * the same `false` a send that throws because the connection went away produces, because both
+     * leaves of `sendSafely` return the same value, so this one assertion covers the guard for
+     * both. What it must not do is increment: the peer was told nothing.
+     */
+    @Test
+    fun `a tool result that could not be sent is not counted`() = withClient(
+        connector = { FakeClaudePWebSocketConnector(server = FakeClaudePFrameServer(maxFrameBytes = 200)) },
+    ) { client, connector ->
+        client.hello(helloRequest())
+        val session = connector.lastSession!!
+
+        client.sendToolResult("gen-1", ClaudePToolResultBody("call-1", "completed", "done"))
+
+        assertEquals("nothing reached the socket", 0, client.toolResultCallCount)
+        assertEquals(0, session.sent.count { it.contains(ClaudePEventType.TOOL_RESULT) })
+    }
+
+    /**
+     * A tool result attempted after the connection dropped is not counted either.
+     *
+     * The attempt may surface as a failed send or as a reconnect failure — both are honest and
+     * neither is a report to the Server — so this asserts the property that matters rather than
+     * which exception came out.
+     */
+    @Test
+    fun `a tool result attempted on a dropped connection is not counted`() = withClient { client, connector ->
+        client.hello(helloRequest())
+        val session = connector.lastSession!!
+        session.dropConnection()
+
+        try {
+            client.sendToolResult("gen-1", ClaudePToolResultBody("call-1", "completed", "done"))
+        } catch (_: ClaudePGatewayException) {
+            // A transport that could not re-establish itself reports the failure. That is a
+            // legitimate outcome here, and not a tool result.
+        }
+
+        assertEquals(0, client.toolResultCallCount)
+        assertEquals(0, session.sent.count { it.contains(ClaudePEventType.TOOL_RESULT) })
+    }
+
+    /**
+     * A query is not an answer.
+     *
+     * `tool.query` asks what the Server holds; it is not Android reporting a call, and counting it
+     * as one would inflate the only number that says how many outcomes this side actually sent.
+     */
+    @Test
+    fun `a tool query is sent but does not count as a tool result`() = withClient { client, connector ->
+        client.hello(helloRequest())
+        val session = connector.lastSession!!
+
+        client.queryToolCall("gen-1", ClaudePToolQueryBody("call-1"))
+        client.queryToolCall("gen-1", ClaudePToolQueryBody("call-2"))
+
+        assertEquals(0, client.toolResultCallCount)
+        assertEquals(2, session.sent.count { it.contains(ClaudePEventType.TOOL_QUERY) })
+    }
+
+    // ---------------------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------------------
 
