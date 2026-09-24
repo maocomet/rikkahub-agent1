@@ -215,6 +215,11 @@ class SecondUserApprovalLifecycle(
                     resourceCategory = resolved.resource.kind.take(MAX_CATEGORY_CHARS),
                     requestedAtMs = requestedAt,
                     stateVersion = 1,
+                    // Written explicitly rather than left to the database default. The default is
+                    // what a *pre-v52* row means, and a writer that relied on it would be saying
+                    // "this is an upgraded row" instead of "this generation has ended" — which is
+                    // the same value today and a different claim the moment a second mode exists.
+                    continuationMode = ApprovalContinuationMode.RESUME_COMMAND.name,
                 )
                 val inserted = approvalDao.insertIgnore(projection)
                 val durableProjection = if (inserted == -1L) {
@@ -302,6 +307,10 @@ class SecondUserApprovalLifecycle(
                 resourceCategory = resolved.resource.kind.take(MAX_CATEGORY_CHARS),
                 requestedAtMs = requestedAt,
                 stateVersion = 1,
+                // Explicit for the same reason as the sibling writer above: this barrier belongs
+                // to a generation that has already ended, and the code should say so rather than
+                // inherit a schema default.
+                continuationMode = ApprovalContinuationMode.RESUME_COMMAND.name,
             )
             val inserted = approvalDao.insertIgnore(projection)
             val durableProjection = if (inserted == -1L) {

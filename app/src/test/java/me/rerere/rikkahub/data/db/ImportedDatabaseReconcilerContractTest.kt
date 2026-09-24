@@ -12,18 +12,26 @@ class ImportedDatabaseReconcilerContractTest {
     val temporaryFolder = TemporaryFolder()
 
     @Test
-    fun `reconciler pins the exported v51 identity and exact v50 predecessor`() {
-        assertEquals(51, ImportedDatabaseReconciler.EXPECTED_VERSION)
-        // v50 is now a frozen predecessor, and its hash is a real known value, so it is pinned
-        // literally: a careless edit to the staged chain would otherwise strand every v50 backup
+    fun `reconciler pins the exported v52 identity and exact v51 predecessor`() {
+        assertEquals(52, ImportedDatabaseReconciler.EXPECTED_VERSION)
+        // v51 is now a frozen predecessor, and its hash is a real known value, so it is pinned
+        // literally: a careless edit to the staged chain would otherwise strand every v51 backup
         // with no symptom until someone tried to restore one.
+        assertEquals(
+            "f5f091510499424dbdb5642cc3f5291f",
+            ImportedDatabaseReconciler.FINAL_V51_IDENTITY_HASH,
+        )
+        // EXPECTED_IDENTITY_HASH is deliberately not pinned to a literal here. It holds a
+        // schema-bootstrap sentinel until the identity KSP generates for `AppDatabase/52.json` is
+        // copied in, and asserting the sentinel would turn a temporary placeholder into a value
+        // with a test defending it. `AppDatabaseSchemaIdentityContractTest` is what fails while
+        // the sentinel is in place, against the export the compiler produced during the same
+        // build, which is the signal that actually means something.
+        //
+        // v50 remains the frozen predecessor two versions back.
         assertEquals(
             "d458d247adbdc36f591599a301ac092f",
             ImportedDatabaseReconciler.FINAL_V50_IDENTITY_HASH,
-        )
-        assertEquals(
-            "f5f091510499424dbdb5642cc3f5291f",
-            ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
         )
         assertEquals(
             "967f2a908998f5bac733c1ae71bee5bb",

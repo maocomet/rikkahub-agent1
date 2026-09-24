@@ -176,10 +176,10 @@ import me.rerere.rikkahub.sticker.StickerEntity
         SpaceNotificationEntity::class,
         StickerEntity::class,
     ],
-    // v50 added the Cat Garden Space tables; v51 adds the shared sticker library table. Both are
-    // purely additive: every prior table, column and index is unchanged, so an upgrade keeps all
-    // existing chats, settings and messages.
-    version = 51,
+    // v50 added the Cat Garden Space tables; v51 adds the shared sticker library table; v52 adds
+    // `pending_tool_approvals.continuation_mode`. All three are purely additive: every prior table,
+    // column and index is unchanged, so an upgrade keeps all existing chats, settings and messages.
+    version = 52,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),

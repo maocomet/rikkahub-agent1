@@ -141,6 +141,7 @@ jobs:
             --tests "me.rerere.rikkahub.data.ai.TransientConversationToolSanitizerTest" \
             --tests "me.rerere.rikkahub.data.ai.TransientConversationToolIdentityTest" \
             --tests "me.rerere.rikkahub.data.db.AppDatabaseSchemaIdentityContractTest" \
+            --tests "me.rerere.rikkahub.data.execution.ApprovalContinuationModeTest" \
             --tests "me.rerere.rikkahub.data.db.ImportedDatabaseReconcilerContractTest" \
             --tests "me.rerere.rikkahub.space.SpaceRepositoryTest" \
             --tests "me.rerere.rikkahub.space.SpaceToolSurfaceTest" \
@@ -241,6 +242,7 @@ jobs:
             "ai:me.rerere.ai.provider.providers.ClaudePProviderIdentityTest"
             "ai:me.rerere.ai.provider.ClaudePSettingTest"
             "ai:me.rerere.ai.provider.ProviderManagerClaudePTest"
+            "app:me.rerere.rikkahub.data.execution.ApprovalContinuationModeTest"
             "app:me.rerere.rikkahub.data.ai.background.ClaudePBackgroundExclusionTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepositoryTest"
             "app:me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest"

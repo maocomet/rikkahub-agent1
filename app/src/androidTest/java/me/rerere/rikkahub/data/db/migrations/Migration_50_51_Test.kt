@@ -143,11 +143,17 @@ class Migration_50_51_Test {
     }
 
     /**
-     * The reconciler's pinned identity is a hand-copied constant and nothing else in the build
-     * connects it to the schema. A mismatch is silent at runtime — cold restore and backup import
-     * simply start refusing databases — which is the kind of failure discovered long after the
-     * commit that caused it. So it is asserted here, against the identity the v51 schema actually
-     * carries.
+     * The reconciler's pinned identities are hand-copied constants and nothing else in the build
+     * connects them to the schema. A mismatch is silent at runtime — cold restore and backup
+     * import simply start refusing databases — which is the kind of failure discovered long after
+     * the commit that caused it. So it is asserted here, against the identity the v51 schema
+     * actually carries.
+     *
+     * This asks for [ImportedDatabaseReconciler.FINAL_V51_IDENTITY_HASH], not
+     * `EXPECTED_IDENTITY_HASH`. v51 is a frozen predecessor since v52: the current-schema
+     * constant moved on, and the identity this test creates is the one v51 must keep forever.
+     * Asserting the moving constant against a fixed export is exactly the coupling that makes a
+     * version bump look like a regression.
      *
      * This duplicates the JVM contract test on purpose. That one compares the constant against the
      * export on the host, where this repo's Gradle configuration prints a failing test's name but
@@ -165,9 +171,9 @@ class Migration_50_51_Test {
         db.close()
 
         assertEquals(
-            "ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH does not match AppDatabase/51.json " +
-                "— cold restore and backup import would fail closed",
-            ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
+            "ImportedDatabaseReconciler.FINAL_V51_IDENTITY_HASH does not match AppDatabase/51.json " +
+                "— every v51 cold restore and backup import would fail closed",
+            ImportedDatabaseReconciler.FINAL_V51_IDENTITY_HASH,
             actual,
         )
     }

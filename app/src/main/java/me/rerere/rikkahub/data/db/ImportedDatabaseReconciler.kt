@@ -7,6 +7,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.util.UUID
+import me.rerere.rikkahub.data.execution.ApprovalContinuationMode
 import me.rerere.rikkahub.data.db.fts.MEMORY_FTS_BACKFILL_SQL
 import me.rerere.rikkahub.data.db.fts.MEMORY_FTS_PORTABLE_CREATE_SQL
 import me.rerere.rikkahub.data.db.fts.MEMORY_FTS_TRIGGER_SQL
@@ -41,6 +42,8 @@ import me.rerere.rikkahub.data.db.migrations.MIGRATION_47_48
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_48_49
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_49_50
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_50_51
+import me.rerere.rikkahub.data.db.migrations.MIGRATION_51_52
+import me.rerere.rikkahub.data.db.migrations.APPROVAL_V52_CONTINUATION_MODE_COLUMNS
 import me.rerere.rikkahub.data.db.migrations.STICKER_V51_INDEX_SQL
 import me.rerere.rikkahub.data.db.migrations.STICKER_V51_TABLE_SQL
 import me.rerere.rikkahub.data.db.migrations.SPACE_V50_COMMENTS_TABLE_SQL
@@ -89,20 +92,31 @@ object ImportedDatabaseReconciler {
     private const val TAG = "DbReconciler"
     private const val DB_NAME = "rikka_hub"
 
-    /** Room schema version and exact identity exported from AppDatabase/51.json. */
-    internal const val EXPECTED_VERSION = 51
+    /** Room schema version and exact identity exported from AppDatabase/52.json. */
+    internal const val EXPECTED_VERSION = 52
 
     /**
-     * Copied verbatim from the `identityHash` KSP writes into `AppDatabase/51.json`.
+     * **NOT A VALID RELEASE VALUE.** A placeholder standing in for an identity hash Room has not
+     * computed yet.
      *
-     * Room computes this from the schema, so it cannot be derived by hand and must never be
-     * guessed: a wrong value fails closed at cold restore with no symptom until somebody tries to
-     * restore a backup. `AppDatabaseSchemaIdentityContractTest` is what keeps this copy honest, by
-     * comparing it against the export the compiler produced during the same build.
+     * Room derives this from the schema, so it cannot be derived by hand and must never be guessed
+     * or copied from a neighbouring version: a wrong value fails closed at cold restore with no
+     * symptom until somebody tries to restore a backup.
+     * `AppDatabaseSchemaIdentityContractTest` keeps this copy honest by comparing it against the
+     * export the compiler produced during the same build — which is exactly why a sentinel makes
+     * the suite red until it is replaced.
+     *
+     * The replacement is the `identityHash` KSP writes into `AppDatabase/52.json`, copied verbatim,
+     * in the same change that commits that file. Until then this tree is a schema bootstrap rather
+     * than a release state: cold restore of a v52 database and the identity contract test both
+     * fail closed. That is a declared outcome, not a surprise.
      */
-    internal const val EXPECTED_IDENTITY_HASH = "f5f091510499424dbdb5642cc3f5291f"
+    internal const val EXPECTED_IDENTITY_HASH = "SENTINEL_KSP_IDENTITY_HASH_PENDING_V52"
 
-    /** v50 is now a frozen predecessor; its hash is the value this constant held until v51. */
+    /** v51 is now a frozen predecessor; its hash is the value [EXPECTED_IDENTITY_HASH] held. */
+    internal const val FINAL_V51_IDENTITY_HASH = "f5f091510499424dbdb5642cc3f5291f"
+
+    /** v50 is now a frozen predecessor two versions back. */
     internal const val FINAL_V50_IDENTITY_HASH = "d458d247adbdc36f591599a301ac092f"
     internal const val FINAL_V49_IDENTITY_HASH = "967f2a908998f5bac733c1ae71bee5bb"
     internal const val FINAL_V48_IDENTITY_HASH = "74be67f9e9e32264c091b1d6c4a32b17"
@@ -121,6 +135,7 @@ object ImportedDatabaseReconciler {
             MIGRATION_48_49,
             MIGRATION_49_50,
             MIGRATION_50_51,
+            MIGRATION_51_52,
         )
 
     /** Canonical database identities are lowercase UUIDs and never the nil sentinel. */
@@ -140,6 +155,9 @@ object ImportedDatabaseReconciler {
         version == EXPECTED_VERSION && identityHash == EXPECTED_IDENTITY_HASH ->
             ReconcilePlan.SKIP
         version == EXPECTED_VERSION -> ReconcilePlan.REFUSE_UNKNOWN_CURRENT
+        version == 51 && identityHash == FINAL_V51_IDENTITY_HASH ->
+            ReconcilePlan.FULL_COMPATIBILITY
+        version == 51 -> ReconcilePlan.REFUSE_UNKNOWN_CURRENT
         version == 50 && identityHash == FINAL_V50_IDENTITY_HASH ->
             ReconcilePlan.FULL_COMPATIBILITY
         version == 50 -> ReconcilePlan.REFUSE_UNKNOWN_CURRENT
@@ -163,6 +181,7 @@ object ImportedDatabaseReconciler {
 
     internal enum class StagedReconcilePlan {
         ALREADY_CURRENT,
+        MIGRATE_FINAL_V51,
         MIGRATE_FINAL_V50,
         MIGRATE_FINAL_V49,
         MIGRATE_FINAL_V48,
@@ -184,6 +203,8 @@ object ImportedDatabaseReconciler {
     ): StagedReconcilePlan = when {
         version == EXPECTED_VERSION && identityHash == EXPECTED_IDENTITY_HASH ->
             StagedReconcilePlan.ALREADY_CURRENT
+        version == 51 && identityHash == FINAL_V51_IDENTITY_HASH ->
+            StagedReconcilePlan.MIGRATE_FINAL_V51
         version == 50 && identityHash == FINAL_V50_IDENTITY_HASH ->
             StagedReconcilePlan.MIGRATE_FINAL_V50
         version == 49 && identityHash == FINAL_V49_IDENTITY_HASH ->
@@ -1403,6 +1424,14 @@ object ImportedDatabaseReconciler {
         }
         when (plan) {
             StagedReconcilePlan.ALREADY_CURRENT -> Unit
+            StagedReconcilePlan.MIGRATE_FINAL_V51 ->
+                migrateExactStagedToV49(
+                    databaseFile = databaseFile,
+                    expectedStreamId = expectedStreamId,
+                    expectedHeadSeq = expectedHeadSeq,
+                    expectedStartVersion = 51,
+                    expectedStartIdentity = FINAL_V51_IDENTITY_HASH,
+                )
             StagedReconcilePlan.MIGRATE_FINAL_V50 ->
                 migrateExactStagedToV49(
                     databaseFile = databaseFile,
@@ -1545,6 +1574,16 @@ object ImportedDatabaseReconciler {
                         requireV49WorkflowSchema(db)
                         requireV50SpaceSchema(db)
                     }
+                    51 -> {
+                        check(!includeP1Floor && !createStream)
+                        requireHealthyLearningOutbox(db)
+                        requireP1LearningAuthoritySchema(db)
+                        requireV47RewardAuthoritySchema(db)
+                        requireV48PolicyGrantSchema(db)
+                        requireV49WorkflowSchema(db)
+                        requireV50SpaceSchema(db)
+                        requireV51StickerSchema(db)
+                    }
                     else -> error("Unsupported staged migration start version")
                 }
                 requireExactAuthorityStream(db, expectedStreamId, expectedHeadSeq)
@@ -1560,6 +1599,7 @@ object ImportedDatabaseReconciler {
                             MIGRATION_48_49 -> migrateV48ToV49Raw(db)
                             MIGRATION_49_50 -> migrateV49ToV50Raw(db)
                             MIGRATION_50_51 -> migrateV50ToV51Raw(db)
+                            MIGRATION_51_52 -> migrateV51ToV52Raw(db)
                             else -> error(
                                 "Staged cold-restore migration chain contains an unsupported migration",
                             )
@@ -1651,8 +1691,72 @@ object ImportedDatabaseReconciler {
         db.execSQL(STICKER_V51_TABLE_SQL)
         STICKER_V51_INDEX_SQL.forEach(db::execSQL)
         requireV51StickerSchema(db)
+        // Stops at 51, not EXPECTED_VERSION: this is one link in a chain, and the chain now
+        // continues to 52. Stamping the current constant here would skip the v52 link entirely.
+        db.version = 51
+        stampIdentity(db, FINAL_V51_IDENTITY_HASH)
+    }
+
+    /**
+     * Raw-SQL mirror of [MIGRATION_51_52]: one additive column carrying a database default, so
+     * every existing row lands on `'RESUME_COMMAND'` without a backfill.
+     *
+     * The column is added only if it is absent, which is what makes this link re-runnable against
+     * a database that already reached v52's shape without its version stamp advancing — the same
+     * idempotence the earlier `ensureColumns` links have.
+     */
+    private fun migrateV51ToV52Raw(db: SQLiteDatabase) {
+        check(db.version == 51) { "Raw 51 -> 52 migration received the wrong version" }
+        requireHealthyLearningOutbox(db)
+        requireP1LearningAuthoritySchema(db)
+        requireV47RewardAuthoritySchema(db)
+        requireV48PolicyGrantSchema(db)
+        requireV49WorkflowSchema(db)
+        requireV50SpaceSchema(db)
+        requireV51StickerSchema(db)
+        ensureColumns(db, "pending_tool_approvals", APPROVAL_V52_CONTINUATION_MODE_COLUMNS)
+        requireV52ContinuationModeSchema(db)
         db.version = EXPECTED_VERSION
         stampIdentity(db, EXPECTED_IDENTITY_HASH)
+    }
+
+    /**
+     * Verifies the v52 column exists with a default, and that **every stored value is one of the
+     * two the app can mean**.
+     *
+     * The second half is the part worth having. SQLite has no `CHECK` here — Room cannot declare
+     * one — so a backup restored from a modified database could carry any string at all, and the
+     * reader's `ApprovalContinuationMode.fromWire` would then fail at the moment somebody taps
+     * approve rather than at the moment the database was imported. Cold restore is a raw-SQL path
+     * that bypasses Room, so nothing else in this chain would look at the column's contents.
+     *
+     * This refuses the database. It does not repair a value and does not guess one: rewriting an
+     * unreadable mode into `RESUME_COMMAND` would re-enable the resume command that
+     * `IN_FLIGHT` exists to suppress, on the strength of a row nobody can interpret.
+     */
+    private fun requireV52ContinuationModeSchema(db: SQLiteDatabase) {
+        val columns = db.rawQuery("PRAGMA table_info(`pending_tool_approvals`)", null).use { cursor ->
+            val nameIndex = cursor.getColumnIndex("name")
+            buildList {
+                if (nameIndex >= 0) while (cursor.moveToNext()) add(cursor.getString(nameIndex))
+            }
+        }
+        check("continuation_mode" in columns) {
+            "v52 approval schema is missing column continuation_mode"
+        }
+        val illegal = db.rawQuery(
+            "SELECT DISTINCT `continuation_mode` FROM `pending_tool_approvals` " +
+                "WHERE `continuation_mode` NOT IN (?, ?) LIMIT 1",
+            arrayOf(
+                ApprovalContinuationMode.RESUME_COMMAND.name,
+                ApprovalContinuationMode.IN_FLIGHT.name,
+            ),
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+        check(illegal == null) {
+            "v52 approval schema holds a continuation_mode outside the closed vocabulary"
+        }
     }
 
     /**
