@@ -237,17 +237,23 @@ class BridgeLedger {
 
     /**
      * Settles every call whose recorded deadline has been reached on the caller's monotonic
-     * clock, and returns how many reached one.
+     * clock, and returns the outcomes that reached one.
+     *
+     * Returning the outcomes rather than a count is what lets the caller send exactly the
+     * terminals that *this* call produced. A count would leave the caller to work out which
+     * calls moved, and the only way to do that is to look at the whole ledger again — which is
+     * the second definition of "what expired" that this exists to avoid.
      */
-    fun expire(nowMonotonicMs: Long): Int {
-        var count = 0
+    fun expire(nowMonotonicMs: Long): List<ToolCallOutcome> {
+        val settled = mutableListOf<ToolCallOutcome>()
         for (record in calls.values.toList()) {
             if (record.state.isTerminal()) continue
             if (!BridgeRules.isExpired(record, nowMonotonicMs)) continue
-            calls[record.key] = record.copy(state = ToolCallState.TIMED_OUT)
-            count += 1
+            val expired = record.copy(state = ToolCallState.TIMED_OUT)
+            calls[expired.key] = expired
+            settled += BridgeRules.recordToOutcome(expired)
         }
-        return count
+        return settled
     }
 }
 

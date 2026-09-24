@@ -326,11 +326,31 @@ object BridgeCatalog {
      * names of ordinary tools; a `default` documenting a token format is a description, not a
      * credential.
      */
-    private fun validateSchema(schema: JsonElement) {
+    fun validateSchema(schema: JsonElement) {
         if (schema !is JsonObject) throw BridgeRejected(BridgeRejection.SCHEMA_INVALID)
 
         val counter = intArrayOf(0)
         walkSchema(schema, 0, counter)
+    }
+
+    /**
+     * Validates a schema and returns its digest, or `null` when no frozen entry could carry it.
+     *
+     * Exposed for [BridgeToolCatalog], which needs exactly this answer *before* it builds a
+     * catalog body — an unencodable schema must drop one tool, not refuse the whole generation.
+     */
+    fun validateAndDigestSchema(schema: JsonElement): String? = try {
+        validateSchema(schema)
+        val canonical = BridgeCanonical.canonicalize(schema)
+        if (canonical.toByteArray(Charsets.UTF_8).size > BridgeLimits.MAX_SCHEMA_BYTES) {
+            null
+        } else {
+            BridgeCanonical.sha256Hex(canonical)
+        }
+    } catch (error: BridgeRejected) {
+        null
+    } catch (error: CanonicalRejected) {
+        null
     }
 
     private fun walkSchema(node: JsonElement, depth: Int, counter: IntArray) {
