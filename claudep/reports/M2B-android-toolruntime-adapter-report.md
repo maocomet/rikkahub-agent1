@@ -132,6 +132,42 @@ that are artifacts of the exclusions, not of the code: `ToolResultReplayPlan.kt`
 (needs the serialization plugin). **Everything else in `ai/src/main` compiles**, including the
 provider, the gateway surface and the whole `bridge` package.
 
+### 1.9 CI evidence for the five M2-B suites
+
+The workflow's `REQUIRED` list names five M2-B test classes. Earlier revisions of this report
+described them without ever recording what CI actually reported for each, which is how a claim
+about five classes reads as if it were about four — the counts were never written down anywhere.
+They are here.
+
+Run `35979657240`, attempt 1, `workflow_dispatch`, conclusion **success**, on
+`ca7e75a7a86e1f20fd1c48b1f0fcbb32030d4a59`. The figures below come from the run's
+`unit-test-results-…` artifact (the JUnit XMLs), not from the log's summaries:
+
+| class | tests | failures | errors | skipped |
+|---|---|---|---|---|
+| `claudep.bridge.BridgeGenerationRegistryTest` | 25 | 0 | 0 | 0 |
+| `claudep.bridge.ClaudePToolBridgeTest` | **36** | 0 | 0 | 0 |
+| `claudep.bridge.BridgeConformanceCorpusTest` | 5 | 0 | 0 | 0 |
+| `claudep.ClaudePToolFrameTest` | 10 | 0 | 0 | 0 |
+| `claudep.ClaudePToolWireRulesTest` | 12 | 0 | 0 | 0 |
+
+The workflow's own gate agrees, and printed each one:
+
+```
+executed: me.rerere.ai.provider.claudep.bridge.BridgeGenerationRegistryTest (25 tests, 0 skipped)
+executed: me.rerere.ai.provider.claudep.bridge.ClaudePToolBridgeTest         (36 tests, 0 skipped)
+executed: me.rerere.ai.provider.claudep.bridge.BridgeConformanceCorpusTest    ( 5 tests, 0 skipped)
+executed: me.rerere.ai.provider.claudep.ClaudePToolFrameTest                 (10 tests, 0 skipped)
+executed: me.rerere.ai.provider.claudep.ClaudePToolWireRulesTest             (12 tests, 0 skipped)
+All 29 required Claude P test classes executed.
+```
+
+`ClaudePToolBridgeTest`'s 36 is the number this report previously failed to state at all. Two of
+these five — `ClaudePToolFrameTest` and `ClaudePToolWireRulesTest` — had **never executed
+anywhere** before this run: this machine cannot run them (no serialization compiler plugin), so
+CI was their first real execution. The same run also carried `ClaudePWssTransportTest` at
+42 tests, 0 failures, 0 skipped.
+
 ## 2. How it was verified, and the limits
 
 Same local harness as before: the Kotlin compiler bundled in the local Gradle distribution, the
