@@ -84,8 +84,14 @@ object ClaudePProtocol {
     // ---------------------------------------------------------------------------------------
 
     /**
-     * Types this build can *route*. Anything else is an unknown optional event and is ignored —
-     * including Phase 3 `tool.*` events, which must never be mistaken for text or a terminal.
+     * Types this build can *route*. Anything else is an unknown optional event and is ignored.
+     *
+     * The three `tool.*` types are here rather than being left to the unknown-optional path.
+     * That path is for forward compatibility — a newer Gateway adding an event an older app
+     * does not know — and a tool invocation is not that: it is a request the app is expected to
+     * answer. Dropping one silently would leave a tool call the Server believes is running and
+     * the user can see nothing of. Routing them makes an unrecognised one a parser outcome
+     * rather than an absence.
      */
     val KNOWN_SERVER_EVENT_TYPES: Set<String> = setOf(
         ClaudePEventType.SERVER_HELLO,
@@ -101,6 +107,9 @@ object ClaudePProtocol {
         ClaudePEventType.GENERATION_FAILED,
         ClaudePEventType.RECEIPT_RESULT,
         ClaudePEventType.STREAM_RESUME_RESULT,
+        ClaudePEventType.TOOL_INVOKE,
+        ClaudePEventType.TOOL_CANCEL,
+        ClaudePEventType.TOOL_QUERY_RESULT,
     )
 
     /**
@@ -155,6 +164,18 @@ object ClaudePEventType {
     const val STREAM_RESUME = "stream.resume"
     const val RECEIPT_QUERY = "receipt.query"
 
+    /**
+     * The app's answer to one `tool.invoke`.
+     *
+     * Carries a bounded state and never a binding: the generation it belongs to is in the
+     * envelope, and the call it answers is the `tool_call_id` in the body. Nothing else about
+     * the call travels back, because the Server already holds what it sent.
+     */
+    const val TOOL_RESULT = "tool.result"
+
+    /** An exact lookup of one `tool_call_id`. Never a search, and never a way to list calls. */
+    const val TOOL_QUERY = "tool.query"
+
     // server -> client
     const val SERVER_HELLO = "server.hello"
     const val CATALOG_RESULT = "catalog.result"
@@ -169,6 +190,39 @@ object ClaudePEventType {
     const val GENERATION_FAILED = "generation.failed"
     const val RECEIPT_RESULT = "receipt.result"
     const val STREAM_RESUME_RESULT = "stream.resume.result"
+
+    /**
+     * One tool call for the authenticated device to run.
+     *
+     * A **transport** frame between Android and the Gateway, not a second model tool protocol.
+     * The model's tool protocol is MCP, it is spoken only between Claude Code and the bridge,
+     * and Android speaks neither end of it. The `tool_name` here is the frozen name — the part
+     * after the MCP prefix — and never the bridged name Claude saw.
+     */
+    const val TOOL_INVOKE = "tool.invoke"
+
+    /** Asks Android to stop executing one call. Sent at most once per `tool_call_id`. */
+    const val TOOL_CANCEL = "tool.cancel"
+
+    /**
+     * The Server's recorded state for one exact `tool_call_id`.
+     *
+     * Both the answer to a `tool.query` and how a call that reached a Server-side terminal —
+     * a deadline, a disconnect — is reported to the device still holding it.
+     */
+    const val TOOL_QUERY_RESULT = "tool.query.result"
+
+    /** Every type this build may send. Used to keep an outbound frame from being invented. */
+    val CLIENT_TYPES: Set<String> = setOf(
+        CLIENT_HELLO,
+        CATALOG_GET,
+        GENERATION_START,
+        GENERATION_CANCEL,
+        STREAM_RESUME,
+        RECEIPT_QUERY,
+        TOOL_RESULT,
+        TOOL_QUERY,
+    )
 }
 
 /** Why a frame could not be routed. Never carries frame content. */

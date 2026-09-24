@@ -205,6 +205,17 @@ internal class ClaudePInboundRouter(
             return
         }
 
+        // A tool frame is transport between Android and the Gateway, not model output, and it is
+        // the one family of frames that carries its whole meaning on the envelope's generation.
+        // The Server refuses an inbound tool frame without one rather than guessing which run a
+        // call belongs to; requiring the same here keeps the two ends symmetric, and it is a
+        // violation rather than a drop because a frame addressed to nobody is malformed rather
+        // than merely not ours.
+        if (event.isToolFrame && event.envelope.generationId.isNullOrEmpty()) {
+            onViolation(ClaudePInboundViolation.MISSING_TOOL_BINDING)
+            return
+        }
+
         val requestId = event.envelope.requestId
 
         // A `generation.start` refused by the gateway answers with `generation.failed` carrying the
@@ -367,7 +378,19 @@ enum class ClaudePInboundViolation {
      * An unknown event in the `generation.` namespace, which could have been the terminal.
      * Ignoring it would risk a generation that never ends.
      */
-    UNKNOWN_REQUIRED_EVENT;
+    UNKNOWN_REQUIRED_EVENT,
+
+    /**
+     * A tool frame whose envelope carried no `generation_id`.
+     *
+     * The Server requires the generation on both `tool.result` and `tool.query` for exactly
+     * this reason — without it, it would have to guess which run a call belongs to, and every
+     * way of guessing answers with *a* record rather than *the* record. The same rule holds in
+     * the other direction: a tool frame with no generation is not "addressed to nobody", it is
+     * malformed, and dropping it quietly would leave a tool call the Server believes is running
+     * that no screen will ever show.
+     */
+    MISSING_TOOL_BINDING;
 
     companion object {
         fun of(reason: ClaudePParseRejection): ClaudePInboundViolation = when (reason) {
@@ -396,5 +419,6 @@ internal fun ClaudePInboundViolation.toErrorCode(): ClaudePErrorCode = when (thi
     ClaudePInboundViolation.PROTOCOL_MAJOR_MISMATCH,
     ClaudePInboundViolation.MALFORMED_EVENT_BODY,
     ClaudePInboundViolation.UNKNOWN_REQUIRED_EVENT,
+    ClaudePInboundViolation.MISSING_TOOL_BINDING,
     -> ClaudePErrorCode.PROTOCOL_MISMATCH
 }

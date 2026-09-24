@@ -3,6 +3,7 @@ package me.rerere.ai.provider.claudep
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 
 // ---------------------------------------------------------------------------------------------
@@ -329,6 +330,98 @@ data class ClaudePStreamResumeResultBody(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Tool frames
+//
+// The wire shape of a tool frame, which is **snake_case**, and is not the bridge contract's
+// camelCase shape. The translation between the two happens once, on the Server, in
+// `src/gateway/generations.ts`. Applying the bridge validator to a wire body here would read a
+// well-formed frame as a malformed one, so these types are deliberately separate from
+// `me.rerere.ai.provider.claudep.bridge`, which implements the *bridge* contract and nothing
+// about the wire.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * One `tool.invoke`, as it arrives.
+ *
+ * `arguments` is a `JsonObject` and not a string: the Server forwards the arguments opaquely,
+ * and re-serializing them here would be a chance for the bytes to differ from the ones whose
+ * digest the Server computed.
+ *
+ * Every field has a default so that a frame missing one decodes and is then **refused by
+ * validation** rather than throwing during decoding. A decode failure is reported as
+ * `MALFORMED_EVENT_BODY`, which says the schema did not match; a validation refusal can say
+ * *which* rule was broken, and an absent tool name is a different thing from a malformed one.
+ */
+@Serializable
+data class ClaudePToolInvokeBody(
+    @SerialName("tool_call_id") val toolCallId: String = "",
+    @SerialName("tool_name") val toolName: String = "",
+    val arguments: JsonObject = JsonObject(emptyMap()),
+) {
+    override fun toString(): String =
+        "ClaudePToolInvokeBody(toolCallId=${toolCallId.redactedRef()}, " +
+            "toolName=$toolName, argumentKeys=${arguments.keys.size})"
+}
+
+/** One `tool.cancel`. Nothing but the call it names. */
+@Serializable
+data class ClaudePToolCancelBody(
+    @SerialName("tool_call_id") val toolCallId: String = "",
+) {
+    override fun toString(): String =
+        "ClaudePToolCancelBody(toolCallId=${toolCallId.redactedRef()})"
+}
+
+/**
+ * One `tool.query.result`: the Server's recorded state for one call.
+ *
+ * `state` is kept as the raw wire string and narrowed through [safeState]. A state this build
+ * does not know becomes [ToolCallState.UNKNOWN] rather than an exception, because the Server
+ * owns this vocabulary and a newer Server may add to it — but nothing branches on the raw
+ * string, so an unknown one cannot be mistaken for a terminal.
+ */
+@Serializable
+data class ClaudePToolQueryResultBody(
+    @SerialName("tool_call_id") val toolCallId: String = "",
+    val state: String = "",
+    val body: String? = null,
+) {
+    val safeState: ClaudePToolCallState
+        get() = ClaudePToolCallState.fromWire(state)
+
+    override fun toString(): String =
+        "ClaudePToolQueryResultBody(toolCallId=${toolCallId.redactedRef()}, " +
+            "state=${safeState.wireValue})"
+}
+
+/**
+ * The body of an outbound `tool.result`.
+ *
+ * `body` is present **only** for `completed`, which [ClaudePToolFrames.validateOutboundResult]
+ * enforces before the frame is sent. The Server applies the same rule on arrival, so getting it
+ * wrong here would cost the whole connection rather than one call — the Server closes on a
+ * malformed outcome, because a frame this build invented is a bug rather than a late arrival.
+ */
+@Serializable
+data class ClaudePToolResultBody(
+    @SerialName("tool_call_id") val toolCallId: String,
+    val state: String,
+    val body: String? = null,
+) {
+    override fun toString(): String =
+        "ClaudePToolResultBody(toolCallId=${toolCallId.redactedRef()}, state=$state, " +
+            "hasBody=${body != null})"
+}
+
+/** The body of an outbound `tool.query`. One exact id, and nothing else. */
+@Serializable
+data class ClaudePToolQueryBody(
+    @SerialName("tool_call_id") val toolCallId: String,
+) {
+    override fun toString(): String = "ClaudePToolQueryBody(toolCallId=${toolCallId.redactedRef()})"
+}
+
+// ---------------------------------------------------------------------------------------------
 // Typed server events
 // ---------------------------------------------------------------------------------------------
 
@@ -411,6 +504,32 @@ sealed interface ClaudePServerEvent {
         val body: ClaudePStreamResumeResultBody,
     ) : ClaudePServerEvent
 
+    /**
+     * One tool call this device is asked to run.
+     *
+     * The generation is on the envelope, and that is the only place it is taken from. A tool
+     * frame's body carries no generation field, so there is nothing in one for a caller to
+     * compare against the envelope and nothing to disagree about — which removes a whole class
+     * of "the body says one generation and the envelope another" question rather than answering
+     * it.
+     */
+    data class ToolInvoke(
+        override val envelope: ClaudePEnvelope,
+        val body: ClaudePToolInvokeBody,
+    ) : ClaudePServerEvent
+
+    /** A request to stop one call. Not an instruction to conclude anything. */
+    data class ToolCancel(
+        override val envelope: ClaudePEnvelope,
+        val body: ClaudePToolCancelBody,
+    ) : ClaudePServerEvent
+
+    /** The Server's recorded state for one exact call. */
+    data class ToolQueryResult(
+        override val envelope: ClaudePEnvelope,
+        val body: ClaudePToolQueryResultBody,
+    ) : ClaudePServerEvent
+
     /** True only for the three terminals. Used by the provider to drive [ClaudePTerminalGate]. */
     val terminalKind: ClaudePTerminalKind?
         get() = when (this) {
@@ -420,9 +539,20 @@ sealed interface ClaudePServerEvent {
             else -> null
         }
 
-    /** True for events that carry model output and are therefore illegal after a terminal. */
+    /**
+     * True for events that carry model output and are therefore illegal after a terminal.
+     *
+     * Tool frames are deliberately **not** content deltas. A tool result that arrives after the
+     * generation's terminal is a late frame to be dropped on its own terms, not a reason to
+     * fail the generation: the terminal has already been delivered to the user, and reopening
+     * the stream to say "and also this" would be the opposite of what a terminal means.
+     */
     val isContentDelta: Boolean
         get() = this is ReasoningDelta || this is TextDelta || this is UsageUpdated
+
+    /** True for the three tool frames, which are transport rather than model output. */
+    val isToolFrame: Boolean
+        get() = this is ToolInvoke || this is ToolCancel || this is ToolQueryResult
 
     companion object {
         /**
@@ -495,6 +625,21 @@ sealed interface ClaudePServerEvent {
                 )
 
                 ClaudePEventType.STREAM_RESUME_RESULT -> StreamResumeResult(
+                    envelope,
+                    ClaudePProtocol.json.decodeFromJsonElement(body),
+                )
+
+                ClaudePEventType.TOOL_INVOKE -> ToolInvoke(
+                    envelope,
+                    ClaudePProtocol.json.decodeFromJsonElement(body),
+                )
+
+                ClaudePEventType.TOOL_CANCEL -> ToolCancel(
+                    envelope,
+                    ClaudePProtocol.json.decodeFromJsonElement(body),
+                )
+
+                ClaudePEventType.TOOL_QUERY_RESULT -> ToolQueryResult(
                     envelope,
                     ClaudePProtocol.json.decodeFromJsonElement(body),
                 )
