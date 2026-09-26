@@ -1033,8 +1033,9 @@ host was not started.
 # 11. The A batch: the two execution-level gaps §10.11 named
 
 - Base of this batch: `5fceaf27` (the docs-only CI-evidence commit; kept, not rewritten)
-- Tip after this batch: `ef223b90`
-- Commits this batch: `ef223b90` (A1 + A2 + the one pure seam they need)
+- Tip after this batch: `a232730f`
+- Commits this batch: `ef223b90` (A1 + A2 + the one pure seam they need), `a232730f` (the approval
+  subject correction in §11.5, and the gate entries the three new classes need)
 - Pushed: **no**. No CI dispatch, no deployment, no VPS connection, no model call, no tool side
   effect, no phone. Server remains read-only.
 - `c6f84fc4` and `5fceaf27` both remain ancestors.
@@ -1163,34 +1164,86 @@ checks out LF on Linux and this class is green there. It is recorded here rather
 excluded, because a local suite that is "449 tests, 1 failure" and a CI suite that is green must
 be reconcilable, and this is the reconciliation.
 
-## 11.5 A blocking constraint found while scoping B, and it changes C2
+## 11.5 The approval subject constraint: audit, and the correction
 
-`SecondUserApprovalLifecycle.persistPendingBarrier` opens with:
+**Superseded within this batch.** This section was first written as a *blocking* design constraint
+on C2. The product rule was then corrected, and the correction is commit `a232730f`. What follows
+is the audit, the rule and the fix — in that order, because the audit is what makes the fix
+minimal.
+
+### The product rule
+
+Which provider an assistant uses, and whether that assistant is a second user, are **two
+independent settings**. An ordinary assistant configured with Claude P must not lose its
+approval-gated tools for the sole reason that it is not a `LOCAL_SECOND_USER`. `RESUME_COMMAND`
+keeps its historical semantics, including its historical limitation; `IN_FLIGHT` must not require
+a second user. The fix is explicitly *not* to make the assistant a second user.
+
+### What the audit found
+
+Exactly three layers referenced `LOCAL_SECOND_USER` anywhere near approval:
+
+| Layer | Where | In the barrier write path? |
+|---|---|---|
+| `persistPendingBarrier` | `SecondUserApprovalLifecycle` | **Yes** — a `require` |
+| `persistPendingBarrierInCurrentAuthorityTransaction` | `SecondUserApprovalLifecycle` | **Yes** — the same `require` |
+| `isSecondUser` gating `pendingTools` | `ChatService` | Yes, but on the **`RESUME_COMMAND`** path only |
+
+and every other candidate was checked rather than assumed:
+
+- **DAO** — `PendingToolApprovalDao` has no subject filter in *any* query. `getExact`,
+  `getLatestForToolCall`, `getPendingForConversation`, `observePending` and `getAllPending` are all
+  keyed on conversation, tool call and approval identity.
+- **Pending UI** — the card renders from `approvalState is ToolApprovalState.Pending` plus a
+  non-null `onToolApproval`. That callback is wired **unconditionally** in `ChatPage`.
+  `SecondUserPresentationRuntime` does filter, but it is a *different* surface — the desktop pet
+  and system-assistant sessions — not the chat approval card.
+- **`resolve`** — no subject precondition; only the exact-identity checks.
+- **Capability policy** — `DefaultCapabilityPolicyEngine` returns **`Abstain`** for
+  `LOCAL_ASSISTANT`, so the capability layer raises no objection for an ordinary assistant.
+- **`ToolExecutionGate`** — its two `LOCAL_SECOND_USER` branches *grant extra* autonomy to a second
+  user or deny a *stale* one. Neither gates an ordinary assistant.
+- **`GenerationHandler`** — its two `LOCAL_SECOND_USER` checks are secret-egress and
+  provider-binding concerns, not approval.
+
+So the restriction was never systemic. It was one precondition, duplicated at two call sites — and
+the third row belongs to the flow whose behaviour was required to stay unchanged.
+
+### The fix
+
+One named predicate replaces both inline `require`s:
 
 ```kotlin
-require(owner.subjectType == SubjectType.LOCAL_SECOND_USER) {
-    "second_user_approval_owner_required"
-}
+owner.subjectType == SubjectType.LOCAL_SECOND_USER ||
+    continuationMode == ApprovalContinuationMode.IN_FLIGHT
 ```
 
-This is a **hard precondition, not a default**. It means the in-flight approval path — the one
-**C2** is specified on, and the one §9.4.1 and §9.4.2 exist to enable — can only be used for a
-generation whose subject is a local second-user conversation. For an ordinary assistant
-conversation the call throws before any card is written.
+`RESUME_COMMAND` returns exactly what the old `require` returned, including the same
+`second_user_approval_owner_required` message, so that flow is untouched. `IN_FLIGHT` is admitted
+for any subject type, because what it needs is the exact approval identity, not a second-user
+profile.
 
-The consequence for C2's design is that "requires approval" and "can publish a pending card" are
-**not the same predicate**, and the host must distinguish them:
+Nothing about *what may run* widens: approval is still required, the gate and the assessor still
+run, the exact-identity checks on the approve path still apply, a decision that never arrives still
+ends the call without executing it, and local reads still go through the existing policy. No
+provider-specific UI, no second approval database, no Room schema or version change.
 
-- a call that needs no approval runs on the C1 path regardless of subject;
-- a call that needs approval in a second-user conversation publishes through
-  `persistPendingBarrier(..., IN_FLIGHT)` and suspends on `InFlightApprovalWaiters.await`;
-- a call that needs approval where no second-user subject exists has **no way to show the user
-  anything**, so it must fail closed rather than execute — a `FAILED`/`DENIED` outcome, never a
-  silent run and never a wait on a card that cannot appear.
+### The honest limit on its evidence
 
-This is exactly the kind of thing §8 warned about, found by reading the real code rather than by
-assuming the approval mechanism is subject-agnostic. It is recorded here so the next session does
-not rediscover it, and so that C2 is not written as though the gate were unconditional.
+`persistPendingBarrier` needs an `AppDatabase` and five collaborators, and this module's unit tests
+have no in-memory Room or Robolectric harness, so its *body* is not exercised. What is exercised is
+the predicate that was doing the blocking — `ApprovalOwnerAdmissibilityTest`, 6 tests, covering
+every `SubjectType` entry rather than a spot-check, both modes, and that the owner's identity
+fields are neither required to change nor discarded. The persistence that follows the predicate is
+**not** verified by that test, and the test says so rather than implying otherwise. Closing that gap
+needs a Room test harness that does not exist yet.
+
+### What this means for C2
+
+C2 no longer has to distinguish "needs approval" from "can publish a card". For an ordinary Claude P
+assistant it publishes through the existing card and approval UI, binds the exact identity, waits on
+`InFlightApprovalWaiters`, continues in the same generation on approval, creates no resume command,
+and fails closed on deny, cancel or timeout. **The subject type decides nothing.**
 
 ## 11.6 What remains
 
@@ -1204,7 +1257,9 @@ answer.
    binding that makes it the only host. It must fail closed on a missing context, catalog or
    binding, and keep the text path byte-identical.
 2. **C1/C2/C3 — the three execution paths**, through `DefaultToolRuntime`, the existing approval
-   lifecycle and the existing `McpManager`. C2 carries the constraint in §11.5.
+   lifecycle and the existing `McpManager`. C2's subject constraint was removed in `a232730f`
+   (§11.5): an ordinary Claude P assistant uses the same card, the same approval UI and the same
+   `IN_FLIGHT` waiter as any other, with no second-user requirement.
 3. **D — lifecycle and query**, including the four cancel phases, timeout, disconnect and replay,
    over the real `ToolExecutionHandle`. `ClaudePToolRunControls` already exists for this.
 4. **E — snapshot activation**, only after B–D are tested. Commit order must keep the snapshot
