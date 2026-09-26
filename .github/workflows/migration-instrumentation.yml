@@ -89,6 +89,11 @@ jobs:
           # The Claude P Koin graph test. It has to be named here explicitly: the runner-arg
           # filter is a whitelist, so without this line the class is compiled and never executed.
           CLASSES="$CLASSES,me.rerere.rikkahub.data.claudep.ClaudePKoinGraphTest"
+          # The Claude P approval barrier against a real AppDatabase. The exact four-field
+          # identity, the continuation mode as a durable meaning, and a barrier that commits with
+          # its execution record or not at all are statements about bytes in SQLite — no JVM test
+          # can open Room, and asserting them against a fake DAO would assert only the fake.
+          CLASSES="$CLASSES,me.rerere.rikkahub.data.claudep.ClaudePToolApprovalInstrumentationTest"
           echo "Instrumentation filter: $CLASSES"
           ls -l /dev/kvm
           ./gradlew :app:p5DisposablePixel6Api35DebugAndroidTest --no-parallel \
@@ -162,6 +167,49 @@ jobs:
           # adding or losing a test is a visible change to this number.
           REQUIRED_CLASS="me.rerere.rikkahub.data.claudep.ClaudePKoinGraphTest"
           EXPECTED_TESTS=7
+
+          python3 - "$REQUIRED_CLASS" "$EXPECTED_TESTS" <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+          required, expected = sys.argv[1], int(sys.argv[2])
+          files = sorted(glob.glob("app/build/outputs/androidTest-results/**/*.xml", recursive=True))
+          total = failures = errors = skipped = 0
+          names = []
+          for path in files:
+              try:
+                  root = ET.parse(path).getroot()
+              except ET.ParseError:
+                  continue
+              for suite in ([root] if root.tag == "testsuite" else root.iter("testsuite")):
+                  if suite.get("name") != required:
+                      continue
+                  for case in suite.iter("testcase"):
+                      total += 1
+                      names.append(case.get("name"))
+                      if case.find("failure") is not None: failures += 1
+                      if case.find("error") is not None: errors += 1
+                      if case.find("skipped") is not None: skipped += 1
+          print(f"{required}: tests={total} failures={failures} errors={errors} skipped={skipped}")
+          for n in sorted(names):
+              print(f"  PASS {n}")
+          ok = True
+          if total != expected:
+              print(f"::error::{required} ran {total} tests, expected {expected}")
+              ok = False
+          if failures or errors or skipped:
+              print(f"::error::{required} had failures={failures} errors={errors} skipped={skipped}")
+              ok = False
+          raise SystemExit(0 if ok else 1)
+          PY
+
+      # A green task is not proof that a *specific* class ran: the runner-arg filter silently
+      # matches nothing for a renamed or deleted class. Assert the barrier suite by name AND by the
+      # exact executed count, so adding or losing a test is a visible change to this number.
+      - name: Verify the Claude P approval barrier suite executed
+        if: always()
+        run: |
+          set -uo pipefail
+          REQUIRED_CLASS="me.rerere.rikkahub.data.claudep.ClaudePToolApprovalInstrumentationTest"
+          EXPECTED_TESTS=6
 
           python3 - "$REQUIRED_CLASS" "$EXPECTED_TESTS" <<'PY'
           import glob, sys, xml.etree.ElementTree as ET
