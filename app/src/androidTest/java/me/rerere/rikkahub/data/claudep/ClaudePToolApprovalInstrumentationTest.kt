@@ -77,7 +77,7 @@ class ClaudePToolApprovalInstrumentationTest {
     // -----------------------------------------------------------------------------------------
 
     @Test
-    fun `the barrier's four-field identity is exact`() = runBlocking {
+    fun theBarriersFourFieldIdentityIsExact() = runBlocking {
         val dao = database.pendingToolApprovalDao()
         dao.insertIgnore(pendingRecord())
 
@@ -93,7 +93,7 @@ class ClaudePToolApprovalInstrumentationTest {
     }
 
     @Test
-    fun `a decision is applied to the exact version the record carried`() = runBlocking {
+    fun aDecisionIsAppliedToTheExactVersionTheRecordCarried() = runBlocking {
         val dao = database.pendingToolApprovalDao()
         dao.insertIgnore(pendingRecord())
 
@@ -129,7 +129,7 @@ class ClaudePToolApprovalInstrumentationTest {
     // -----------------------------------------------------------------------------------------
 
     @Test
-    fun `an in-flight barrier reads back as in-flight, and a legacy row does not`() = runBlocking {
+    fun anInFlightBarrierReadsBackAsInFlightAndALegacyRowDoesNot() = runBlocking {
         val dao = database.pendingToolApprovalDao()
         dao.insertIgnore(pendingRecord())
         dao.insertIgnore(
@@ -176,7 +176,7 @@ class ClaudePToolApprovalInstrumentationTest {
      * read is the row that was written — not one a restart quietly reshaped.
      */
     @Test
-    fun `a pending barrier survives a restart unchanged and is not resumed by storage`() = runBlocking {
+    fun aPendingBarrierSurvivesARestartUnchangedAndIsNotResumedByStorage() = runBlocking {
         val name = "claudep-approval-restart.db"
         context.deleteDatabase(name)
         val first = openFileDatabase(name)
@@ -216,7 +216,7 @@ class ClaudePToolApprovalInstrumentationTest {
      * exist — an orphan the recovery rules would have to invent an answer for.
      */
     @Test
-    fun `a barrier and its execution record are written in one transaction`() = runBlocking {
+    fun aBarrierAndItsExecutionRecordAreWrittenInOneTransaction() = runBlocking {
         val dao = database.pendingToolApprovalDao()
         val executions = database.executionRecordDao()
 
@@ -246,7 +246,7 @@ class ClaudePToolApprovalInstrumentationTest {
     }
 
     @Test
-    fun `an unresolved barrier is what a recovery sweep finds`() = runBlocking {
+    fun anUnresolvedBarrierIsWhatARecoverySweepFinds() = runBlocking {
         val dao = database.pendingToolApprovalDao()
         dao.insertIgnore(pendingRecord())
         dao.insertIgnore(
