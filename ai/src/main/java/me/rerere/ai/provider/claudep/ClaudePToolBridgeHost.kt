@@ -48,7 +48,19 @@ interface ClaudePToolBridgeHost {
      * build one must degrade to — a catalog that could not be assembled is an empty catalog,
      * never a permissive one.
      */
-    suspend fun prepare(tools: List<Tool>): ClaudePToolPreparation
+    suspend fun prepare(
+        tools: List<Tool>,
+        /**
+         * The app's generation identity, or `null` when it supplied none.
+         *
+         * Handed over rather than looked up: this module has no way to discover which run it is
+         * serving, and every way of guessing eventually picks *a* generation rather than *the*
+         * generation. `null`, or a value whose [ClaudePToolGenerationContext.isComplete] is false,
+         * is not a default to fill in — it is the answer "this call cannot be bound", and the only
+         * correct response is to offer no tools at all.
+         */
+        context: ClaudePToolGenerationContext?,
+    ): ClaudePToolPreparation
 
     /**
      * Runs one admitted invocation to a terminal, through the app's existing runtime.
@@ -82,8 +94,10 @@ interface ClaudePToolBridgeHost {
          * and leaves the bytes of `generation.start` exactly as they were.
          */
         val NONE: ClaudePToolBridgeHost = object : ClaudePToolBridgeHost {
-            override suspend fun prepare(tools: List<Tool>): ClaudePToolPreparation =
-                ClaudePToolPreparation.NONE
+            override suspend fun prepare(
+                tools: List<Tool>,
+                context: ClaudePToolGenerationContext?,
+            ): ClaudePToolPreparation = ClaudePToolPreparation.NONE
 
             override suspend fun execute(invocation: BridgeInvocation): BridgeToolExecution =
                 BridgeToolExecution(
@@ -99,6 +113,42 @@ interface ClaudePToolBridgeHost {
             override val executions: BridgeExecutionHost = BridgeExecutionHost.NONE
         }
     }
+}
+
+/**
+ * Why a preparation offered no tools even though the app asked for some.
+ *
+ * A closed set with stable spellings. These are **local**: they are recorded for diagnostics and
+ * never written to a frame, because the frozen protocol has no vocabulary for "Android could not
+ * bind this generation" and inventing one would be claiming a value the Server does not hold.
+ * They exist so that a deliberately empty catalog — an assistant that simply has no tools — can
+ * be told apart from a refusal.
+ */
+enum class ClaudePToolPreparationRefusal(val localReason: String) {
+    /**
+     * The app supplied no generation identity.
+     *
+     * The text path also sends no tools, but it is not a refusal and does not carry this: an
+     * assistant with no tools is a working configuration, whereas this is a generation that
+     * wanted tools and could not be bound to one.
+     */
+    NO_GENERATION_CONTEXT("no_generation_context"),
+
+    /**
+     * An identity was supplied but is not usable — a blank field, a whitespace-only one, or a
+     * token this module is not the one to interpret. A partial context is not a context: every
+     * way of completing it is a guess about which generation a call belongs to.
+     */
+    INCOMPLETE_GENERATION_CONTEXT("incomplete_generation_context"),
+
+    /**
+     * The app's origin vocabulary did not recognise the token it was handed.
+     *
+     * Mapped by the app, never here — this module carries the token and has no list to check it
+     * against. The refusal exists so that "we could not decide which origin this is" is reported
+     * rather than resolved by substituting an origin that grants a tool surface.
+     */
+    UNKNOWN_CALL_ORIGIN("unknown_call_origin"),
 }
 
 /**
@@ -126,7 +176,19 @@ data class ClaudePToolPreparation(
      * "what bytes did we freeze?" — which is the disagreement the digest exists to catch.
      */
     val snapshot: JsonObject?,
+    /**
+     * Why no tools were offered, when the reason is a refusal rather than a choice.
+     *
+     * `null` for both the text path and a normal preparation — the two cases that are not
+     * failures. A non-null value means the app asked for tools and this generation could not
+     * carry them, and it is the only thing that distinguishes that from an assistant that has
+     * none. It never travels: it is a local reason, not a protocol value.
+     */
+    val refusal: ClaudePToolPreparationRefusal? = null,
 ) {
+    /** True when this preparation is the text path: no tools, and no reason to think there should be. */
+    val isTextPath: Boolean get() = refusal == null && catalog.isEmpty
+
     companion object {
         /** No tools, and therefore no snapshot. */
         val NONE: ClaudePToolPreparation = ClaudePToolPreparation(
@@ -138,6 +200,15 @@ data class ClaudePToolPreparation(
             catalog = BridgeCatalog.EMPTY,
             snapshot = null,
         )
+
+        /**
+         * No tools because this generation could not be bound, and a stable local reason for it.
+         *
+         * Every identity is left blank on purpose: a preparation that named *some* generation
+         * while refusing to serve this one would be the exact confusion this refuses to make.
+         */
+        fun refused(reason: ClaudePToolPreparationRefusal): ClaudePToolPreparation =
+            NONE.copy(refusal = reason)
     }
 }
 

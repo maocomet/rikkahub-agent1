@@ -3496,9 +3496,18 @@ class ChatService(
             // Stage D needs the exact command authority even when the independently reviewed
             // Stage-E injection opt-in is off. Merely attaching this content-free identity has no
             // provider effect; GenerationHandler applies the separate Stage-D and Stage-E gates.
-            if (runControl != null && authoritativeCommandId != null) {
+            // Read once and reused: this row is the durable authority for which branch this run
+            // belongs to, and it is consulted twice below — for the learning scope, and for the
+            // branch identity a Claude P tool call is bound to. Two reads would be two chances to
+            // disagree about the branch, which is the one thing a tool call must not be wrong about.
+            val generationLineage = if (authoritativeCommandId != null) {
                 durableCommandQueue.findAuthorityRow(authoritativeCommandId)
                     ?.let(me.rerere.rikkahub.service.chat.CommandLineageContext::fromAuthorityRowOrNull)
+            } else {
+                null
+            }
+            if (runControl != null) {
+                generationLineage
                     ?.let lineage@ { lineage ->
                         val branchAnchorRevision = lineage.branchAnchorMessageRevision
                             ?: return@lineage
@@ -3556,6 +3565,23 @@ class ChatService(
                 settings = settings,
                 model = model,
                 processingStatus = session.processingStatus,
+                // The generation identity a Claude P tool call is bound to. Every field is read
+                // from the authority that owns it — the run control, the durable command row, the
+                // resolved assistant and the resolved call origin — and never from the message
+                // text, the conversation fallback, the current page or a global. A field that
+                // cannot be read is left blank, and an incomplete identity makes the Claude P
+                // bridge refuse to offer tools rather than bind a call to the wrong generation.
+                claudePToolGenerationContext = me.rerere.ai.provider.claudep.ClaudePToolGenerationContext(
+                    runId = runControl?.runId?.toString().orEmpty(),
+                    commandId = authoritativeCommandId?.toString().orEmpty(),
+                    conversationId = conversationId.toString(),
+                    assistantId = assistant.id.toString(),
+                    branchId = generationLineage?.branchAnchorMessageId?.toString().orEmpty(),
+                    // The enum's own name, which is what the app's exact-match mapping compares.
+                    // Nothing normalises it here, so a token the bridge cannot map is a refusal
+                    // rather than a silently substituted origin.
+                    callOrigin = callOrigin.name,
+                ),
                 // Read once per call so the surface that wrote the addendum (Telegram bot,
                 // anything else) gets its runtime context into the system prompt without
                 // having to plumb a parameter all the way through sendMessage. Returns null

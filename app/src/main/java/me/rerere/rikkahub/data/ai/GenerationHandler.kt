@@ -675,6 +675,18 @@ class GenerationHandler(
         /** Durable admitted command only; never falls back to the generation run id. */
         authoritativeCommandId: Uuid? = null,
         runControl: GenerationRunControl? = null,
+        /**
+         * The app's generation identity, for a Claude P tool call to be bound to.
+         *
+         * Supplied by the caller because this is the layer that holds every field it is made of —
+         * the run control, the durable command id, the conversation, the assistant and the call
+         * origin. It is `null` when the caller could not name all of them, and the Claude P bridge
+         * treats that as "offer no tools" rather than as permission to guess a generation.
+         *
+         * Carried on [me.rerere.ai.provider.TextGenerationParams] as a `@Transient` property, so it
+         * never enters a request body, a prompt, a fingerprint or a log line.
+         */
+        claudePToolGenerationContext: me.rerere.ai.provider.claudep.ClaudePToolGenerationContext? = null,
         agentTiming: AgentTimingHandle? = null,
         isHeadless: Boolean = false,
         isSubAgent: Boolean = false,
@@ -3579,6 +3591,9 @@ class GenerationHandler(
             // The exact reserve used by the final hard gate is the value sent on the wire.
             maxTokens = contextPreparation.effectiveMaxOutputTokens,
             tools = tools,
+            // Transient on the params, so it reaches the Claude P provider and nothing else: not
+            // the encoded request, not the fingerprint, not the prompt.
+            claudePToolGenerationContext = claudePToolGenerationContext,
             providerCacheIdentity = providerCacheIdentity,
             reasoningLevel = if (requestPurpose == GenerationRequestPurpose.FINAL_ANSWER_RECOVERY) {
                 ReasoningLevel.OFF

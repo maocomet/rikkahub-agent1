@@ -177,7 +177,14 @@ class ClaudePProvider(
         // The catalog is frozen before dispatch, because it has to travel *in* `generation.start`.
         // With no tools — or no bridge host — this is [ClaudePToolPreparation.NONE], the snapshot
         // is null, and the frame is byte-for-byte what it was before the bridge existed.
-        val preparation = toolHost.prepare(params.tools)
+        // The generation identity is the app's, and it is handed over rather than looked up: this
+        // provider is handed messages and a model and knows nothing about which run it serves.
+        // `params.tools` may be non-empty while the context is absent or incomplete, and the host
+        // answers that with an empty catalog and a refusal — which is why the snapshot below is
+        // keyed on the *catalog* and not on whether tools were declared. A generation whose calls
+        // could not be bound sends no snapshot, so the Server registers no bridge tool and the
+        // execution path is unreachable rather than merely unused.
+        val preparation = toolHost.prepare(params.tools, params.claudePToolGenerationContext)
         val toolSnapshot = if (preparation.catalog.isEmpty) null else preparation.snapshot
 
         val fingerprint = ClaudePRequestFingerprint.compute(
