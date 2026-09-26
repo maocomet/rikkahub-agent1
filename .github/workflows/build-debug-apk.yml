@@ -251,6 +251,7 @@ jobs:
             "ai:me.rerere.ai.provider.claudep.ClaudePUiStatusTest"
             "ai:me.rerere.ai.provider.claudep.ClaudePWssTransportTest"
             "ai:me.rerere.ai.provider.claudep.bridge.BridgeExecutionBindingsTest"
+            "ai:me.rerere.ai.provider.claudep.bridge.BridgeExecutionClaimTest"
             "ai:me.rerere.ai.provider.claudep.bridge.BridgeGenerationRegistryTest"
             "ai:me.rerere.ai.provider.claudep.bridge.ClaudePToolBridgeTest"
             "ai:me.rerere.ai.provider.claudep.bridge.BridgeConformanceCorpusTest"

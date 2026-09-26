@@ -123,10 +123,29 @@ class BridgeToolAdapter(
      */
     private val executions: BridgeExecutionHost = BridgeExecutionHost.NONE,
     private val ledger: BridgeLedger = BridgeLedger(),
-) {
+    /**
+     * The clock a deadline is compared against, as a test seam.
+     *
+     * Defaulted to the JVM's monotonic reading and never supplied by a peer: a deadline derived
+     * from a clock the user can move is a deadline the peer can extend by moving it. Tests set it
+     * so an elapsed deadline is reachable in a unit test rather than in thirty minutes.
+     */
+    private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000L },
+) : BridgeExecutionClaimant {
 
     /** Call ids a cancel has already been propagated for. Sent at most once each. */
-    private val cancelPropagated = mutableSetOf<String>()
+    private val cancelPropagated = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Serializes the closing flag against an execution claim.
+     *
+     * A claim must not be able to interleave with the moment a generation begins ending. If it
+     * could, a call could be granted the right to run after the close had already read the pending
+     * set — and a call nobody stops is the one thing the close exists to prevent. Held for the
+     * duration of one claim and never across a callback; the ledger's own lock nests inside it,
+     * and nothing anywhere takes this lock while holding that one.
+     */
+    private val claimLock = Any()
 
     /**
      * True once this generation has begun to end.
@@ -223,21 +242,24 @@ class BridgeToolAdapter(
 
         return when (ledger.decide(invocationBinding)) {
             InvocationDecision.FRESH -> {
+                val invocation = BridgeInvocation(
+                    binding = invocationBinding,
+                    frozenName = entry.name,
+                    toolNameForRuntime = entry.displayName,
+                    arguments = validated.value,
+                    canonicalArguments = validated.canonical,
+                    argsDigest = validated.digest,
+                    readOnly = entry.readOnly,
+                    source = entry.source,
+                )
                 // Opened **before** the caller is told to execute, so a retry arriving while the
                 // tool is still running finds a record and attaches instead of running it twice.
-                ledger.admit(invocationBinding, monotonicMs())
-                BridgeInvokeDecision.Execute(
-                    BridgeInvocation(
-                        binding = invocationBinding,
-                        frozenName = entry.name,
-                        toolNameForRuntime = entry.displayName,
-                        arguments = validated.value,
-                        canonicalArguments = validated.canonical,
-                        argsDigest = validated.digest,
-                        readOnly = entry.readOnly,
-                        source = entry.source,
-                    ),
-                )
+                //
+                // The canonical invocation is stored with the record, and it is the object an
+                // executor is later given by `claimForExecution` — never a value rebuilt from the
+                // frame at execution time. What was validated is what runs.
+                ledger.admit(invocationBinding, monotonicMs(), invocation)
+                BridgeInvokeDecision.Execute(invocation)
             }
 
             InvocationDecision.ATTACH -> BridgeInvokeDecision.Await
@@ -286,6 +308,62 @@ class BridgeToolAdapter(
 
     /** True when a cancel has been propagated for this call but it has not settled. */
     fun isCancelRequested(toolCallId: String): Boolean = toolCallId in cancelPropagated
+
+    /**
+     * Whether this call could still be claimed, without claiming it.
+     *
+     * Two lifecycle facts are this object's and are checked here rather than in the ledger: a
+     * generation that has begun ending, and a cancel that has already been propagated. Both mean
+     * the same thing to a caller — this call must not start — and neither is visible in the
+     * record, which is why they cannot live in the ledger's pure rules.
+     *
+     * The check is a read of a volatile flag and a concurrent set, deliberately not taken under
+     * [claimLock]: a cancel that lands a microsecond after this answer is not a lost guarantee,
+     * it is the ordinary race the runtime's own cancellation resolves, and the call would then be
+     * stopped and concluded rather than silently continuing.
+     */
+    override fun admissible(request: BridgeExecutionClaim): BridgeClaimRefusal? {
+        if (closing) return BridgeClaimRefusal.CANCELLED
+        if (request.toolCallId in cancelPropagated) return BridgeClaimRefusal.CANCELLED
+        return ledger.admissibility(request, monotonicMs())
+    }
+
+    /**
+     * Grants this call's execution right, atomically and at most once.
+     *
+     * ## Why this exists rather than the caller keeping the invocation it was handed
+     *
+     * The invocation in `BridgeInvokeDecision.Execute` is handed over **before** the user is
+     * asked, and the answer can take minutes. In that window the call can be cancelled, can
+     * time out, can be settled by a close, can lose its peer, can be re-delivered, or can be
+     * claimed by a second caller — and none of that is visible in the object the first caller is
+     * still holding. So the object held across the wait is not the execution authority; this
+     * claim is, and it returns the ledger's own stored instance.
+     *
+     * The order is: the generation's own lifecycle is read under [claimLock], and only then is
+     * the ledger asked — under its own lock, nested inside. A claim therefore either completes
+     * before the close has begun ending the generation, or is refused by it. There is no third
+     * answer, and in particular there is no instant in which a call is granted a right the close
+     * has already decided not to stop.
+     */
+    override fun claim(request: BridgeExecutionClaim): BridgeExecutionClaimResult =
+        synchronized(claimLock) {
+            if (closing) return@synchronized refusedClaim(BridgeClaimRefusal.CANCELLED)
+            if (request.toolCallId in cancelPropagated) {
+                return@synchronized refusedClaim(BridgeClaimRefusal.CANCELLED)
+            }
+            // The binding this claim names must be *this* generation's. A claim for another
+            // generation's id is answered by this generation's ledger only in the sense that it
+            // finds nothing — but saying so explicitly keeps a mis-addressed claim from being
+            // read as "no record", which is a different fact with a different remedy.
+            if (request.serverGenerationId != binding.generationId) {
+                return@synchronized refusedClaim(BridgeClaimRefusal.CONFLICT)
+            }
+            ledger.claimForExecution(request, monotonicMs())
+        }
+
+    private fun refusedClaim(reason: BridgeClaimRefusal): BridgeExecutionClaimResult =
+        BridgeExecutionClaimResult.Refused(reason)
 
     /**
      * Records what Android concluded about a call.
@@ -403,8 +481,9 @@ class BridgeToolAdapter(
     fun concludeForClosedGeneration(
         waitMs: Long = BridgeClosing.DEFAULT_STOP_WAIT_MS,
     ): List<BridgeClosedCall> {
-        // 1. Stop admitting, before reading what is pending.
-        closing = true
+        // 1. Stop admitting, before reading what is pending — and under the same lock a claim
+        // takes, so no claim can complete in the window between reading the flag and the write.
+        synchronized(claimLock) { closing = true }
 
         val pending = ledger.pendingToolCallIds()
         if (pending.isEmpty()) return emptyList()
@@ -463,13 +542,4 @@ class BridgeToolAdapter(
     /** The outcome recorded for this call, or `null` when this generation holds no record. */
     fun recordedOutcome(toolCallId: String): ToolCallOutcome? =
         ledger.find(toolCallId)?.let { BridgeRules.recordToOutcome(it) }
-
-    /**
-     * The monotonic reading a deadline is computed from.
-     *
-     * `nanoTime` is the JVM's monotonic clock: it is unaffected by wall-clock adjustments, which
-     * is the property that matters, because a deadline derived from a clock the user can move is
-     * a deadline the peer can extend by moving it.
-     */
-    private fun monotonicMs(): Long = System.nanoTime() / 1_000_000L
 }
