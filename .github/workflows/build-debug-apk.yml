@@ -215,6 +215,8 @@ jobs:
             --tests "me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepositoryTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePToolRunControlsTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePToolGenerationContextWiringTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePToolBridgeHostImplTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePToolBridgeHostExecuteTest" \
             --tests "me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest" \
             --tests "me.rerere.rikkahub.data.execution.ApprovalContinuationModeTest" \
             --tests "me.rerere.rikkahub.data.execution.ApprovalOwnerAdmissibilityTest" \
@@ -267,6 +269,8 @@ jobs:
             "app:me.rerere.rikkahub.data.ai.background.ClaudePBackgroundExclusionTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepositoryTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePToolGenerationContextWiringTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePToolBridgeHostImplTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePToolBridgeHostExecuteTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePToolRunControlsTest"
             "app:me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest"
           )

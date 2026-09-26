@@ -1,19 +1,34 @@
 package me.rerere.rikkahub.data.claudep
 
+import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.claudep.BridgeToolExecution
 import me.rerere.ai.provider.claudep.ClaudePToolBridgeHost
+import me.rerere.ai.provider.claudep.ClaudePToolCallStatus
 import me.rerere.ai.provider.claudep.ClaudePToolGenerationContext
 import me.rerere.ai.provider.claudep.ClaudePToolPreparation
 import me.rerere.ai.provider.claudep.ClaudePToolPreparationRefusal
 import me.rerere.ai.provider.claudep.ClaudePToolStatusSink
+import me.rerere.ai.provider.claudep.ClaudePToolStatusUpdate
 import me.rerere.ai.provider.claudep.bridge.BridgeExecutionBindings
 import me.rerere.ai.provider.claudep.bridge.BridgeExecutionHost
 import me.rerere.ai.provider.claudep.bridge.BridgeInvocation
 import me.rerere.ai.provider.claudep.bridge.BridgeLimits
 import me.rerere.ai.provider.claudep.bridge.ToolCallOutcome
 import me.rerere.ai.provider.claudep.bridge.ToolCallState
+import me.rerere.ai.ui.ToolApprovalState
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.ToolCallOrigin
+import me.rerere.rikkahub.data.ai.execution.ToolExecutionPlanRequest
+import me.rerere.rikkahub.data.ai.execution.ToolExecutionPlanResult
+import me.rerere.rikkahub.data.ai.execution.ToolPreExecutionDecision
+import me.rerere.rikkahub.data.ai.execution.ToolRuntime
+import me.rerere.rikkahub.data.ai.execution.ToolStartableResolver
+import me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits
+import me.rerere.rikkahub.data.ai.tools.ToolExecutionContext
+import me.rerere.rikkahub.data.capability.CapabilitySubject
+import me.rerere.rikkahub.data.capability.SubjectType
+import me.rerere.rikkahub.toolcatalog.ToolCatalogSnapshot
 import kotlin.uuid.Uuid
 
 /**
@@ -65,6 +80,40 @@ class ClaudePToolBridgeHostImpl(
      * reader of that line can see which state the app is in without following the value.
      */
     private val offerCatalog: Boolean,
+    /**
+     * The app's runtime. `null` means this host has none wired, and it then runs nothing — the
+     * runtime is asked to execute a tool, so a host without one must refuse rather than fall back
+     * to calling the tool's own `execute` directly and skipping the gate, the policy and the
+     * ledger that `DefaultToolRuntime` exists to apply.
+     */
+    private val toolRuntime: ToolRuntime? = null,
+    /**
+     * The live run controls, so a call can be registered against the run actually executing it.
+     *
+     * Found by the exact run id; an empty registry simply finds nothing, which fails the call
+     * closed. Defaulting to a fresh instance is safe for that reason and keeps a host that is not
+     * wired from silently sharing state with one that is.
+     */
+    private val runControls: ClaudePToolRunControls = ClaudePToolRunControls(),
+    /** The app's cancellable-tool adapter. `NONE` means every tool is non-cancellable, honestly. */
+    private val toolStartableResolver: ToolStartableResolver = ToolStartableResolver.NONE,
+    /**
+     * The app's pre-execution gate. Defaults to **deny**, not allow: a host wired without a gate
+     * must not run anything, and a permissive default is how a wiring omission becomes a silent
+     * policy bypass.
+     */
+    private val gate: ClaudePToolGate = ClaudePToolGate.DENY,
+    /**
+     * The real capability subject for a generation, or `null` when it cannot be resolved.
+     *
+     * `null` fails the call closed. It must never be replaced by an empty or guessed subject — see
+     * the note in [execute] about what an absent subject does to the gate.
+     */
+    private val subjectFor: suspend (
+        assistantId: String,
+        conversationId: String,
+        origin: ToolCallOrigin,
+    ) -> CapabilitySubject? = { _, _, _ -> null },
 ) : ClaudePToolBridgeHost {
 
     /**
@@ -123,6 +172,7 @@ class ClaudePToolBridgeHostImpl(
             branchId = identity.branchId,
             callOrigin = callOrigin,
             timeoutMs = DEFAULT_TOOL_DEADLINE_MS,
+            tools = tools,
         )
 
         // A token of this host's own, so the plan can be readied before the generation has an id.
@@ -185,7 +235,113 @@ class ClaudePToolBridgeHostImpl(
     override suspend fun execute(
         invocation: BridgeInvocation,
         status: ClaudePToolStatusSink,
-    ): BridgeToolExecution = BridgeToolExecution(
+    ): BridgeToolExecution {
+        // Every refusal below is the same answer, and it is `FAILED` rather than a guess: the call
+        // was not run, and this host cannot say it stopped anything either. A `cancelled` would
+        // claim a stop nobody observed and a `denied` would claim a decision the user never made.
+        val plan = bindings.lookup(invocation.binding.generationId) ?: return unexecuted(invocation)
+
+        // The tool must be one *this generation* froze. A name the catalog did not carry cannot be
+        // run by asking for it, which is what makes the catalog a boundary rather than a suggestion.
+        val tool = plan.tools.firstOrNull { it.name == invocation.toolNameForRuntime }
+            ?: return unexecuted(invocation)
+
+        val arguments = invocation.arguments as? JsonObject ?: return unexecuted(invocation)
+
+        // The control for the run that is *actually* executing, found by its exact id. The runtime
+        // registers its `ToolExecutionHandle` against it, which is what makes this call reachable
+        // by the closing generation's stop and reachable by a later cancel.
+        val runControl = runControls.find(plan.runId) ?: return unexecuted(invocation)
+
+        val runId = plan.runId.toUuidOrNull() ?: return unexecuted(invocation)
+        val conversationId = plan.conversationId.toUuidOrNull() ?: return unexecuted(invocation)
+
+        // The real subject, never a null stand-in. `ToolExecutionGate` skips its entire capability
+        // branch when the subject is absent, so a null here would *widen* what a second-user
+        // conversation is allowed to do rather than narrow it.
+        val subject = subjectFor(plan.assistantId, plan.conversationId, plan.callOrigin)
+            ?: return unexecuted(invocation)
+
+        val executionContext = ToolExecutionContext(
+            runId = runId,
+            conversationId = conversationId,
+            assistantId = plan.assistantId,
+            callOrigin = plan.callOrigin,
+            commandId = plan.commandId.toUuidOrNull(),
+            toolCallId = invocation.binding.toolCallId,
+            capabilitySubject = subject,
+            selectedPrivilegedConversation = subject.type == SubjectType.LOCAL_SECOND_USER,
+        )
+
+        // Whether this call needs a human decision is the existing policy's answer — the tool's own
+        // `needsApproval` against the real arguments, exactly as every other provider asks it. It
+        // is read, not re-derived: a second opinion here would be a second approval policy.
+        //
+        // The in-flight approval path is not implemented in this stage (see the class doc and §12.3
+        // of the report: the card has to be published and observed as applied before a barrier can
+        // be persisted against it). Until it is, a call that needs a decision is refused rather
+        // than run without one — failing closed is the only safe direction.
+        if (tool.needsApproval(invocation.arguments)) return unexecuted(invocation)
+
+        // Nothing needed a decision, so the runtime may run it now. The status is published before
+        // the call so the conversation shows it as running while it is, and the result comes back
+        // through `BridgeToolExecution` below.
+        status.publish(
+            ClaudePToolStatusUpdate(
+                toolCallId = invocation.binding.toolCallId,
+                toolName = invocation.toolNameForRuntime,
+                arguments = invocation.arguments,
+                status = ClaudePToolCallStatus.RUNNING,
+            ),
+        )
+
+        val runtime = toolRuntime ?: return unexecuted(invocation)
+        val result = runtime.execute(
+            ToolExecutionPlanRequest(
+                toolCallId = invocation.binding.toolCallId,
+                toolName = invocation.toolNameForRuntime,
+                toolSchemaFingerprint = ToolCatalogSnapshot
+                    .fromDefinitions(listOf(tool))
+                    .entry(tool.name)
+                    ?.schemaFingerprint,
+                args = invocation.arguments,
+                executionContext = executionContext,
+                // The cancellable adapter when the app has one for this tool, and `null` otherwise —
+                // the same resolution the normal loop performs, so a tool that can really be stopped
+                // is stoppable here too and one that cannot says so honestly.
+                startableTool = toolStartableResolver.resolve(tool, executionContext),
+                // Always supplied. For an MCP tool this closure *is* the dispatch to `McpManager`,
+                // and for a local tool it is the app's own implementation — either way this host
+                // runs the tool it was handed rather than looking one up.
+                legacyExecute = { element -> tool.execute(element) },
+                runControl = runControl,
+                wallClockBudgetMs = plan.wallClockBudgetMs,
+                preExecutionGate = {
+                    gate.decide(invocation.toolNameForRuntime, arguments, executionContext)
+                },
+            ),
+        )
+
+        return BridgeToolExecution(
+            outcome = result.toOutcome(invocation.binding.toolCallId),
+            part = UIMessagePart.Tool(
+                toolCallId = invocation.binding.toolCallId,
+                toolName = invocation.toolNameForRuntime,
+                input = invocation.arguments.toString(),
+                output = result.output,
+                approvalState = ToolApprovalState.Auto,
+            ),
+        )
+    }
+
+    /**
+     * The answer for a call this host did not run.
+     *
+     * `FAILED` and no part: it claims no execution, no stop and no decision, and it shows the user
+     * nothing about a call that never had a card. The Server concludes the call from it rather than
+     * waiting for a deadline, which is the point of answering at all.
+     */
+    private fun unexecuted(invocation: BridgeInvocation): BridgeToolExecution = BridgeToolExecution(
         outcome = ToolCallOutcome(
             toolCallId = invocation.binding.toolCallId,
             state = ToolCallState.FAILED,
@@ -239,6 +395,23 @@ data class ClaudePToolExecutionPlan(
     val branchId: String,
     val callOrigin: ToolCallOrigin,
     val timeoutMs: Long,
+    /**
+     * The exact tools this generation froze.
+     *
+     * The same objects the app assembled for every other provider — an MCP tool among them carries
+     * its own `execute` closure, which is what dispatches back to `McpManager`. Holding them here
+     * is why the host needs no MCP reference of its own: it runs the tool it was handed rather than
+     * looking one up, so a token or an OAuth state has no path into this layer at all.
+     */
+    val tools: List<Tool> = emptyList(),
+    /**
+     * How much wall clock one call may take, from the app's own turn budget.
+     *
+     * A Claude P generation has no turn to measure — the provider's stream *is* the turn — so this
+     * is the app's global budget rather than a per-turn remainder, and the runtime enforces it the
+     * same way it does everywhere else.
+     */
+    val wallClockBudgetMs: Long = ToolRuntimeLimits.turnBudgetMs,
 ) {
     /**
      * What two plans for the same generation have to agree on.
@@ -258,4 +431,82 @@ data class ClaudePToolExecutionPlan(
             branchId,
             callOrigin.name,
         ).joinToString(" ")
+}
+
+/**
+ * The app's pre-execution gate, as the one question this host may ask it.
+ *
+ * A seam rather than the `ToolExecutionGate` itself, because the gate needs an Android `Context`
+ * and this host must be constructible — and testable — without one. The production binding wires
+ * it to `ToolExecutionGate.evaluate`, and that call site is where the `GateResult` to
+ * `ToolPreExecutionDecision` mapping lives, unchanged from the normal agent loop.
+ *
+ * [DENY] is the default on purpose. A host wired without a gate must run nothing, and a permissive
+ * default is how a forgotten binding becomes a silent policy bypass.
+ */
+fun interface ClaudePToolGate {
+    suspend fun decide(
+        toolName: String,
+        args: JsonObject,
+        context: ToolExecutionContext,
+    ): ToolPreExecutionDecision
+
+    companion object {
+        /** Denies everything, claiming nothing ran. The default for an unwired host. */
+        val DENY: ClaudePToolGate = ClaudePToolGate { _, _, _ ->
+            ToolPreExecutionDecision.Deny(
+                errorCode = "claudep_gate_absent",
+                reason = "No pre-execution gate is wired into this host.",
+            )
+        }
+    }
+}
+
+/**
+ * What Android concluded, in the contract's vocabulary.
+ *
+ * `Rejected` maps to `DENIED` because that is precisely what it is: the gate refused before
+ * anything ran. `completed` carries a body and the other two do not — a body on a non-completion
+ * would be a result claim the state contradicts.
+ */
+private fun ToolExecutionPlanResult.toOutcome(toolCallId: String): ToolCallOutcome = when (this) {
+    is ToolExecutionPlanResult.Completed -> ToolCallOutcome(
+        toolCallId = toolCallId,
+        state = ToolCallState.COMPLETED,
+        body = output.asToolResultBody(),
+    )
+
+    is ToolExecutionPlanResult.Rejected -> ToolCallOutcome(toolCallId, ToolCallState.DENIED)
+    is ToolExecutionPlanResult.TimedOut -> ToolCallOutcome(toolCallId, ToolCallState.TIMED_OUT)
+}
+
+/**
+ * A result's text, bounded to what the contract will carry.
+ *
+ * `null` when there is no text at all: an absent body and an empty one are the same thing to the
+ * peer, and the contract says a body is present only for a completion that has one. The byte bound
+ * is the contract's own `MAX_TOOL_RESULT_BYTES`, and it is applied on a character boundary so a
+ * multi-byte character is never cut in half into invalid UTF-8.
+ */
+private fun List<UIMessagePart>.asToolResultBody(): String? {
+    val text = filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
+    if (text.isEmpty()) return null
+    val bytes = text.toByteArray(Charsets.UTF_8)
+    if (bytes.size <= BridgeLimits.MAX_TOOL_RESULT_BYTES) return text
+    var end = BridgeLimits.MAX_TOOL_RESULT_BYTES
+    while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) end--
+    return String(bytes, 0, end, Charsets.UTF_8)
+}
+
+/**
+ * The app's deliberately un-typed identities, read back as their real type.
+ *
+ * The generation context carries strings so that this module never has to follow the app's identity
+ * types. The app is therefore the side that maps them back, and a value that is not a UUID is not a
+ * generation — it fails closed rather than being coerced.
+ */
+private fun String.toUuidOrNull(): Uuid? = try {
+    Uuid.parse(this)
+} catch (_: IllegalArgumentException) {
+    null
 }
