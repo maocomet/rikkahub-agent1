@@ -387,6 +387,24 @@ class ClaudePToolPublicationReceipts(
         synchronized(lock) { generationByRun[runId] }
 
     /**
+     * The Android run bound to this Server generation, or `null` when nothing is serving it.
+     *
+     * The same association read from the other side, and **the same map**: a second table keyed the
+     * other way would be a second answer to "which run is this generation?", and the two could
+     * disagree. It exists because the bridge speaks the Server's vocabulary while the app's runtime
+     * speaks its own, and this is the one place the two are converted — by looking up what was
+     * recorded at `openGeneration`, never by inferring anything from the call.
+     *
+     * Because the association is dropped by the same release path that closes the generation, an
+     * answer here is also a statement that the generation is still open. `null` is the fail-closed
+     * answer: an unpaired generation has no run, so no control, so nothing that can be stopped and
+     * nothing that can be proven.
+     */
+    fun runIdFor(serverGenerationId: String): String? = synchronized(lock) {
+        generationByRun.entries.firstOrNull { it.value == serverGenerationId }?.key
+    }
+
+    /**
      * Records that this run serves this Server generation, for the life of that generation.
      *
      * Called when the generation is opened, once both halves exist: the Server's id is only known

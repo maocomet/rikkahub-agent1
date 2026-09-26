@@ -1554,21 +1554,58 @@ val dataSourceModule = module {
     // than an alternative.
     single<me.rerere.ai.provider.claudep.ClaudePToolBridgeHost> {
         val pairing: me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository = get()
+        // The app's execution layer, as the host's own questions to it. None of these is a second
+        // implementation of anything: `runtime` is the one `DefaultToolRuntime` the ordinary agent
+        // loop already uses, `runControls` is the registry `ConversationRuntime` publishes into,
+        // and `waiters` is the same instance `SecondUserApprovalLifecycle` releases. Each is
+        // resolved here so that a missing one fails closed at the first question asked of it,
+        // rather than becoming a silently permissive default inside the host.
+        val runControls: me.rerere.rikkahub.data.claudep.ClaudePToolRunControls = get()
+        val waiters: me.rerere.rikkahub.data.execution.InFlightApprovalWaiters = get()
+        val runtime: me.rerere.rikkahub.data.ai.execution.ToolRuntime = get()
+        val receipts: me.rerere.rikkahub.data.claudep.ClaudePToolPublicationReceipts = get()
+        val executionHost = me.rerere.rikkahub.data.claudep.ClaudePToolExecutionHost(
+            runControls = runControls,
+            waiters = waiters,
+            // The one place a Server generation id becomes an Android run id. It is the same
+            // association `openGeneration` recorded and `closeGeneration` retires, read from the
+            // other side — so an unpaired generation, or one that has already ended, answers
+            // `null` and every question below fails closed on it.
+            runIdFor = { serverGenerationId -> receipts.runIdFor(serverGenerationId) },
+        )
         me.rerere.rikkahub.data.claudep.ClaudePToolBridgeHostImpl(
             // The validated device id, or null. Null means this device cannot name itself, and the
             // host answers that the same way it answers every other missing identity: offer
             // nothing. A placeholder here would give two devices the same binding.
             deviceRefProvider = { pairing.currentDeviceIdOrNull() },
-            // CLOSED. The catalog is assembled and validated, but not offered, until every path
-            // that can *answer* a tool call exists and is tested. Opening this while `execute` is
-            // still a fail-closed stub would tell Claude about tools Android cannot conclude, and
-            // an unanswered call leaves the Server blocked until its deadline. This is the single
-            // line the activation commit changes.
+            // CLOSED. The catalog is assembled and validated, but not offered. Offering a tool
+            // Android cannot conclude leaves the Server blocked on that call until its deadline,
+            // which is worse than offering none. This is the single line the activation commit
+            // changes, and it stays closed until the managed-device evidence exists.
             offerCatalog = false,
+            // The app's real runtime, gate and cancellable-tool resolver. Supplying them is what
+            // makes `execute` an execution rather than a refusal; they grant the host no authority
+            // of their own, because every decision they make is still theirs.
+            toolRuntime = runtime,
+            runControls = runControls,
+            toolStartableResolver = get(),
+            gate = me.rerere.rikkahub.data.claudep.ClaudePToolProductionGate(
+                gate = get<me.rerere.rikkahub.data.ai.ToolExecutionGate>(),
+            ),
             // The same instance `ChatService` completes from. It carries no capability of its own:
             // it lets this host ask whether a card it published is durably committed, which is the
             // one question it cannot answer by itself.
-            publications = get(),
+            publications = receipts,
+            inFlightWaiters = waiters,
+            executionHost = executionHost,
+            // The app's own subject rule, asked of the authorities that own it. A conversation that
+            // cannot be read, an assistant that is no longer configured, and an id that is not a
+            // UUID all answer `null`, which the host treats as a refusal to execute — never as a
+            // permissive default, because an absent subject *widens* what the gate permits.
+            subjectFor = me.rerere.rikkahub.data.claudep.ClaudePToolSubjectSource(
+                conversations = get(),
+                settingsStore = get(),
+            )::subjectFor,
         )
     }
 
