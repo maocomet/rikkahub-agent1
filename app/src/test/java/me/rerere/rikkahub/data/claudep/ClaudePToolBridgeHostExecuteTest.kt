@@ -11,11 +11,16 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.claudep.BridgeToolExecution
 import me.rerere.ai.provider.claudep.ClaudePToolCallStatus
 import me.rerere.ai.provider.claudep.ClaudePToolGenerationContext
 import me.rerere.ai.provider.claudep.ClaudePToolStatusPublication
 import me.rerere.ai.provider.claudep.ClaudePToolStatusSink
 import me.rerere.ai.provider.claudep.ClaudePToolStatusUpdate
+import me.rerere.ai.provider.claudep.bridge.BridgeClaimRefusal
+import me.rerere.ai.provider.claudep.bridge.BridgeExecutionClaim
+import me.rerere.ai.provider.claudep.bridge.BridgeExecutionClaimResult
+import me.rerere.ai.provider.claudep.bridge.BridgeExecutionClaimant
 import me.rerere.ai.provider.claudep.bridge.BridgeInvocation
 import me.rerere.ai.provider.claudep.bridge.InvocationBinding
 import me.rerere.ai.provider.claudep.bridge.ToolCallState
@@ -36,6 +41,10 @@ import me.rerere.rikkahub.data.ai.tools.ToolExecutionContext
 import me.rerere.rikkahub.data.capability.CapabilitySubject
 import me.rerere.rikkahub.data.capability.SubjectType
 import me.rerere.rikkahub.data.execution.ApprovalContinuationMode
+import me.rerere.rikkahub.data.execution.InFlightApprovalDecision
+import me.rerere.rikkahub.data.execution.InFlightApprovalIdentity
+import me.rerere.rikkahub.data.execution.InFlightApprovalOutcome
+import me.rerere.rikkahub.data.execution.InFlightApprovalWaiters
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -201,6 +210,7 @@ class ClaudePToolBridgeHostExecuteTest {
         subject: CapabilitySubject? = CapabilitySubject("44444444-4444-4444-4444-444444444444", SubjectType.LOCAL_ASSISTANT),
         generationId: String = "gen-1",
         publications: ClaudePToolPublicationReceipts = ClaudePToolPublicationReceipts(),
+        waiters: InFlightApprovalWaiters = InFlightApprovalWaiters(),
     ): ClaudePToolBridgeHostImpl = runBlocking {
         val controls = ClaudePToolRunControls()
         runControl?.let { controls.register(it.runId.toString(), it) }
@@ -213,11 +223,68 @@ class ClaudePToolBridgeHostExecuteTest {
             gate = gate,
             subjectFor = { _, _, _ -> subject },
             publications = publications,
+            inFlightWaiters = waiters,
+            executionHost = ClaudePToolExecutionHost(
+                runControls = controls,
+                waiters = waiters,
+                // The one place a Server generation id becomes an Android run id, and it answers
+                // only for the generation this host actually bound.
+                runIdFor = { serverGenerationId ->
+                    runControl?.takeIf { serverGenerationId == generationId }?.runId?.toString()
+                },
+            ),
         )
         val preparation = host.prepare(tools, context())
         check(host.openGeneration(generationId, preparation)) { "the test's own binding must succeed" }
         host
     }
+
+    /**
+     * The claimant a bridged call arrives with, in the shape the provider really supplies.
+     *
+     * The real one is the generation's own ledger, and its semantics have a suite of their own
+     * (`BridgeExecutionClaimTest`). What these tests are about is the **host**: that it asks for
+     * the right before it runs anything, that it asks with the call it was handed, and that it runs
+     * the object the claim returned rather than the one it was holding. A fake that records every
+     * question and hands back the canonical invocation is exactly enough for that, and it reaches
+     * the refusal directions without contriving a ledger state.
+     */
+    private class TestClaimant(
+        /** What the ledger would hand back. `null` models a call it holds no record of. */
+        private val canonical: BridgeInvocation?,
+        private val refusal: BridgeClaimRefusal? = null,
+    ) : BridgeExecutionClaimant {
+
+        /** Every admissibility question, in order. */
+        val admissibilityAsked = mutableListOf<BridgeExecutionClaim>()
+
+        /** Every claim, in order. More than one entry here would be more than one execution. */
+        val claimedFor = mutableListOf<BridgeExecutionClaim>()
+
+        override fun admissible(request: BridgeExecutionClaim): BridgeClaimRefusal? {
+            admissibilityAsked += request
+            return refusal
+        }
+
+        override fun claim(request: BridgeExecutionClaim): BridgeExecutionClaimResult {
+            claimedFor += request
+            if (refusal != null || canonical == null) {
+                return BridgeExecutionClaimResult.Refused(refusal ?: BridgeClaimRefusal.NOT_FOUND)
+            }
+            return BridgeExecutionClaimResult.Claimed(canonical)
+        }
+    }
+
+    /**
+     * Runs one call the way the provider does: with a claimant bound to **that** call.
+     *
+     * The default grants exactly the invocation passed in, which models the ordinary case — the
+     * ledger admitted this call and nobody else has claimed it.
+     */
+    private suspend fun ClaudePToolBridgeHostImpl.executeWithClaim(
+        invocation: BridgeInvocation,
+        status: ClaudePToolStatusSink = ClaudePToolStatusSink.NONE,
+    ): BridgeToolExecution = execute(invocation, status, TestClaimant(invocation))
 
     // ---------------------------------------------------------------------------------------
     // C1 — a local tool that needs no decision runs
@@ -229,7 +296,7 @@ class ClaudePToolBridgeHostExecuteTest {
         val runtime = RecordingRuntime()
         val host = boundHost(listOf(tool.tool), runtime)
 
-        val execution = host.execute(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
+        val execution = host.executeWithClaim(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
 
         assertEquals("the runtime must be asked exactly once", 1, runtime.requests.size)
         assertEquals("the tool itself must run exactly once", 1, tool.invocations.size)
@@ -261,7 +328,7 @@ class ClaudePToolBridgeHostExecuteTest {
         val runtime = RecordingRuntime()
         val host = boundHost(listOf(tool.tool), runtime)
 
-        host.execute(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
+        host.executeWithClaim(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
 
         val context = runtime.requests.single().executionContext
         assertNotNull(context)
@@ -281,7 +348,7 @@ class ClaudePToolBridgeHostExecuteTest {
         val control = GenerationRunControl(Uuid.parse("11111111-1111-1111-1111-111111111111"))
         val host = boundHost(listOf(tool.tool), runtime, runControl = control)
 
-        host.execute(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
+        host.executeWithClaim(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
 
         assertSame(control, runtime.requests.single().runControl)
     }
@@ -299,7 +366,7 @@ class ClaudePToolBridgeHostExecuteTest {
             },
         )
 
-        host.execute(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
+        host.executeWithClaim(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
 
         assertEquals(
             ToolPreExecutionDecision.Deny("nope", "the test denied it"),
@@ -335,7 +402,7 @@ class ClaudePToolBridgeHostExecuteTest {
         val host = boundHost(listOf(mcpTool), runtime)
 
         val namespaced = "mcp__abcd1234_myserver__search"
-        val execution = host.execute(invocation("gen-1", namespaced), ClaudePToolStatusSink.NONE)
+        val execution = host.executeWithClaim(invocation("gen-1", namespaced), ClaudePToolStatusSink.NONE)
 
         assertEquals(ToolCallState.COMPLETED, execution.outcome.state)
         assertEquals(listOf(serverId to rawToolName), dispatched)
@@ -379,7 +446,7 @@ class ClaudePToolBridgeHostExecuteTest {
             ClaudePToolStatusPublication.Refused("tool_status_not_published")
         }
 
-        val execution = host.execute(invocation("gen-1", "write_file"), sink)
+        val execution = host.executeWithClaim(invocation("gen-1", "write_file"), sink)
 
         assertEquals("a gated call must not run", 0, tool.invocations.size)
         assertEquals("and the runtime must not be asked", 0, runtime.requests.size)
@@ -410,7 +477,7 @@ class ClaudePToolBridgeHostExecuteTest {
         }
 
         val running = async(Dispatchers.Default) {
-            host.execute(invocation("gen-1", "write_file"), sink)
+            host.executeWithClaim(invocation("gen-1", "write_file"), sink)
         }
         // A handshake rather than a sleep: the sink signalling means the card has been accepted,
         // and the registry's own state then says whether anything has answered it.
@@ -471,46 +538,142 @@ class ClaudePToolBridgeHostExecuteTest {
     }
 
     /**
-     * The publication half of the in-flight handshake, end to end on this side.
+     * The whole in-flight approval, end to end on this side: card, receipt, decision, run.
      *
      * The host proposes a pending card, declares the continuation, waits on the receipt the
-     * authority completes, and — because this batch stops short of execution — reports the call
-     * unrun. Every one of those is asserted, including that the runtime was never asked: arming a
-     * waiter and running a tool are the next batch's, and shipping a path that runs early is the
-     * failure this whole handshake exists to prevent.
+     * authority completes, registers the waiter under the approval's own identity, and — when the
+     * decision arrives — claims the call and runs it exactly once. The peer is blocked on this
+     * call inside the Worker, so approving it must release this waiter and must never create a
+     * resume command; the `IN_FLIGHT` token is what carries that, and it is asserted here.
+     *
+     * The decision is delivered through `onAwaitRegistration`, the seam that runs inside the
+     * registration critical section on the awaiting thread. That makes the ordering deterministic
+     * rather than a race: the decision is delivered at the one instant a two-critical-section
+     * registration would have missed it.
      */
     @Test
-    fun `an approval-gated call publishes an in-flight card and still runs nothing`() = runBlocking {
+    fun `an approval-gated call publishes a card and runs once the user approves`() = runBlocking {
         val tool = RecordingTool("write_file", needsApproval = true)
         val runtime = RecordingRuntime()
         val receipts = ClaudePToolPublicationReceipts()
-        val host = boundHost(listOf(tool.tool), runtime, publications = receipts)
+        val waiters = InFlightApprovalWaiters()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts, waiters = waiters)
         val sink = AuthoritySink(receipts, boundRunId) { key ->
             // The authority's half: the card is applied and its barrier committed, so the receipt
             // carries its own approval identity.
             receipts.complete(key, "approval-1", "execution-1")
         }
+        waiters.onAwaitRegistration = {
+            waiters.signalDecided(
+                InFlightApprovalIdentity(
+                    approvalId = "approval-1",
+                    executionId = "execution-1",
+                    conversationId = context().conversationId,
+                    toolCallId = "call-1",
+                ),
+                InFlightApprovalOutcome.Decided(InFlightApprovalDecision.APPROVED),
+            )
+        }
 
-        val execution = host.execute(invocation("gen-1", "write_file"), sink)
+        val execution = host.executeWithClaim(invocation("gen-1", "write_file"), sink)
 
-        assertEquals("exactly one card is proposed", 1, sink.updates.size)
-        val update = sink.updates.single()
-        assertEquals(ClaudePToolCallStatus.PENDING_APPROVAL, update.status)
+        assertEquals(
+            "the card, then the decision, then the run — and nothing else",
+            listOf(
+                ClaudePToolCallStatus.PENDING_APPROVAL,
+                ClaudePToolCallStatus.APPROVED,
+                ClaudePToolCallStatus.RUNNING,
+            ),
+            sink.updates.map { it.status },
+        )
         assertEquals(
             "the publisher declares the continuation, and it is the in-flight one",
             ApprovalContinuationMode.IN_FLIGHT.name,
-            update.pendingContinuation,
+            sink.updates.first().pendingContinuation,
         )
+        // Only the card carries a continuation. The decision and the run are not publications, and
+        // a continuation on either would raise a second barrier for a call that already has one.
+        assertNull(sink.updates[1].pendingContinuation)
+        assertNull(sink.updates[2].pendingContinuation)
         assertEquals(
             "and the authority rebuilds the same identity from its own fields",
             ClaudePToolPublicationKey.of(boundRunId, "call-1", "write_file"),
             sink.rebuiltKey,
         )
-        assertEquals("the runtime is never asked", 0, runtime.requests.size)
-        assertEquals("and the tool never runs", 0, tool.invocations.size)
-        assertEquals(ToolCallState.FAILED, execution.outcome.state)
+        assertEquals("the tool runs once the user approves", 1, tool.invocations.size)
+        assertEquals("through the runtime, exactly once", 1, runtime.requests.size)
+        assertEquals(ToolCallState.COMPLETED, execution.outcome.state)
+        assertEquals(ToolApprovalState.Approved, execution.part?.approvalState)
         assertEquals("the publication is released", 0, receipts.pendingCount)
-        assertEquals(0, receipts.settledCount)
+    }
+
+    /** A refusal by the user is a conclusion, not a failure to answer: `denied`, and nothing ran. */
+    @Test
+    fun `an approval-gated call the user denies is reported denied and never runs`() = runBlocking {
+        val tool = RecordingTool("write_file", needsApproval = true)
+        val runtime = RecordingRuntime()
+        val receipts = ClaudePToolPublicationReceipts()
+        val waiters = InFlightApprovalWaiters()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts, waiters = waiters)
+        val sink = AuthoritySink(receipts, boundRunId) { key ->
+            receipts.complete(key, "approval-1", "execution-1")
+        }
+        waiters.onAwaitRegistration = {
+            waiters.signalDecided(
+                InFlightApprovalIdentity(
+                    approvalId = "approval-1",
+                    executionId = "execution-1",
+                    conversationId = context().conversationId,
+                    toolCallId = "call-1",
+                ),
+                InFlightApprovalOutcome.Decided(InFlightApprovalDecision.DENIED),
+            )
+        }
+
+        val execution = host.executeWithClaim(invocation("gen-1", "write_file"), sink)
+
+        assertEquals("a denied call never reaches the runtime", 0, runtime.requests.size)
+        assertEquals("and the tool never runs", 0, tool.invocations.size)
+        assertEquals(ToolCallState.DENIED, execution.outcome.state)
+        assertEquals(ToolApprovalState.Denied(), execution.part?.approvalState)
+    }
+
+    /**
+     * A generation that ends while the card is pending runs nothing, whatever the tap does later.
+     *
+     * The close abandons the approval before it stops anything, and this is that abandonment seen
+     * from the host: the wait ends with no decision, so the call is reported `failed` — it claims
+     * no execution and no stop, which is the only honest thing to say about a call that did not
+     * happen.
+     */
+    @Test
+    fun `a card abandoned by its generation's close is never run`() = runBlocking {
+        val tool = RecordingTool("write_file", needsApproval = true)
+        val runtime = RecordingRuntime()
+        val receipts = ClaudePToolPublicationReceipts()
+        val waiters = InFlightApprovalWaiters()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts, waiters = waiters)
+        val sink = AuthoritySink(receipts, boundRunId) { key ->
+            receipts.complete(key, "approval-1", "execution-1")
+        }
+        waiters.onAwaitRegistration = {
+            waiters.abandon(
+                InFlightApprovalIdentity(
+                    approvalId = "approval-1",
+                    executionId = "execution-1",
+                    conversationId = context().conversationId,
+                    toolCallId = "call-1",
+                ),
+                me.rerere.rikkahub.data.execution.InFlightApprovalAbandonReason.GENERATION_CLOSED,
+            )
+        }
+
+        val execution = host.executeWithClaim(invocation("gen-1", "write_file"), sink)
+
+        assertEquals(0, runtime.requests.size)
+        assertEquals(0, tool.invocations.size)
+        assertEquals(ToolCallState.FAILED, execution.outcome.state)
+        assertNull("nothing was concluded about a call that never ran", execution.part)
     }
 
     /** A barrier that rolled back is a refusal, and a refusal is never an execution. */
@@ -524,7 +687,7 @@ class ClaudePToolBridgeHostExecuteTest {
             receipts.refuse(key, "approval_authority_rollback")
         }
 
-        val execution = host.execute(invocation("gen-1", "write_file"), sink)
+        val execution = host.executeWithClaim(invocation("gen-1", "write_file"), sink)
 
         assertEquals("the runtime is never asked", 0, runtime.requests.size)
         assertEquals("and the tool never runs", 0, tool.invocations.size)
@@ -543,7 +706,7 @@ class ClaudePToolBridgeHostExecuteTest {
             receipts.abandonAll(ClaudePToolPublicationAbandonReason.TIMEOUT)
         }
 
-        val execution = host.execute(invocation("gen-1", "write_file"), sink)
+        val execution = host.executeWithClaim(invocation("gen-1", "write_file"), sink)
 
         assertEquals(0, runtime.requests.size)
         assertEquals(0, tool.invocations.size)
@@ -568,7 +731,7 @@ class ClaudePToolBridgeHostExecuteTest {
             ClaudePToolStatusPublication.Refused("tool_status_not_published")
         }
 
-        val execution = host.execute(invocation("gen-1", "write_file"), sink)
+        val execution = host.executeWithClaim(invocation("gen-1", "write_file"), sink)
 
         assertEquals("the sink is consulted once", 1, publishes)
         assertEquals(0, runtime.requests.size)
@@ -629,7 +792,7 @@ class ClaudePToolBridgeHostExecuteTest {
             ClaudePToolStatusPublication.Accepted
         }
 
-        val execution = host.execute(
+        val execution = host.executeWithClaim(
             invocation(
                 generationId = "gen-1",
                 toolName = "write_file",
@@ -653,7 +816,7 @@ class ClaudePToolBridgeHostExecuteTest {
         val runtime = RecordingRuntime()
         val host = boundHost(listOf(tool.tool), runtime)
 
-        val execution = host.execute(invocation("gen-unknown", "read_file"), ClaudePToolStatusSink.NONE)
+        val execution = host.executeWithClaim(invocation("gen-unknown", "read_file"), ClaudePToolStatusSink.NONE)
 
         assertEquals(0, runtime.requests.size)
         assertEquals(ToolCallState.FAILED, execution.outcome.state)
@@ -666,7 +829,7 @@ class ClaudePToolBridgeHostExecuteTest {
         val runtime = RecordingRuntime()
         val host = boundHost(listOf(tool.tool), runtime)
 
-        val execution = host.execute(invocation("gen-1", "delete_everything"), ClaudePToolStatusSink.NONE)
+        val execution = host.executeWithClaim(invocation("gen-1", "delete_everything"), ClaudePToolStatusSink.NONE)
 
         assertEquals(0, runtime.requests.size)
         assertEquals(ToolCallState.FAILED, execution.outcome.state)
@@ -685,7 +848,7 @@ class ClaudePToolBridgeHostExecuteTest {
         val runtime = RecordingRuntime()
         val host = boundHost(listOf(tool.tool), runtime, runControl = null)
 
-        val execution = host.execute(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
+        val execution = host.executeWithClaim(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
 
         assertEquals("no control means no execution", 0, runtime.requests.size)
         assertEquals(ToolCallState.FAILED, execution.outcome.state)
@@ -703,7 +866,7 @@ class ClaudePToolBridgeHostExecuteTest {
         val runtime = RecordingRuntime()
         val host = boundHost(listOf(tool.tool), runtime, subject = null)
 
-        val execution = host.execute(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
+        val execution = host.executeWithClaim(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
 
         assertEquals("an unresolvable subject must fail closed", 0, runtime.requests.size)
         assertEquals(ToolCallState.FAILED, execution.outcome.state)
@@ -730,7 +893,7 @@ class ClaudePToolBridgeHostExecuteTest {
             instance
         }
 
-        val execution = host.execute(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
+        val execution = host.executeWithClaim(invocation("gen-1", "read_file"), ClaudePToolStatusSink.NONE)
 
         assertEquals("the tool must not be invoked directly", 0, tool.invocations.size)
         assertEquals(ToolCallState.FAILED, execution.outcome.state)
@@ -744,7 +907,7 @@ class ClaudePToolBridgeHostExecuteTest {
         val host = boundHost(listOf(tool.tool), runtime)
 
         val published = mutableListOf<ClaudePToolStatusUpdate>()
-        host.execute(
+        host.executeWithClaim(
             invocation("gen-1", "read_file"),
             ClaudePToolStatusSink { update ->
                 published += update

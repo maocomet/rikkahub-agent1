@@ -1,5 +1,8 @@
 package me.rerere.rikkahub.data.claudep
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.claudep.BridgeToolExecution
@@ -11,7 +14,12 @@ import me.rerere.ai.provider.claudep.ClaudePToolPreparationRefusal
 import me.rerere.ai.provider.claudep.ClaudePToolStatusPublication
 import me.rerere.ai.provider.claudep.ClaudePToolStatusSink
 import me.rerere.ai.provider.claudep.ClaudePToolStatusUpdate
+import me.rerere.ai.provider.claudep.bridge.BridgeClaimRefusal
+import me.rerere.ai.provider.claudep.bridge.BridgeExecutionApproval
 import me.rerere.ai.provider.claudep.bridge.BridgeExecutionBindings
+import me.rerere.ai.provider.claudep.bridge.BridgeExecutionClaim
+import me.rerere.ai.provider.claudep.bridge.BridgeExecutionClaimResult
+import me.rerere.ai.provider.claudep.bridge.BridgeExecutionClaimant
 import me.rerere.ai.provider.claudep.bridge.BridgeExecutionHost
 import me.rerere.ai.provider.claudep.bridge.BridgeInvocation
 import me.rerere.ai.provider.claudep.bridge.BridgeLimits
@@ -20,6 +28,7 @@ import me.rerere.ai.provider.claudep.bridge.ToolCallState
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.ToolCallOrigin
+import me.rerere.rikkahub.data.ai.execution.ToolAssessmentRequest
 import me.rerere.rikkahub.data.ai.execution.ToolExecutionPlanRequest
 import me.rerere.rikkahub.data.ai.execution.ToolExecutionPlanResult
 import me.rerere.rikkahub.data.ai.execution.ToolPreExecutionDecision
@@ -30,6 +39,10 @@ import me.rerere.rikkahub.data.ai.tools.ToolExecutionContext
 import me.rerere.rikkahub.data.capability.CapabilitySubject
 import me.rerere.rikkahub.data.capability.SubjectType
 import me.rerere.rikkahub.data.execution.ApprovalContinuationMode
+import me.rerere.rikkahub.data.execution.InFlightApprovalDecision
+import me.rerere.rikkahub.data.execution.InFlightApprovalIdentity
+import me.rerere.rikkahub.data.execution.InFlightApprovalOutcome
+import me.rerere.rikkahub.data.execution.InFlightApprovalWaiters
 import me.rerere.rikkahub.toolcatalog.ToolCatalogSnapshot
 import kotlin.uuid.Uuid
 
@@ -131,6 +144,25 @@ class ClaudePToolBridgeHostImpl(
         conversationId: String,
         origin: ToolCallOrigin,
     ) -> CapabilitySubject? = { _, _, _ -> null },
+    /**
+     * The waiters the app's approval lifecycle releases, and the *same* instance the production
+     * graph gives `SecondUserApprovalLifecycle`.
+     *
+     * Two instances would mean a tap released into one map while the waiter sat on the other —
+     * which presents as a tool that hangs until its deadline despite the user having approved it.
+     * Defaulted to a fresh instance so a host constructed without the graph behaves exactly as it
+     * did before the in-flight path existed: nothing waits, so nothing is released.
+     */
+    private val inFlightWaiters: InFlightApprovalWaiters = InFlightApprovalWaiters(),
+    /**
+     * The app's records of what is running, and what the runtime proved about it.
+     *
+     * `null` means this host has no execution layer wired. Every question the bridge asks about a
+     * running call then answers "nothing can be proven", which is what makes a host without one
+     * report `failed` rather than claiming a stop — and is why the approval path refuses instead
+     * of publishing a card it could never conclude.
+     */
+    private val executionHost: ClaudePToolExecutionHost? = null,
 ) : ClaudePToolBridgeHost {
 
     /**
@@ -272,20 +304,42 @@ class ClaudePToolBridgeHostImpl(
             reason = ClaudePToolPublicationAbandonReason.GENERATION_CLOSED,
         )
         bindings.close(generationId)
+        // The generation's records are dropped here, and *after* the unbind above rather than
+        // before it: the unbind is what releases a host suspended on a receipt, and a record
+        // dropped first would leave that host waking into a state that no longer describes the
+        // call it was answering. The execution host's own entries are keyed by the Server's
+        // generation id, so this is the exact id and not a prefix search over runs.
+        executionHost?.forgetGeneration(generationId)
     }
 
     /**
      * Runs one admitted invocation through the app's existing runtime.
      *
-     * **Not implemented in this stage, and unreachable while the surface is closed.** With
-     * [offerCatalog] false the catalog is empty, so no `tool_snapshot` is sent, the Server never
-     * registers a bridge tool, and no `tool.invoke` can arrive. The answer below is the honest one
-     * for a call that reached a host with no executor behind it: `FAILED` claims no execution and
-     * no stop, which is strictly better than claiming a result.
+     * ## The three paths, and what they share
+     *
+     * A local read, a local write behind the existing approval, and an MCP tool are not three
+     * implementations here. They are one path with one branch in it: whether the app's own policy
+     * says this call needs a human decision, asked of the tool's own `needsApproval` against the
+     * **real** arguments exactly as every other provider asks it. Everything after that branch —
+     * the re-assessment, the claim, the runtime call, the gate, the outcome — is identical, which
+     * is what keeps an MCP tool from quietly acquiring a different policy from a local one.
+     *
+     * ## Why nothing runs without a claim
+     *
+     * A caller hands over an invocation, not a licence. Between that hand-over and this method
+     * reaching the runtime the call can be cancelled, time out, settle, or lose its generation —
+     * and none of that is visible in the object handed over. So immediately before the runtime is
+     * asked to run anything, the canonical invocation is claimed from the ledger, exactly once,
+     * and **that** object is what runs. If the claim is refused, nothing runs and this method
+     * reports `failed`: a call that did not happen must not be described as one that did.
+     *
+     * The claimant is supplied by the caller and is bound to the generation whose frame this is.
+     * There is no path here through which another generation's ledger could be reached.
      */
     override suspend fun execute(
         invocation: BridgeInvocation,
         status: ClaudePToolStatusSink,
+        claims: BridgeExecutionClaimant,
     ): BridgeToolExecution {
         // Every refusal below is the same answer, and it is `FAILED` rather than a guess: the call
         // was not run, and this host cannot say it stopped anything either. A `cancelled` would
@@ -324,96 +378,152 @@ class ClaudePToolBridgeHostImpl(
             selectedPrivilegedConversation = subject.type == SubjectType.LOCAL_SECOND_USER,
         )
 
-        // Whether this call needs a human decision is the existing policy's answer — the tool's own
-        // `needsApproval` against the real arguments, exactly as every other provider asks it. It
-        // is read, not re-derived: a second opinion here would be a second approval policy.
-        if (tool.needsApproval(invocation.arguments)) {
-            return publishPendingApproval(invocation, plan, status)
+        val runtime = toolRuntime ?: return unexecuted(invocation)
+
+        // Re-assessed here, against the arguments that actually arrived, and not merely once when
+        // the catalog was frozen. An assessment is a statement about *this* call — the policy
+        // effects the arguments imply and the security descriptor behind the name — and the frozen
+        // catalog could only ever have been a statement about the tool. A call the runtime will not
+        // accept must not be published, claimed or run.
+        val assessment = runtime.assess(
+            ToolAssessmentRequest(
+                toolName = invocation.toolNameForRuntime,
+                args = arguments,
+                context = executionContext,
+            ),
+        )
+        if (!assessment.accepted) return unexecuted(invocation)
+
+        // Whether this call needs a human decision is the existing policy's answer, read rather
+        // than re-derived: a second opinion here would be a second approval policy.
+        val approval = if (tool.needsApproval(invocation.arguments)) {
+            when (val gate = awaitApproval(invocation, plan, status, claims)) {
+                is ApprovalGate.Approved -> BridgeExecutionApproval.Granted(
+                    approvalId = gate.approvalId,
+                    executionId = gate.executionId,
+                )
+                // The user refused, and the refusal is a *conclusion about this call* — not a
+                // failure to answer it. It stops here: nothing is claimed and nothing runs, which
+                // is exactly what a denial means.
+                ApprovalGate.Denied -> return denied(invocation)
+                // No decision was observed, so nothing may run. The shape includes a cancel, a
+                // close, a peer that went away, a deadline, and a card that never reached the
+                // screen — each of which the ledger will describe more precisely if it ever asks.
+                ApprovalGate.NoDecision -> return unexecuted(invocation)
+            }
+        } else {
+            BridgeExecutionApproval.NotRequired
         }
 
-        // Nothing needed a decision, so the runtime may run it now. The status is published before
-        // the call so the conversation shows it as running while it is, and the result comes back
-        // through `BridgeToolExecution` below.
+        // The execution right, and the call it is a right to. Taken here deliberately: after the
+        // decision and immediately before the runtime, so a call that changed in the meantime is
+        // refused rather than executed under an approval it no longer matches.
+        val canonical = when (
+            val claim = claims.claim(claimRequest(invocation, plan, approval))
+        ) {
+            is BridgeExecutionClaimResult.Claimed -> claim.invocation
+            is BridgeExecutionClaimResult.Refused -> return unexecuted(invocation)
+        }
+
+        // Published before the call so the conversation shows it as running while it is. A denial
+        // of this publication is ignored on purpose: the user has already decided, and a status
+        // nobody could render must not turn a granted call into a refused one.
         status.publish(
             ClaudePToolStatusUpdate(
-                toolCallId = invocation.binding.toolCallId,
-                toolName = invocation.toolNameForRuntime,
-                arguments = invocation.arguments,
+                toolCallId = canonical.binding.toolCallId,
+                toolName = canonical.toolNameForRuntime,
+                arguments = canonical.arguments,
                 status = ClaudePToolCallStatus.RUNNING,
             ),
         )
 
-        val runtime = toolRuntime ?: return unexecuted(invocation)
-        val result = runtime.execute(
-            ToolExecutionPlanRequest(
-                toolCallId = invocation.binding.toolCallId,
-                toolName = invocation.toolNameForRuntime,
-                toolSchemaFingerprint = ToolCatalogSnapshot
-                    .fromDefinitions(listOf(tool))
-                    .entry(tool.name)
-                    ?.schemaFingerprint,
-                args = invocation.arguments,
-                executionContext = executionContext,
-                // The cancellable adapter when the app has one for this tool, and `null` otherwise —
-                // the same resolution the normal loop performs, so a tool that can really be stopped
-                // is stoppable here too and one that cannot says so honestly.
-                startableTool = toolStartableResolver.resolve(tool, executionContext),
-                // Always supplied. For an MCP tool this closure *is* the dispatch to `McpManager`,
-                // and for a local tool it is the app's own implementation — either way this host
-                // runs the tool it was handed rather than looking one up.
-                legacyExecute = { element -> tool.execute(element) },
-                runControl = runControl,
-                wallClockBudgetMs = plan.wallClockBudgetMs,
-                preExecutionGate = {
-                    gate.decide(invocation.toolNameForRuntime, arguments, executionContext)
-                },
-            ),
-        )
+        val serverGenerationId = canonical.binding.generationId
+        val toolCallId = canonical.binding.toolCallId
 
+        val result = try {
+            runtime.execute(
+                ToolExecutionPlanRequest(
+                    toolCallId = toolCallId,
+                    toolName = canonical.toolNameForRuntime,
+                    toolSchemaFingerprint = ToolCatalogSnapshot
+                        .fromDefinitions(listOf(tool))
+                        .entry(tool.name)
+                        ?.schemaFingerprint,
+                    // The canonical arguments, from the claimed invocation — never the frame's
+                    // copy and never a redacted one. What the Server sent and the ledger validated
+                    // is what the tool is given.
+                    args = canonical.arguments,
+                    executionContext = executionContext,
+                    // The cancellable adapter when the app has one for this tool, and `null`
+                    // otherwise — the same resolution the normal loop performs, so a tool that can
+                    // really be stopped is stoppable here too and one that cannot says so honestly.
+                    startableTool = toolStartableResolver.resolve(tool, executionContext),
+                    // Always supplied. For an MCP tool this closure *is* the dispatch to
+                    // `McpManager`, and for a local tool it is the app's own implementation —
+                    // either way this host runs the tool it was handed rather than looking one up,
+                    // so it never holds a server id, an OAuth state or a token.
+                    legacyExecute = { element -> tool.execute(element) },
+                    runControl = runControl,
+                    wallClockBudgetMs = plan.wallClockBudgetMs,
+                    preExecutionGate = {
+                        gate.decide(canonical.toolNameForRuntime, arguments, executionContext)
+                    },
+                ),
+            )
+        } catch (cancelled: CancellationException) {
+            // Two different cancellations arrive here and they must not be confused. If *this*
+            // coroutine is being cancelled the generation is ending and the cancellation belongs
+            // to it — rethrowing is the only correct move, and `ensureActive` is what tells the
+            // two apart. Otherwise the runtime cancelled the tool's own handle, because a
+            // `tool.cancel` or a run stop reached it.
+            currentCoroutineContext().ensureActive()
+            // Whether that stopped the work is the runtime's answer and not this method's. A stop
+            // it can prove is `cancelled`; anything else is `failed`, which claims nothing about a
+            // tool that may still be running and may still have a side effect.
+            val proven = executionHost?.proveStopForCancelledCall(serverGenerationId, toolCallId)
+            if (proven != null) executionHost.recordConclusion(serverGenerationId, toolCallId, proven)
+            return BridgeToolExecution(
+                outcome = proven ?: failedOutcome(toolCallId),
+                part = resultPart(canonical, approval, output = emptyList()),
+            )
+        }
+
+        val outcome = result.toOutcome(toolCallId)
+        executionHost?.recordConclusion(serverGenerationId, toolCallId, outcome)
         return BridgeToolExecution(
-            outcome = result.toOutcome(invocation.binding.toolCallId),
-            part = UIMessagePart.Tool(
-                toolCallId = invocation.binding.toolCallId,
-                toolName = invocation.toolNameForRuntime,
-                input = invocation.arguments.toString(),
-                output = result.output,
-                approvalState = ToolApprovalState.Auto,
-            ),
+            outcome = outcome,
+            part = resultPart(canonical, approval, output = result.output),
         )
     }
 
     /**
-     * Publishes a pending card and waits for the commit behind it to be acknowledged.
+     * Publishes the pending card and waits for the decision the user makes on it.
      *
-     * ## What this does, and what it deliberately stops short of
+     * ## The order, which is the whole of this method
      *
-     * It performs the publication half of the in-flight approval handshake: create the request,
-     * publish the pending status, wait for the receipt, release. The receipt is the *only* evidence
-     * that the card is applied and its barrier durably committed — the provider hands the chunk to
-     * a stream that does not wait for it (`ProviderTurnRunner` forwards through an unbounded
-     * channel), so a `publish` that returned says nothing at all, and neither does a `Refused`
-     * that did not.
-     *
-     * On success the returned receipt carries the approval's own `approvalId` and `executionId`,
-     * derived by the single authoritative site inside the authority's transaction. This host never
-     * derives them itself, and must not start: a second derivation is a second answer to "which
-     * approval is this?", and the one that reaches `InFlightApprovalWaiters` has to be the one the
-     * tap will match.
-     *
-     * ## Why nothing runs, even on a successful receipt
-     *
-     * Arming the waiter and running the tool are the next batch's, and this method ends where they
-     * begin rather than pretending otherwise. The answer is therefore [unexecuted]: this host
-     * published a card and did not run the call, which is precisely what `FAILED` claims.
-     *
-     * It is unreachable in production while [offerCatalog] is false — no snapshot means no bridge
-     * tool, which means no invoke.
+     * 1. Ask the ledger whether the call can still happen at all. Raising a card for a call that
+     *    has already been cancelled is asking the user to decide something that cannot occur.
+     * 2. Create the publication request and publish the pending status with the `IN_FLIGHT`
+     *    continuation — the token that tells the conversation authority an approval of this card
+     *    must release a waiter rather than create a resume command.
+     * 3. Wait for the **receipt**. `Accepted` says the status was handed over, not that anything
+     *    was shown or committed: the provider forwards through a channel that does not wait, so
+     *    only the authority's own acknowledgement means the card is durable.
+     * 4. Take the approval's identity from the receipt — produced by the single authoritative
+     *    derivation site inside the transaction, never derived here — register it with the
+     *    execution host, and wait.
+     * 5. Run only on an approval. A denial, an abandonment and a refused publication all mean the
+     *    same thing to the caller: nothing may run.
      */
-    private suspend fun publishPendingApproval(
+    private suspend fun awaitApproval(
         invocation: BridgeInvocation,
         plan: ClaudePToolExecutionPlan,
         status: ClaudePToolStatusSink,
-    ): BridgeToolExecution {
+        claims: BridgeExecutionClaimant,
+    ): ApprovalGate {
+        val host = executionHost ?: return ApprovalGate.NoDecision
+        val serverGenerationId = invocation.binding.generationId
+
         // Both identities, kept apart. `invocation.binding.generationId` is the **Server's**
         // generation — the one the frame arrived under — and `plan.runId` is the Android run
         // serving it. Binding the two together is what `openGeneration` recorded; this asserts
@@ -423,9 +533,8 @@ class ClaudePToolBridgeHostImpl(
         // The plan was found by `bindings.lookup(invocation.binding.generationId)` — an exact
         // lookup on the Server's id, with no search by conversation, assistant or recency — so
         // this is a confirmation of that lookup rather than a second, weaker one.
-        val serverGenerationId = invocation.binding.generationId
         if (publications.serverGenerationIdFor(plan.runId) != serverGenerationId) {
-            return unexecuted(invocation)
+            return ApprovalGate.NoDecision
         }
 
         // The invocation's own digest must agree with the binding the ledger admitted it under.
@@ -434,7 +543,7 @@ class ClaudePToolBridgeHostImpl(
         // arguments were swapped after admission while the binding was carried over. Either way
         // the digest recorded here would describe a call the ledger never admitted, and an
         // approval earned by the real call could be spent on a different one.
-        if (invocation.argsDigest != invocation.binding.argsDigest) return unexecuted(invocation)
+        if (invocation.argsDigest != invocation.binding.argsDigest) return ApprovalGate.NoDecision
 
         val publicationInvocation = ClaudePToolPublicationInvocation(
             serverGenerationId = serverGenerationId,
@@ -449,11 +558,17 @@ class ClaudePToolBridgeHostImpl(
             argsDigest = invocation.argsDigest,
         )
 
+        // Asked before anything is shown. The approval proof is deliberately absent here: no
+        // decision exists yet, and this question is about the call rather than about a decision.
+        if (claims.admissible(claimRequest(invocation, plan, BridgeExecutionApproval.NotRequired)) != null) {
+            return ApprovalGate.NoDecision
+        }
+
         // `null` means this invocation cannot be published: its run and generation were never
         // bound together, or this exact key is already live or settled-but-unreleased. Each is a
         // refusal rather than a replacement — a second entry under one key would give two waiters
         // one answer.
-        val request = publications.begin(publicationInvocation) ?: return unexecuted(invocation)
+        val request = publications.begin(publicationInvocation) ?: return ApprovalGate.NoDecision
 
         try {
             val published = status.publish(
@@ -470,28 +585,24 @@ class ClaudePToolBridgeHostImpl(
             )
             // A refusal means the card is not on screen, so nothing can be tapped, so nothing may
             // wait. Fail closed without waiting out the deadline.
-            if (published !is ClaudePToolStatusPublication.Accepted) return unexecuted(invocation)
+            if (published !is ClaudePToolStatusPublication.Accepted) return ApprovalGate.NoDecision
 
             return when (val receipt = request.await(plan.timeoutMs)) {
-                // Durable. The next batch arms the waiter with these identities and runs the call;
-                // this one reports the call unrun, because that is what happened.
                 is ClaudePToolPublicationOutcome.Committed -> {
-                    // The acknowledged record and the invocation about to be run must still be the
-                    // same call. Nothing is executed in this batch, so this cannot yet cost anyone
-                    // a tool run — which is exactly why it is asserted now, while it is still
-                    // checkable rather than load-bearing: the batch that does run the call will
-                    // find the guard already in place rather than a comment promising one.
+                    // The acknowledged record and the invocation about to be waited on must still
+                    // be the same call. The authority derived the ids from the card it committed,
+                    // so a disagreement here means the completion described a different call.
                     if (!request.invocation.sameCallAs(publicationInvocation)) {
-                        return unexecuted(invocation)
+                        return ApprovalGate.NoDecision
                     }
-                    unexecuted(invocation)
+                    awaitDecision(host, plan, publicationInvocation, receipt, status)
                 }
 
                 // Applied but not committed, or never answered, or answered with a wrong identity.
                 // All three mean the same thing to the caller: no decision may be waited on.
                 is ClaudePToolPublicationOutcome.Refused,
                 is ClaudePToolPublicationOutcome.Abandoned,
-                -> unexecuted(invocation)
+                -> ApprovalGate.NoDecision
             }
         } finally {
             // Whatever happened — including a cancellation of this coroutine — the key stops being
@@ -499,6 +610,122 @@ class ClaudePToolBridgeHostImpl(
             // so the map is not the thing that grows.
             publications.release(publicationInvocation.key)
         }
+    }
+
+    /**
+     * Registers the waiter for a committed approval, waits, and reads the decision.
+     *
+     * The identity is the authority's four fields and is never derived here: a second derivation
+     * is a second answer to "which approval is this?", and the one that reaches the waiter has to
+     * be the one the tap will match.
+     */
+    private suspend fun awaitDecision(
+        host: ClaudePToolExecutionHost,
+        plan: ClaudePToolExecutionPlan,
+        publicationInvocation: ClaudePToolPublicationInvocation,
+        receipt: ClaudePToolPublicationOutcome.Committed,
+        status: ClaudePToolStatusSink,
+    ): ApprovalGate {
+        val serverGenerationId = publicationInvocation.serverGenerationId
+        val toolCallId = publicationInvocation.toolCallId
+        val identity = InFlightApprovalIdentity(
+            approvalId = receipt.approvalId,
+            executionId = receipt.executionId,
+            conversationId = plan.conversationId,
+            toolCallId = toolCallId,
+        )
+
+        // Registration is where the close can still beat this call. A generation that began
+        // ending between the commit and this line has already abandoned the slot, and the answer
+        // is `false` — the caller must not wait, because nothing is coming.
+        if (!host.registerApproval(serverGenerationId, toolCallId, identity)) {
+            return ApprovalGate.NoDecision
+        }
+
+        try {
+            return when (val decision = inFlightWaiters.await(identity, plan.timeoutMs)) {
+                is InFlightApprovalOutcome.Decided -> when (decision.decision) {
+                    InFlightApprovalDecision.APPROVED -> {
+                        // Shown as approved while it runs, so the card does not claim a decision is
+                        // still pending for a call that is already on its way. A refusal of this
+                        // publication is ignored: the decision was already made, and failing to
+                        // render it must not turn a granted call into a refused one.
+                        status.publish(
+                            ClaudePToolStatusUpdate(
+                                toolCallId = toolCallId,
+                                toolName = publicationInvocation.toolName,
+                                arguments = kotlinx.serialization.json.JsonNull,
+                                status = ClaudePToolCallStatus.APPROVED,
+                            ),
+                        )
+                        ApprovalGate.Approved(receipt.approvalId, receipt.executionId)
+                    }
+                    InFlightApprovalDecision.DENIED -> ApprovalGate.Denied
+                }
+
+                // A timeout, a close, a cancel, a disconnect or a registry close. All of them are
+                // "no decision was observed", and none of them may be read as consent.
+                is InFlightApprovalOutcome.Abandoned -> ApprovalGate.NoDecision
+            }
+        } finally {
+            host.forgetApproval(serverGenerationId, toolCallId)
+            // Drops an undelivered decision or abandonment for this identity. It deliberately does
+            // not clear the waiters' settled record: forgetting that a decision happened is
+            // exactly the state in which a duplicate tap becomes a second execution.
+            inFlightWaiters.forget(identity)
+        }
+    }
+
+    /**
+     * The claim this host will ask for, built from the invocation it was handed and the plan it
+     * resolved. One construction site, so the request `admissible` is asked and the request
+     * `claim` is asked cannot describe different calls.
+     */
+    private fun claimRequest(
+        invocation: BridgeInvocation,
+        plan: ClaudePToolExecutionPlan,
+        approval: BridgeExecutionApproval,
+    ) = BridgeExecutionClaim(
+        serverGenerationId = invocation.binding.generationId,
+        runId = plan.runId,
+        toolCallId = invocation.binding.toolCallId,
+        toolName = invocation.toolNameForRuntime,
+        argsDigest = invocation.argsDigest,
+        binding = invocation.binding,
+        approval = approval,
+    )
+
+    /** The result part for a call that reached a terminal, shaped by what actually happened. */
+    private fun resultPart(
+        canonical: BridgeInvocation,
+        approval: BridgeExecutionApproval,
+        output: List<UIMessagePart>,
+    ) = UIMessagePart.Tool(
+        toolCallId = canonical.binding.toolCallId,
+        toolName = canonical.toolNameForRuntime,
+        input = canonical.arguments.toString(),
+        output = output,
+        // `Approved` only where a human really approved it. A call that needed no decision says
+        // `Auto`, which is what the ordinary agent loop writes for the same case.
+        approvalState = when (approval) {
+            BridgeExecutionApproval.NotRequired -> ToolApprovalState.Auto
+            is BridgeExecutionApproval.Granted -> ToolApprovalState.Approved
+        },
+    )
+
+    private fun failedOutcome(toolCallId: String) =
+        ToolCallOutcome(toolCallId, ToolCallState.FAILED)
+
+    /** What waiting for the user produced. A closed set, so an unhandled outcome cannot compile. */
+    private sealed interface ApprovalGate {
+        /** A human approved this exact call, with the authority's own identity for it. */
+        data class Approved(val approvalId: String, val executionId: String) : ApprovalGate
+
+        /** A human refused it. Nothing runs, and the call is reported `denied`. */
+        data object Denied : ApprovalGate
+
+        /** No decision was observed. Nothing runs, and the call is reported `failed`. */
+        data object NoDecision : ApprovalGate
     }
 
     /**
@@ -517,15 +744,38 @@ class ClaudePToolBridgeHostImpl(
     )
 
     /**
-     * The execution host a closing generation uses to stop what is running and find out what
-     * really happened.
+     * The app's records, for a closing generation to stop what is running and find out what really
+     * happened.
      *
-     * Still [BridgeExecutionHost.NONE] in this stage, for the same reason [execute] is: nothing
-     * this host can offer is running, so there is nothing to stop and nothing to prove. It becomes
-     * the real host — over `ClaudePToolRunControls` and the runtime's own `ToolExecutionHandle` —
-     * in the same change that makes [execute] real.
+     * [BridgeExecutionHost.NONE] when no execution host is wired, which proves nothing and stops
+     * nothing — so every call a close asks about concludes `failed`. That is the conservative
+     * answer and the correct one for a host with no executor behind it, and it is what keeps a
+     * wiring omission from being reported as a proven stop.
      */
-    override val executions: BridgeExecutionHost = BridgeExecutionHost.NONE
+    override val executions: BridgeExecutionHost = executionHost ?: BridgeExecutionHost.NONE
+
+    /**
+     * The answer for a call the user refused.
+     *
+     * `DENIED` is a conclusion about the call rather than a failure to answer it, and it is
+     * returned with the part that carries the refusal, so the conversation shows the decision the
+     * user actually made instead of a card left pending. Nothing was claimed and nothing ran.
+     */
+    private fun denied(invocation: BridgeInvocation): BridgeToolExecution = BridgeToolExecution(
+        outcome = ToolCallOutcome(
+            toolCallId = invocation.binding.toolCallId,
+            state = ToolCallState.DENIED,
+        ),
+        part = UIMessagePart.Tool(
+            toolCallId = invocation.binding.toolCallId,
+            toolName = invocation.toolNameForRuntime,
+            input = invocation.arguments.toString(),
+            output = emptyList(),
+            // No reason text: the denial is the user's, and this side was not told why. Inventing
+            // one would put words in the mouth of the person who tapped "deny".
+            approvalState = ToolApprovalState.Denied(),
+        ),
+    )
 
     private companion object {
         /**

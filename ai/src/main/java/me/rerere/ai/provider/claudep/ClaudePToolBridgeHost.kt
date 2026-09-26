@@ -3,6 +3,7 @@ package me.rerere.ai.provider.claudep
 import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.claudep.bridge.BridgeCatalog
+import me.rerere.ai.provider.claudep.bridge.BridgeExecutionClaimant
 import me.rerere.ai.provider.claudep.bridge.BridgeExecutionHost
 import me.rerere.ai.provider.claudep.bridge.BridgeInvocation
 import me.rerere.ai.provider.claudep.bridge.FrozenCatalog
@@ -90,6 +91,26 @@ interface ClaudePToolBridgeHost {
          * to be shown and for the inert host.
          */
         status: ClaudePToolStatusSink = ClaudePToolStatusSink.NONE,
+        /**
+         * The execution right for this call, bounded to the generation that sent it.
+         *
+         * ## Why the app is handed a claimant rather than a ledger
+         *
+         * An invocation handed to `execute` is an invitation to run a call, not a licence: the
+         * approval that follows can take minutes, and the call can be cancelled, timed out,
+         * settled or re-delivered while it is open. So the app asks for the right immediately
+         * before it runs anything, and the ledger answers once.
+         *
+         * The claimant is created by this module, bound to **the generation whose frame is being
+         * answered**, and it is the only way the app can reach a ledger at all. There is no method
+         * anywhere that takes a conversation, an assistant, a tool call id or "the current run" and
+         * returns a plan, so the cross-generation search this whole design forbids has no
+         * expression — not in the app, and not in a later change to it.
+         *
+         * Defaults to the claimant that refuses everything. A host that is handed no claimant runs
+         * nothing, which is the correct answer for a caller that never had a ledger to ask.
+         */
+        claims: BridgeExecutionClaimant = BridgeExecutionClaimant.NONE,
     ): BridgeToolExecution
 
     /**
@@ -159,6 +180,7 @@ interface ClaudePToolBridgeHost {
             override suspend fun execute(
                 invocation: BridgeInvocation,
                 status: ClaudePToolStatusSink,
+                claims: BridgeExecutionClaimant,
             ): BridgeToolExecution =
                 BridgeToolExecution(
                     // Unreachable while the catalog is empty. If a wiring bug ever did reach it,

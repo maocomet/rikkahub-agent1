@@ -804,7 +804,16 @@ internal class ClaudePToolFrameHandler(
     ) {
         when (val decision = adapter.onInvoke(body.toolCallId, body.toolName, body.arguments)) {
             is BridgeInvokeDecision.Execute -> {
-                val execution = host.execute(decision.invocation, publishingStatusTo(emit))
+                // The adapter is handed over as the **claimant**, and it is the only ledger the
+                // app can reach: it is bound to the generation whose frame this is, so a call
+                // belonging to any other generation cannot be claimed through it. That binding is
+                // structural — the app is given a closure rather than a lookup key — which is why
+                // the cross-generation search this design forbids has no expression on that side.
+                val execution = host.execute(
+                    invocation = decision.invocation,
+                    status = publishingStatusTo(emit),
+                    claims = adapter,
+                )
                 // Shown before the answer is sent, so the conversation already holds the call
                 // when the terminal arrives and the two cannot be observed out of order.
                 //
