@@ -85,6 +85,46 @@ interface ClaudePToolBridgeHost {
      */
     val executions: BridgeExecutionHost
 
+    /**
+     * Binds the execution plan [prepare] produced to the generation id the Server just assigned.
+     *
+     * ## Why this is a step of its own
+     *
+     * The id does not exist when [prepare] runs. The catalog has to travel *in* `generation.start`
+     * — the Server freezes it there and will not accept a tool it did not name — so the
+     * preparation must be built before that frame is sent, and the id only comes back in its
+     * answer. There is therefore no instant at which both are in hand, and the honest structure
+     * is two steps rather than one.
+     *
+     * What makes the pair safe is where the second step sits: the provider calls this
+     * **immediately after `generation.start` returns and before the first frame is pumped**, so no
+     * `tool.invoke` can be read before the generation it names resolves to a plan. An
+     * implementation must key on this exact id and on nothing else; a lookup that searched by
+     * conversation, assistant or tool call id would let one generation's call be answered with
+     * another's context, which is the failure this whole binding exists to prevent.
+     *
+     * Returning `false` means the plan could not be bound — an expired, revoked or already
+     * released preparation. The caller must fail the generation rather than run it with tools it
+     * cannot answer, because the alternative is a peer blocked on a call nobody will conclude.
+     *
+     * The default is `true`: a host that keeps no per-generation state has nothing to bind, which
+     * is exactly [NONE]'s situation.
+     */
+    suspend fun openGeneration(generationId: String, preparation: ClaudePToolPreparation): Boolean = true
+
+    /**
+     * Releases the binding for a generation that has ended, for any reason.
+     *
+     * Called from the same `finally` that closes the tool registry, so a terminal, a cancellation,
+     * a disconnect and a provider failure all release it. Not suspending on purpose: it runs on a
+     * path that may already be cancelled, and a suspension point there is how a release gets
+     * skipped and a dead generation's context is kept alive.
+     *
+     * A no-op for a generation that was never bound, so it is safe on every path including the
+     * ones that never reached [openGeneration].
+     */
+    fun closeGeneration(generationId: String) = Unit
+
     companion object {
         /**
          * The host that has no tools, runs nothing and can prove nothing.
@@ -176,6 +216,23 @@ data class ClaudePToolPreparation(
      * "what bytes did we freeze?" — which is the disagreement the digest exists to catch.
      */
     val snapshot: JsonObject?,
+    /**
+     * The host's own handle to the execution plan behind this preparation, or `null`.
+     *
+     * [prepare] is handed a generation *identity* but not a generation *id* — the id is assigned
+     * by the Server, in the answer to the `generation.start` this preparation travels in. So a
+     * host that needs per-generation state readies it under a token of its own here, and
+     * [ClaudePToolBridgeHost.openGeneration] redeems that token for the real id once there is one.
+     *
+     * Opaque to this module by construction: it is never parsed, never compared against a
+     * protocol value, and never written to a frame, a prompt, a fingerprint or a log line. It is
+     * a process-local correlator and it dies with the preparation that carries it.
+     *
+     * `null` means the host readied nothing, which is the correct answer for the text path and
+     * for a refusal: neither has an execution plan to bind, and both leave
+     * [ClaudePToolBridgeHost.openGeneration] nothing to redeem.
+     */
+    val executionRef: String? = null,
     /**
      * Why no tools were offered, when the reason is a refusal rather than a choice.
      *

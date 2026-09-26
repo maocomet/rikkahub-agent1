@@ -250,7 +250,17 @@ class ClaudePProvider(
                     // or a disconnect. The close is what stops whatever the runtime is still doing
                     // for this generation and settles the calls by what it can **prove** — which
                     // is why it is here rather than in the happy path only.
-                    if (toolFrames != null) toolRegistry.close(handle.generationId)
+                    //
+                    // The execution binding is released here too, and for the same reason: a
+                    // cancelled flow, a terminal and a disconnect are all "this generation is
+                    // over", and a binding that outlived one would be a context still reachable
+                    // by an id nothing should be able to name again. Released before the registry
+                    // close, so a call the close is still settling is answered from a plan that is
+                    // still in hand rather than from one that has already been dropped.
+                    if (toolFrames != null) {
+                        toolHost.closeGeneration(handle.generationId)
+                        toolRegistry.close(handle.generationId)
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 // §8: an explicit cancel is the only thing that stops a remote generation. The
@@ -347,7 +357,7 @@ class ClaudePProvider(
      * the generation is the loud version of that, and loud is what this path has to be: the
      * alternative is a turn that appears to work and silently answers nothing.
      */
-    private fun openToolGeneration(
+    private suspend fun openToolGeneration(
         generationId: String,
         requestId: String,
         preparation: ClaudePToolPreparation,
@@ -366,6 +376,18 @@ class ClaudePProvider(
 
         val adapter = toolRegistry.open(binding, preparation.catalog).adapterOrNull
             ?: throw ClaudePGatewayException(ClaudePErrorCode.PROTOCOL_MISMATCH)
+
+        // Bound here — after the ledger exists and before the first frame is pumped — so there is
+        // no instant in which an invoke could be read for a generation whose execution plan is not
+        // yet in hand. A host that cannot bind it is refusing to answer tools it would otherwise
+        // have told Claude about, and a generation that cannot be answered is failed loudly rather
+        // than run: the alternative is a peer blocked until the call's deadline.
+        if (!toolHost.openGeneration(generationId, preparation)) {
+            // The registry is closed as well as abandoned, not merely dropped: its tombstone is
+            // what stops a re-delivered invoke from looking fresh to a later adapter.
+            toolRegistry.close(generationId)
+            throw ClaudePGatewayException(ClaudePErrorCode.PROTOCOL_MISMATCH)
+        }
 
         return ClaudePToolFrameHandler(
             adapter = adapter,
