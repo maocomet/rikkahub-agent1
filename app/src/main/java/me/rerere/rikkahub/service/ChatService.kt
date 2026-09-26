@@ -1057,42 +1057,16 @@ class ChatService(
         conversationId: Uuid,
         origin: ToolCallOrigin,
         privilege: me.rerere.rikkahub.privilege.PrivilegedSessionContext? = null,
-    ): me.rerere.rikkahub.data.capability.CapabilitySubject {
-        if (privilege?.isPrivileged == true && privilege.expandLocalTools) {
-            return me.rerere.rikkahub.data.capability.CapabilitySubject(
-                id = requireNotNull(privilege.authoritySubjectId) {
-                    "second_user_authority_snapshot_missing"
-                },
-                type = me.rerere.rikkahub.data.capability.SubjectType.LOCAL_SECOND_USER,
-                privilegedConversationId = privilege.conversationId.toString(),
-            )
-        }
-        val type = when (origin) {
-            ToolCallOrigin.Telegram -> me.rerere.rikkahub.data.capability.SubjectType.TELEGRAM
-            ToolCallOrigin.WebServer -> me.rerere.rikkahub.data.capability.SubjectType.WEB
-            ToolCallOrigin.MCP -> me.rerere.rikkahub.data.capability.SubjectType.MCP
-            ToolCallOrigin.ExternalIntent ->
-                me.rerere.rikkahub.data.capability.SubjectType.EXTERNAL_AUTOMATION
-            // Workflow snapshots are introduced independently; do not claim a grant exists
-            // until the authoring path freezes it. Existing local workflows retain their
-            // current gate while this migration is rolled out.
-            ToolCallOrigin.TrustedWorkflow,
-            ToolCallOrigin.LocalChat,
-            ToolCallOrigin.SystemAssistant,
-            ToolCallOrigin.SystemAssistantKeyguard,
-            ToolCallOrigin.QuickCapture,
-            ToolCallOrigin.PetInteraction,
-            ToolCallOrigin.PetHandoffConfirmed,
-            ToolCallOrigin.PetHandoffAuto,
-            -> me.rerere.rikkahub.data.capability.SubjectType.LOCAL_ASSISTANT
-        }
-        val id = if (type == me.rerere.rikkahub.data.capability.SubjectType.LOCAL_ASSISTANT) {
-            assistant.id.toString()
-        } else {
-            "${type.name.lowercase()}:${assistant.id}:$conversationId"
-        }
-        return me.rerere.rikkahub.data.capability.CapabilitySubject(id = id, type = type)
-    }
+    ): me.rerere.rikkahub.data.capability.CapabilitySubject =
+        // The rule itself lives in `CapabilitySubjectResolver` so that the Claude P tool bridge
+        // host asks the same question of the same code rather than keeping a copy of it. This
+        // delegation preserves every existing call site and every existing answer.
+        me.rerere.rikkahub.data.capability.CapabilitySubjectResolver.resolve(
+            assistantId = assistant.id,
+            conversationId = conversationId,
+            origin = origin,
+            privilege = privilege,
+        )
 
     /**
      * The authority registry is intentionally fail-closed, but it used to be populated only by
