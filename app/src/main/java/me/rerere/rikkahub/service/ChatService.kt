@@ -3579,17 +3579,21 @@ class ChatService(
                 // text, the conversation fallback, the current page or a global. A field that
                 // cannot be read is left blank, and an incomplete identity makes the Claude P
                 // bridge refuse to offer tools rather than bind a call to the wrong generation.
-                claudePToolGenerationContext = me.rerere.ai.provider.claudep.ClaudePToolGenerationContext(
-                    runId = runControl?.runId?.toString().orEmpty(),
-                    commandId = authoritativeCommandId?.toString().orEmpty(),
-                    conversationId = conversationId.toString(),
-                    assistantId = assistant.id.toString(),
-                    branchId = generationLineage?.branchAnchorMessageId?.toString().orEmpty(),
-                    // The enum's own name, which is what the app's exact-match mapping compares.
-                    // Nothing normalises it here, so a token the bridge cannot map is a refusal
-                    // rather than a silently substituted origin.
-                    callOrigin = callOrigin.name,
-                ),
+                claudePToolGenerationContext =
+                    me.rerere.rikkahub.data.claudep.ClaudePToolGenerationContextFactory.build(
+                        runId = runControl?.runId,
+                        // The durable admitted command only. Never the run id standing in for it:
+                        // they are different identities and a substitution would bind a tool call
+                        // to a command that did not admit it.
+                        authoritativeCommandId = authoritativeCommandId,
+                        conversationId = conversationId,
+                        assistantId = assistant.id,
+                        branchId = generationLineage?.branchAnchorMessageId,
+                        // The enum's own name, which is what the app's exact-match mapping
+                        // compares. Nothing normalises it, so a token the bridge cannot map is a
+                        // refusal rather than a silently substituted origin.
+                        callOrigin = callOrigin,
+                    ),
                 // Read once per call so the surface that wrote the addendum (Telegram bot,
                 // anything else) gets its runtime context into the system prompt without
                 // having to plumb a parameter all the way through sendMessage. Returns null
