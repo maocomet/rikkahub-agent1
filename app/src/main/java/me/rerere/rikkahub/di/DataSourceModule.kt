@@ -1244,6 +1244,12 @@ val dataSourceModule = module {
     // instances would mean a decision released into one map while the waiter sat on the other,
     // which presents as a tool that hangs until its deadline despite the user having tapped.
     single { me.rerere.rikkahub.data.execution.InFlightApprovalWaiters() }
+    // The runs currently executing, by exact run id, and the *only* instance: `ConversationRuntime`
+    // publishes a run's control here when its job starts and withdraws it when that job completes,
+    // and the Claude P bridge looks one up by the run id its generation context carries. Two
+    // instances would mean a control published into one map while the bridge searched the other,
+    // which presents as a tool call that cannot be cancelled.
+    single { me.rerere.rikkahub.data.claudep.ClaudePToolRunControls() }
     single {
         me.rerere.rikkahub.data.execution.SecondUserApprovalLifecycle(
             database = get(),

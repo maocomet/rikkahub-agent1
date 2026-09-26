@@ -73,7 +73,24 @@ interface ClaudePToolBridgeHost {
      * until its deadline. An implementation that cannot produce an outcome must say so with
      * [ToolCallState.FAILED], which claims nothing.
      */
-    suspend fun execute(invocation: BridgeInvocation): BridgeToolExecution
+    suspend fun execute(
+        invocation: BridgeInvocation,
+        /**
+         * Where this call's status goes while it is still being decided.
+         *
+         * A tool that needs approval cannot be run until the user taps, and the card they tap must
+         * be in the conversation **before** the wait starts — which means it has to be published
+         * from inside this call, not returned from it. That is what this sink is for.
+         *
+         * A `Refused` answer is binding: nothing was shown, so nothing can be tapped, so the call
+         * must not run. See [ClaudePToolCallStatus] for the order the publication, the waiter and
+         * the execution have to happen in.
+         *
+         * Defaults to the sink that accepts everything, which is correct for a call that never has
+         * to be shown and for the inert host.
+         */
+        status: ClaudePToolStatusSink = ClaudePToolStatusSink.NONE,
+    ): BridgeToolExecution
 
     /**
      * The execution host a closing generation uses to stop what is running and to find out what
@@ -139,7 +156,10 @@ interface ClaudePToolBridgeHost {
                 context: ClaudePToolGenerationContext?,
             ): ClaudePToolPreparation = ClaudePToolPreparation.NONE
 
-            override suspend fun execute(invocation: BridgeInvocation): BridgeToolExecution =
+            override suspend fun execute(
+                invocation: BridgeInvocation,
+                status: ClaudePToolStatusSink,
+            ): BridgeToolExecution =
                 BridgeToolExecution(
                     // Unreachable while the catalog is empty. If a wiring bug ever did reach it,
                     // `failed` is the honest answer: it claims no execution and no stop.

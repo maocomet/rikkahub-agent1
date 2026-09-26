@@ -620,6 +620,13 @@ class ChatService(
     private val durableCommandQueue: DurableCommandQueue,
     private val secondUserApprovalLifecycle:
         me.rerere.rikkahub.data.execution.SecondUserApprovalLifecycle,
+    /**
+     * Where each run's control is published for the Claude P tool bridge to find by run id.
+     *
+     * Handed to every `ConversationRuntime` this service builds, so the run that is actually
+     * executing is discoverable while it runs and not afterwards.
+     */
+    private val claudePToolRunControls: me.rerere.rikkahub.data.claudep.ClaudePToolRunControls,
     private val toolExecutionGate: me.rerere.rikkahub.data.ai.ToolExecutionGate,
     private val toolRuntime: me.rerere.rikkahub.data.ai.execution.ToolRuntime,
     private val pluginToolCatalog: me.rerere.rikkahub.plugin.PluginToolCatalog,
@@ -1187,6 +1194,7 @@ class ChatService(
                             ),
                         )
                     },
+                    claudePToolRunControls = claudePToolRunControls,
                 )
                 createdRuntime
             }

@@ -892,6 +892,7 @@ val appModule = module {
             secondUserSecretVault = get(),
             durableCommandQueue = get(),
             secondUserApprovalLifecycle = get(),
+            claudePToolRunControls = get(),
             toolExecutionGate = get(),
             toolRuntime = get(),
             pluginToolCatalog = get(),

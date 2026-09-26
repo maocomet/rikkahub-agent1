@@ -30,6 +30,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import me.rerere.rikkahub.data.ai.GenerationRunControl
+import me.rerere.rikkahub.data.claudep.ClaudePToolRunControls
 import me.rerere.rikkahub.data.ai.tools.CancelRequestResult
 import me.rerere.rikkahub.data.ai.tools.ToolCancelReason
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingEventKind
@@ -170,6 +171,14 @@ class ConversationRuntime(
     private val onCancellationTimeout: (CommandEnvelope<out EmergencyCommand>, Throwable) -> Unit = { _, _ -> },
     private val hydrationTimeout: Duration = 30.seconds,
     private val cancellationGracePeriod: Duration = 5.seconds,
+    /**
+     * Where a run's control is published for the Claude P tool bridge to find.
+     *
+     * Optional so every existing construction keeps working without it: with `null` nothing is
+     * published and nothing is discoverable, which is the fail-closed default — a bridge that
+     * cannot find a run's control refuses to run its tools rather than guessing one.
+     */
+    private val claudePToolRunControls: ClaudePToolRunControls? = null,
 ) {
     private val parentJob = appScope.coroutineContext[Job]
     private val sessionJob = SupervisorJob(parentJob)
@@ -1839,6 +1848,11 @@ class ConversationRuntime(
             timing?.bindRun(control.runId)
         }
         val outcome = CompletableDeferred<RunOutcome>()
+        // Published **before** the job starts, so there is no instant in which this run could be
+        // serving a Claude P tool call while its control is not yet discoverable. The run id is the
+        // durable command id, which is the same value the generation context carries, so the
+        // lookup on the other side is by an identity both ends already agree on.
+        claudePToolRunControls?.register(control.runId.toString(), control)
         val job = sessionScope.launch(start = CoroutineStart.LAZY) {
             val result = try {
                 // Claim the durable row before executing. A failed claim must not run the
@@ -1912,7 +1926,17 @@ class ConversationRuntime(
         onRunJobChanged(job)
         _runtimeState.value = RuntimeState.Running
         refreshQueueStatus()
-        job.invokeOnCompletion { completionWakeup.trySend(Unit) }
+        job.invokeOnCompletion {
+            // Every completion path runs this — normal, cancelled and failed — which is the only
+            // "finally" a run is guaranteed to reach. Placed here rather than in the run-finished
+            // handler because that handler can decline a run it no longer considers active, and a
+            // control left behind by a superseded run would be found by nothing and leak.
+            //
+            // Identity-checked, so a late completion for a run whose id has since been reused
+            // cannot withdraw the newer run's control.
+            claudePToolRunControls?.unregister(control.runId.toString(), control)
+            completionWakeup.trySend(Unit)
+        }
         job.start()
     }
 

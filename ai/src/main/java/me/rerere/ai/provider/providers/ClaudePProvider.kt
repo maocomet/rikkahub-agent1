@@ -26,8 +26,13 @@ import me.rerere.ai.provider.claudep.ClaudePToolCancelBody
 import me.rerere.ai.provider.claudep.ClaudePToolFrames
 import me.rerere.ai.provider.claudep.ClaudePToolInvokeBody
 import me.rerere.ai.provider.claudep.ClaudePToolPreparation
+import me.rerere.ai.provider.claudep.ClaudePToolCallStatus
 import me.rerere.ai.provider.claudep.ClaudePToolQueryResultBody
+import me.rerere.ai.provider.claudep.ClaudePToolStatusPublication
+import me.rerere.ai.provider.claudep.ClaudePToolStatusSink
+import me.rerere.ai.provider.claudep.ClaudePToolStatusUpdate
 import me.rerere.ai.provider.claudep.toBridgeState
+import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.provider.claudep.bridge.BridgeCancelDecision
 import me.rerere.ai.provider.claudep.bridge.BridgeCompletion
 import me.rerere.ai.provider.claudep.bridge.BridgeContract
@@ -777,7 +782,7 @@ internal class ClaudePToolFrameHandler(
     ) {
         when (val decision = adapter.onInvoke(body.toolCallId, body.toolName, body.arguments)) {
             is BridgeInvokeDecision.Execute -> {
-                val execution = host.execute(decision.invocation)
+                val execution = host.execute(decision.invocation, publishingStatusTo(emit))
                 // Shown before the answer is sent, so the conversation already holds the call
                 // when the terminal arrives and the two cannot be observed out of order.
                 execution.part?.let { emit(toolCallChunk(it)) }
@@ -849,6 +854,44 @@ internal class ClaudePToolFrameHandler(
         val frame = ClaudePToolFrames.asOutboundResult(outcome) ?: return
         gateway.sendToolResult(generationId, frame)
     }
+
+    /**
+     * Puts a call's status into the conversation this generation is being streamed into.
+     *
+     * ## Why the host needs this at all
+     *
+     * A call that needs the user's approval cannot be run until they tap, and the card they tap has
+     * to be in the conversation **before** the wait begins — so it has to be published from inside
+     * `execute`, not returned from it. `BridgeToolExecution.part` is the *result*, and a result
+     * that only arrives after the decision is a decision nobody could make.
+     *
+     * ## Why a failure is reported rather than swallowed
+     *
+     * An emit that fails means the card is not on screen, so nothing can be tapped, so the call
+     * must not run. Returning [ClaudePToolStatusPublication.Refused] hands that fact back to the
+     * host, which is the only side that can act on it. A cancellation is not a failure to publish
+     * and is not converted into one: it is rethrown, because the generation is ending and the
+     * close is settling the call.
+     *
+     * ## Why only three of the statuses become a part
+     *
+     * These are the states in which the **user** has something to do or see about a call that is
+     * still open. The terminal ones are not rendered here — the call's outcome part comes back
+     * through `BridgeToolExecution`, which the app shaped and which carries whatever it decided.
+     */
+    private fun publishingStatusTo(emit: suspend (MessageChunk) -> Unit): ClaudePToolStatusSink =
+        ClaudePToolStatusSink { update ->
+            val part = update.asInterimToolPart()
+                ?: return@ClaudePToolStatusSink ClaudePToolStatusPublication.Accepted
+            try {
+                emit(toolCallChunk(part))
+                ClaudePToolStatusPublication.Accepted
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                ClaudePToolStatusPublication.Refused("tool_status_not_published")
+            }
+        }
 
     private fun toolCallChunk(part: UIMessagePart.Tool): MessageChunk = MessageChunk(
         id = generationId,
@@ -1039,4 +1082,37 @@ private fun List<UIMessage>.systemPromptOrNull(): String? {
         .map { it.text }
         .filter { it.isNotEmpty() }
     return system.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
+}
+
+/**
+ * The status as a tool part, for the states the user can act on, or `null` for the rest.
+ *
+ * File-level and `internal` so it can be tested directly: the mapping is the seam where a
+ * protocol-agnostic status becomes something a conversation can show, and a mistake in it is the
+ * kind that looks fine — a card that never appears, or one that claims a decision nobody made.
+ *
+ * The arguments are carried **verbatim** so the card shows what the peer actually asked for rather
+ * than a restatement of it. The approval state is set from the status alone: this decides nothing
+ * about whether the call may run, and a `Pending` part here is a request for a decision, never a
+ * decision. The terminal statuses have no part because the call's outcome part comes back through
+ * `BridgeToolExecution`, shaped by the app that ran it.
+ */
+internal fun ClaudePToolStatusUpdate.asInterimToolPart(): UIMessagePart.Tool? {
+    val approvalState = when (status) {
+        ClaudePToolCallStatus.PENDING_APPROVAL -> ToolApprovalState.Pending
+        ClaudePToolCallStatus.APPROVED -> ToolApprovalState.Approved
+        ClaudePToolCallStatus.DENIED -> ToolApprovalState.Denied()
+        ClaudePToolCallStatus.RUNNING,
+        ClaudePToolCallStatus.COMPLETED,
+        ClaudePToolCallStatus.FAILED,
+        ClaudePToolCallStatus.CANCELLED,
+        -> return null
+    }
+    return UIMessagePart.Tool(
+        toolCallId = toolCallId,
+        toolName = toolName,
+        input = arguments.toString(),
+        output = emptyList(),
+        approvalState = approvalState,
+    )
 }
