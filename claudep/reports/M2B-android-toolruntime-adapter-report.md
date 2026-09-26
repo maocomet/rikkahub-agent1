@@ -1878,3 +1878,276 @@ kind of defect that could run a tool. §12.4 remains the plan of record for C1, 
   absent from the batch's diff). No push, no CI dispatch, no deploy, no VPS, no model call, no
   phone, no M3. `git diff --check` clean; `web-ui/bun.lock` still the only untracked entry.
 - **Not `M2-B complete`.** §5–§7 remain.
+
+---
+
+# 15. The batch that runs tools: claim, execution host, three paths, lifecycle
+
+- Base of this batch: `f8bcab79` (the docs-only hardening record; kept, not rewritten)
+- Tip after this batch: `4e1035be`
+- Commits this batch: `a9ceb0e6`, `d0f528a0`, `f4dc2475`, `29c00e03`, `47363302`, `28360e03`,
+  `4e1035be`
+- Pushed: **no**. No CI dispatch, no deploy, no VPS connection, no model call, no tool side effect,
+  no phone. Server read-only. No M3 work.
+- Snapshot: **still closed.** `offerCatalog = false` at the one construction site, now inside a
+  labelled ACTIVATION block and guarded by a test.
+
+This is the batch §14.5 stopped short of, and §12.4/§11.6 called for. It implements the
+`claimForExecution` ruling, the real `BridgeExecutionHost`, the production DI, the three execution
+paths, and the lifecycle — and it does **not** open the surface, because the managed-device evidence
+the plan requires does not exist yet.
+
+## 15.1 Preflight
+
+Read-only, before anything was written.
+
+| Claim | Result |
+|---|---|
+| Branch is `codex/claudep-cp1b-local` | yes |
+| HEAD is `f8bcab79` | yes |
+| `c6f84fc4`, `05db8a4c`, `d7eb1c75`, `d4473ab7`, `9cbb776e`, `33962acc`, `f272e567`, `37c5eea2` all ancestors | yes, all eight |
+| `origin/codex/claudep-cp1b-local` | `c6f84fc4` — local is ahead by the later, unpushed commits |
+| Only `web-ui/bun.lock` untracked | yes |
+| `git diff --check` | clean |
+
+No reset, rebase, amend or history rewrite. `web-ui/bun.lock` was not read, modified, staged or
+deleted.
+
+## 15.2 The claim, and what it is allowed to be built from
+
+Commit `a9ceb0e6`. An approval is a decision, not a licence to run the object the caller was
+holding: between the invoke that admitted a call and the tap that approves it, the call can be
+cancelled, time out, settle, lose its peer, or be re-delivered — and none of that is visible in the
+`BridgeInvocation` the caller kept.
+
+So the ledger keeps the canonical invocation it validated and hands it back **exactly once**:
+
+- `InvocationRecord` stores the canonical `BridgeInvocation`; the claim returns **that instance**,
+  not a value reassembled from a frame, a UI part, a conversation message or a redacted copy. The
+  test asserts identity (`assertSame`) rather than equality, because a rebuild that happened to
+  match would pass equality while being the thing that must not happen.
+- The read, the decision and the write are one critical section. A duplicate caller gets
+  `ALREADY_CLAIMED`; "executed exactly once" is a property of the ledger, not of every caller's
+  restraint.
+- Refusals are explicit and local: `CONFLICT` (the claim disagrees with the canonical call),
+  `NOT_FOUND` (no record — the restart answer), `CANCELLED` (a cancel or a closing generation),
+  `TIMED_OUT` (the record's own stored instant), `INTERRUPTED` (already settled, or no canonical
+  invocation to prove), `APPROVAL_REQUIRED`, `REFUSED`, `ALREADY_CLAIMED`. None travels; the
+  contract has no word for "Android declined to start a call", and every one is reported `failed`.
+- `admissible` asks the same questions without taking the right, so a card is never raised for a
+  call that can no longer happen.
+- `BridgeToolAdapter` **is** the claimant, so the right is scoped to one generation's ledger by
+  construction: there is no method that reaches a ledger by naming a conversation, an assistant or
+  "the run executing now".
+
+`BridgeLedger` is synchronized for the first time. It was driven from one coroutine; a claim is
+answered from another and a close settles from a third.
+
+### Where the run-id and pairing half lives, stated exactly
+
+The ledger never learns an Android run id, so `runId` cannot be compared *there*. What is checked,
+and where:
+
+| Question | Where it is answered | Failure |
+|---|---|---|
+| Is this claim's call the one the ledger admitted? | `BridgeRules.claim`, whole-binding equality | `CONFLICT` |
+| Is this Server generation the adapter's? | `BridgeToolAdapter.claim` | `CONFLICT` |
+| Does this generation still have a run serving it? | `ClaudePToolBridgeHostImpl.execute`, re-checked immediately before the claim | refused, `FAILED` |
+| Is that run live? | `ClaudePToolRunControls.find(plan.runId)` | refused, `FAILED` |
+| Is the generation still open? | `BridgeToolAdapter`'s `closing`, read under the same lock the claim takes | `CANCELLED` |
+
+The claim's `runId` is therefore an assertion the app makes about a pairing it owns, and the ledger
+records it for diagnostics without re-deriving it. That is stated rather than implied: a claim
+cannot *by itself* prove a run id, and inventing a check that pretends otherwise would be a second
+answer to "which run is this?".
+
+## 15.3 The execution host
+
+`ClaudePToolExecutionHost` (`:app`) is a **view** over things the app already owns. It creates
+nothing: the run control is `ConversationRuntime`'s, the waiter is the approval lifecycle's, and
+every method either delegates to those or reports what they said.
+
+- `requestStop` asks `GenerationRunControl.requestCancelTool` — the runtime's own capability.
+- `awaitConclusions` reports two things and nothing else: a **recorded conclusion** (the runtime
+  returned a terminal and this host wrote it down) verbatim, and a **proven stop**
+  (`ToolTerminationState.StoppedConfirmed`) as `cancelled`. Everything else is absent, and the
+  bridge concludes those `failed`.
+- `abandon` reaches all three pending states of one call in one place: the publication, the
+  approval waiter, and the slot that makes a registration arriving afterwards refuse.
+
+## 15.4 The three paths, and the one branch between them
+
+A local read, a local write behind the existing approval, and an Android MCP tool are not three
+implementations. They differ in exactly one place — whether the tool's own `needsApproval`, asked
+against the **real** arguments, says a human must decide — and everything after that branch is the
+same code: re-assess with the runtime, claim, run through `DefaultToolRuntime`, gate through the
+shared `ToolExecutionGate`, report.
+
+The MCP credential requirement is met by **not handling credentials at all**: an MCP tool's
+`execute` closure already dispatches to `McpManager`, and the host runs the closure it was handed.
+It never holds a server id, an OAuth state or a token, so there is nothing to filter and nothing to
+leak. §15.10 states what that does and does not prove.
+
+## 15.5 The approval path, as implemented
+
+`admissible` → publish the card with `pendingContinuation = IN_FLIGHT` → wait for the **receipt** →
+register the authority's own `approvalId`/`executionId` → wait → **claim** → run.
+
+- Nothing is published for a call `admissible` refuses, so a card is never raised for a call that
+  cannot happen.
+- A denial reports `denied` with the part that carries the refusal; an abandonment reports `failed`
+  and runs nothing. Neither is read as consent.
+- A host with no execution layer publishes **nothing** and refuses, rather than asking the user to
+  decide something nothing can act on.
+
+## 15.6 Lifecycle
+
+| Case | How it ends |
+|---|---|
+| cancel before publication | the ledger's `cancelPropagated` refuses `admissible`; nothing is published, nothing runs |
+| cancel pending receipt | `cancelPublication` ends the wait; the host wakes to `Abandoned` and runs nothing |
+| cancel pending approval | `abandon` releases the waiter with `CANCELLED`; the wait ends with no decision |
+| cancel during execution | the runtime cancels its handle; `cancelled` only if the handle proves a stop, else `failed` |
+| cancel after terminal | the record is already terminal; the outcome stands and is not re-sent |
+| timeout | the record's stored instant refuses the claim; the wait ends `TIMED_OUT` |
+| disconnect / provider terminal / registry close | one `finally`: the pairing is retired, the registry close abandons approvals, requests stops, waits bounded, and settles by what was proven |
+
+## 15.7 Replay and query
+
+A re-delivered `tool.invoke` finds its record and replays the recorded outcome; nothing runs. A
+`tool.query` is answered from this generation's own ledger by an exact tool call id: it does not
+execute, does not re-dispatch, and does not read a clock — so a caller cannot extend a call's life
+by asking about it repeatedly, and a call this process never admitted answers `not_found` rather
+than becoming a re-run.
+
+## 15.8 Production DI
+
+One `single<ClaudePToolBridgeHost>`, given the runtime, the run controls, the receipt registry, the
+in-flight waiters, the shared gate, the cancellable-tool resolver, the execution host, and the app's
+own subject rule. `ClaudePToolSubjectSource` reads the conversation, the live assistant and
+`DefaultPrivilegedSessionResolver` rather than re-deriving a second user from a string; every
+failure answers `null`, which the host treats as a refusal to execute — never as a permissive
+default, because an absent subject **widens** what the gate permits.
+
+The execution host's `runIdFor` is `ClaudePToolPublicationReceipts.runIdFor`, the reverse of the
+same association `openGeneration` records and `closeGeneration` retires. It is the same map, not a
+second table keyed the other way: two tables are two answers to "which run serves this generation?".
+
+## 15.9 Activation preparation, and why it is not activation
+
+`offerCatalog` is `false`, in a labelled ACTIVATION block that names what the flag gates, what is
+already wired, and the one thing not yet true: the managed-device suite has been written and gated
+and has **not been executed**. `ClaudePToolActivationStateTest` reads the binding and fails if the
+flag stops being `false`, so activation cannot happen silently as a side effect of another change,
+and asserts that every dependency the execution paths need is already bound — which is what makes
+"just flip the boolean" a checkable claim rather than a hope.
+
+## 15.10 Evidence, and what each kind is
+
+| Claim | Kind of evidence |
+|---|---|
+| The ledger's claim rules | **executed** — `BridgeExecutionClaimTest`, 21 tests |
+| The host builds a claim the real ledger admits | **executed** — `ClaudePToolExecutionClaimTest`, 14 tests, claimant is a real `BridgeToolAdapter` |
+| Lifecycle, close, replay, query, catalog fields | **executed** — `ClaudePToolLifecycleTest`, 17 tests |
+| The three paths through the runtime | **executed** — `ClaudePToolBridgeHostExecuteTest`, 22 tests |
+| One instance of everything shared, none overridable | **executed, definitions only** — `ClaudePToolProductionWiringTest`, 3 tests |
+| The surface is closed | **executed, source read** — `ClaudePToolActivationStateTest`, 2 tests |
+| The whole `:ai` module | **executed** — 726 tests, 0 failures, 0 errors, 0 skipped |
+| The `:app` claudep + execution suites | **executed** — 209 tests, 0 failures, 0 errors, 0 skipped |
+| The approval barrier against real SQLite | **compiled and gated, NOT executed** — `ClaudePToolApprovalInstrumentationTest` |
+| The production Koin graph instantiates | **not executed here** — `ClaudePKoinGraphTest`'s job on a managed device |
+
+### 15.10.1 Three limits, stated rather than implied
+
+**The managed device has not run.** The instrumentation class compiles
+(`:app:compileDebugAndroidTestKotlin` passes), is in the workflow's runner-arg whitelist, and is
+pinned by name and by an exact count of 6 in its own gate step. It has not executed: there is no
+emulator here, and this batch does not dispatch CI. So the atomicity, restart and
+continuation-mode claims are written and gated but **unproven**.
+
+**`ClaudePToolProductionWiringTest` reads definitions; it does not instantiate them.** A dependency
+cycle or a throwing constructor is invisible to it. That is what `ClaudePKoinGraphTest` covers, on
+a device.
+
+**The MCP credential claim is structural.** No test asserts "a token did not leak", because the
+host never receives one — the claim is that the dispatch lives inside the `Tool` closure, and the
+tests pin that the host runs the closure it was handed. Absence of a value is not something a test
+can observe; absence of a *path* is what the code establishes.
+
+### 15.10.2 One defect this batch introduced, and how it was found
+
+Commit `d0f528a0` added the claimant argument to `ClaudePToolBridgeHost.execute` and updated the
+`:app` suites. `:ai`'s **test** source set has its own `ClaudePToolBridgeHost` implementation
+(`ClaudePProviderBindingOrderTest.RecordingHost`), and it was left with the old signature — so that
+commit did not compile `:ai`'s tests, which the batch's own verification did not run. A full
+`:ai:testDebugUnitTest` found it, and `4e1035be` fixes it.
+
+It is recorded rather than quietly fixed because it is the same class of error §10.9 records: a
+change verified against one module's tests while another module's tests cannot see it. The
+difference is that this time the full module suite *was* run before finishing, and CI has not been
+asked to catch it instead.
+
+## 15.11 Boundary compliance
+
+- No Server file read or written. No Room schema, version or migration change;
+  `app/schemas/**/52.json` untouched. No new runtime dependency; no build file or version catalog
+  touched.
+- Workflow changes: three added lines to `build-debug-apk.yml`'s `--tests` filter and REQUIRED list,
+  and one added line plus one added gate step to `migration-instrumentation.yml`.
+- No push, CI dispatch, PR, tag, release or deploy. No VPS connection. No model call. No tool side
+  effect. No phone. No M3 work.
+- The snapshot is still closed: `offerCatalog = false`, so no `tool_snapshot` is sent and `execute`
+  remains unreachable in production.
+- `git diff --check` passes; the only working-tree entry is the pre-existing untracked
+  `web-ui/bun.lock`; every earlier landmark remains an ancestor and none was rewritten.
+
+## 15.12 Commits
+
+| commit | what |
+|---|---|
+| `a9ceb0e6` | `feat(claudep): claim a tool call's execution right from the ledger` |
+| `d0f528a0` | `feat(claudep): run bridged calls through the app's runtime, and prove what it did` |
+| `f4dc2475` | `feat(claudep): wire the one production host, and keep the surface closed` |
+| `29c00e03` | `feat(claudep): reach every ending a bridged call can have` |
+| `47363302` | `test(claudep): put the approval barrier on a real AppDatabase` |
+| `28360e03` | `chore(claudep): keep the surface closed, and make opening it deliberate` |
+| `4e1035be` | `fix(claudep): keep the binding-order suite compiling against the new seam` |
+
+## 15.13 Requested verdict
+
+The execution half exists, is wired, and is exercised: the claim is the ledger's, the host runs
+through the app's own runtime and gate, the three paths share one implementation, the approval is
+the in-flight one over the existing card, and every ending a call can have has a path and a test.
+
+**Not `M2-B complete`, and this batch does not claim it.** What is missing is the evidence, not the
+code:
+
+1. **The managed-device suite has not run.** It is written, compiling and gated; it needs CI
+   authorisation, which this batch does not have.
+2. **The activation itself has not happened.** `offerCatalog` is `false` and a test holds it there.
+
+Both are deliberate stops at the last self-consistent commit with the snapshot closed, which is the
+state the plan requires until a real device has answered.
+
+`M2-B Android ToolRuntime adapter implementation complete, awaiting Codex review` is **not**
+written, because item 1 is not a reviewer's to waive — the plan requires the managed-device
+evidence before activation, and activation is the last thing this stage does.
+
+## 15.14 The local regression state, and what is not this batch's
+
+The full `:app` unit suite was run, unfiltered, on this machine: **4026 tests, 1 failure, 1 skipped.**
+
+| | |
+|---|---|
+| `HardlineSelfPreservationTest > default hardline policy protects the installed application id` | **pre-existing.** Verified by running it against `f8bcab79` in a throwaway worktree detached from that commit — it fails there too, with no file from this batch present. No production file it touches (`HardlineCommandGuard`, `SelfPreservationPolicy`) and no build file appears in this batch's 20-file diff |
+| `LearningRestoreQuarantineTest > symbolicLinkAtExactDatabaseNameIsRejectedWhenPlatformSupportsLinks` | **skipped by the test itself** when the platform cannot create links. Also pre-existing, and the repo's own convention is that a skipped test is reported rather than silently counted as a pass |
+
+Both are recorded rather than excluded, because "1 failure, 1 skipped" and "0 failures" are
+different facts and a reader is entitled to see which one this batch is responsible for. Neither
+is fixed here: they are not this batch's business, and fixing them would put an unreviewed change
+inside a batch about the Claude P bridge.
+
+The temporary worktree used for that check was removed afterwards; `git worktree list` is back to
+the two CP1 worktrees plus the main one.
+
+- **Not `M2-B complete`.** §15.13's two items stand.
