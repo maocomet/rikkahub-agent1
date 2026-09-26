@@ -2151,3 +2151,289 @@ The temporary worktree used for that check was removed afterwards; `git worktree
 the two CP1 worktrees plus the main one.
 
 - **Not `M2-B complete`.** §15.13's two items stand.
+
+---
+
+# 16. The gates, and the activation
+
+- Base of this batch: `b2ed077c` (this batch's own tip, the closed-surface SHA)
+- Tip after this batch: `5c3e81ad` (the activation commit)
+- Commits this batch: `676a7895` (the DEX fix), `5c3e81ad` (the activation)
+- Pushed: **yes**, both, fast-forward. `origin/codex/claudep-cp1b-local` is `5c3e81ad`.
+- CI: **three runs, all on `workflow_dispatch`, all attempt 1, no reruns.** Two green, one failed and
+  is the reason this batch exists.
+- No deploy, no VPS, no model call, no phone, no PR/tag/release, no M3. Server read-only.
+
+## 16.1 Phase A — preflight
+
+Read-only, before anything was pushed. All of it held: branch `codex/claudep-cp1b-local`, HEAD
+`b2ed077c`, eight implementation commits after `f8bcab79`, `git diff --check` clean, every landmark
+an ancestor, only `web-ui/bun.lock` untracked, and `origin/codex/claudep-cp1b-local` an ancestor of
+HEAD (so the push could only be a fast-forward).
+
+The state checks that mattered:
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| the snapshot is closed | `offerCatalog = false` in `DataSourceModule.kt` | yes, line 1607 |
+| production DI is wired | the binding names all nine: `deviceRefProvider`, `toolRuntime`, `runControls`, `toolStartableResolver`, `gate`, `publications`, `inFlightWaiters`, `executionHost`, `subjectFor` | yes |
+| the guard requires closed | `ClaudePToolActivationStateTest` matches `offerCatalog\s*=\s*false` | yes |
+| new classes are in the real filters | 8 `:ai` `--tests` (with the `me.rerere.ai.provider.claudep.*` glob) and 16 `:app`, the new four in the **last** `:app:testDebugUnitTest` invocation | yes |
+| new classes are in `REQUIRED` | 46 entries, 5 new | yes |
+| the instrumentation class is whitelisted and pinned | `CLASSES=…` plus a gate step with `EXPECTED_TESTS=6` | yes |
+| no drift | no `.gradle`, `libs.versions.toml`, `schemas/`, `AppDatabase` or Room path in the diff | yes |
+
+## 16.2 Run 1 — closed surface, and it was green
+
+| | |
+|---|---|
+| Run ID | `36248022513` |
+| URL | https://github.com/maocomet/rikkahub-agent1/actions/runs/36248022513 |
+| Workflow | `build-debug-apk.yml`, `workflow_dispatch` |
+| SHA | `b2ed077c98806b4de96deba7512ba74042b51134` |
+| Attempt | 1 (no rerun) |
+| Conclusion | **success** |
+
+Read from the run's own log and JUnit XML rather than its summary:
+
+- **Compilation.** Step 9 ran `:ai:compileDebugKotlin` **and** `:app:compileDebugKotlin` for real
+  (not `UP-TO-DATE`), `BUILD SUCCESSFUL in 7m 42s`, zero `e:` lines.
+- **APK and fixed signature.** All three APKs verified against the fixed agent-test key,
+  `2f1965cf7447301f857ec222fb1996ac179b07c771d9b3a636bd0116fefffcc3` — the same fingerprint the
+  previous green run produced. `apksigner` was found, so this is a real comparison.
+- **Regression.** Steps 11–12: `BUILD SUCCESSFUL`, 38 classes executed.
+- **Required Claude P classes.** Step 14: **`All 46 required Claude P test classes executed.`**
+  Every one reported `0 skipped`, and the step's own gate only succeeds when each class has
+  `tests>0, failures=0, errors=0, skipped=0`. **No `::error` line appears anywhere in the run.**
+- **The batch's own classes, with the counts CI reported:**
+
+  | Class | Tests | Skipped |
+  |---|---|---|
+  | `BridgeExecutionClaimTest` (the ledger claim) | 21 | 0 |
+  | `ClaudePToolExecutionClaimTest` (the host's claim, real adapter) | 14 | 0 |
+  | `ClaudePToolLifecycleTest` (cancel / close / replay / query) | 17 | 0 |
+  | `ClaudePToolBridgeHostExecuteTest` (local read, MCP, approval) | 22 | 0 |
+  | `ClaudePToolProductionWiringTest` (one instance, none overridable) | 3 | 0 |
+  | `ClaudePToolActivationStateTest` (the guard) | 2 | 0 |
+  | `InFlightApprovalWaitersTest` | 20 | 0 |
+  | `ApprovalOwnerAdmissibilityTest` / `ApprovalContinuationModeTest` | 6 / 3 | 0 |
+
+- **Conformance.** Step 15: `SPEC_REVISION.json: OK`, every corpus manifest `OK`, the gate self-test
+  `8 cases behaved as expected`, and `ClaudePConformanceCorpusTest executed exactly 14 tests, none
+  skipped and none failing`.
+- **Conclusion:** `success`. Step 17 correctly skipped.
+
+The activation guard ran here and passed, which is the positive statement that the surface was
+closed **at this SHA** — asserted by CI, not by a reading.
+
+## 16.3 Run 2 — the managed device, and it failed
+
+| | |
+|---|---|
+| Run ID | `36248753890` |
+| URL | https://github.com/maocomet/rikkahub-agent1/actions/runs/36248753890 |
+| Workflow | `migration-instrumentation.yml`, `workflow_dispatch` |
+| SHA | `b2ed077c98806b4de96deba7512ba74042b51134` |
+| Attempt | 1 (no rerun) |
+| Conclusion | **failure** |
+
+**No device test executed.** The failure is step 9's, and it is a build failure:
+
+```
+ERROR: …/ClaudePToolApprovalInstrumentationTest.class: D8:
+  Space characters in SimpleName 'the barrier's four-field identity is exact'
+  are not allowed prior to DEX version 040
+> Task :app:dexBuilderDebugAndroidTest FAILED
+BUILD FAILED in 6m 36s
+```
+
+Steps 10–13 then failed as cascade — they read instrumentation XML that the failed build never
+produced; step 12's own gate said `tests=0 failures=0 errors=0 skipped=0` and `ran 0 tests,
+expected 6`, which is the correct fail-closed answer. Steps 14 and 15 report `success` only because
+they are `if: always()` and had nothing to assert on.
+
+**The defect is this batch's, and the reason it was missed is worth recording.** The six methods
+were written in the backtick style this repository uses for **JVM unit tests**, which are never
+dexed. `app/src/androidTest` sources are dexed, and the convention there is plain camelCase. A
+grep of all 73 androidTest files across every module found no other instance, so the class was the
+only one.
+
+Compiling was not enough: `:app:compileDebugAndroidTestKotlin` passed **locally and in CI**, and
+§15.10.1 recorded that the class "compiles" — true, and the wrong bar. `:app:assembleDebugAndroidTest`
+is the task that dexes, and it is the check that belongs in the local loop for any androidTest
+change. Until this run, nothing in this repository had ever dexed that file.
+
+## 16.4 The fix, and Run 3
+
+Commit `676a7895`. Six method names, nothing else: 6 insertions, 6 deletions, one file. No
+assertion, no setup or teardown, no test count, no production, Room, schema, workflow whitelist or
+expected-count change — which is what makes the exemption below sound rather than convenient.
+
+Verified locally before committing, with the task that actually dexes:
+
+- `:app:assembleDebugAndroidTest` — exit 0, `> Task :app:dexBuilderDebugAndroidTest` **executed**,
+  `BUILD SUCCESSFUL in 3m 56s`.
+- The instrumentation APK was produced: `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`,
+  2 333 230 bytes, `AndroidManifest.xml` and 14 `classes*.dex`.
+- The class is in `classes4.dex`, and `dexdump` lists exactly the six camelCase test methods plus
+  `setUp`, `tearDown` and the private helpers. No space-bearing name remains.
+
+**Run 3 — the managed device, green:**
+
+| | |
+|---|---|
+| Run ID | `36249869782` |
+| URL | https://github.com/maocomet/rikkahub-agent1/actions/runs/36249869782 |
+| Workflow | `migration-instrumentation.yml`, `workflow_dispatch` |
+| SHA | `676a78957b6419ff40f9f5371232fb33b428713a` |
+| Attempt | 1 (no rerun) |
+| Conclusion | **success** |
+
+- **D8 succeeded**, and the emulator ran: `Installing AOSP ATD Intel x86_64 … android-35/aosp_atd/x86_64`,
+  then `Starting 41 tests on p5DisposablePixel6Api35`.
+- **`total=41 passed=41 failures=0 errors=0 skipped=0`.**
+- **The barrier suite:** `ClaudePToolApprovalInstrumentationTest: tests=6 failures=0 errors=0 skipped=0`,
+  with all six named `PASS`.
+- **No regression:** `ClaudePKoinGraphTest: tests=7 … skipped=0`; `Migration_51_52_Test: tests=4 …
+  skipped=0`; and migrations 49→50, 50→51, every-adjacent, V50 backup/restore, reconciler grant
+  restore and the space cascade all `PASS`.
+- No `##[error]` anywhere.
+
+### 16.4.1 What the device proved, and what it did not
+
+The nine items the batch was asked to confirm are **not** all device-proven, and saying so is part
+of the result. Four are:
+
+| Item | Device test |
+|---|---|
+| exact approval identity | `theBarriersFourFieldIdentityIsExact` |
+| a decision applies to the exact version | `aDecisionIsAppliedToTheExactVersionTheRecordCarried` |
+| ordinary assistant + `IN_FLIGHT` barrier | `anInFlightBarrierReadsBackAsInFlightAndALegacyRowDoesNot` |
+| `IN_FLIGHT` not resumed after a restart | `aPendingBarrierSurvivesARestartUnchangedAndIsNotResumedByStorage` |
+| card and barrier in one transaction / rollback leaves neither | `aBarrierAndItsExecutionRecordAreWrittenInOneTransaction` |
+| a pending barrier is what recovery sweeps | `anUnresolvedBarrierIsWhatARecoverySweepFinds` |
+
+The rest are **JVM-proven, not device-proven**, and the distinction is not cosmetic:
+`approval-before-await` and `await-before-approval` (`InFlightApprovalWaitersTest`, 20);
+`ordinary assistant + RESUME_COMMAND refused` (`ApprovalOwnerAdmissibilityTest`, 6);
+`second user + RESUME_COMMAND preserved` (`ApprovalContinuationModeTest`, 3); and the
+"receipt succeeds only after commit" / "the runtime did not execute on rollback" halves
+(`ClaudePToolPublicationReceiptsTest`, 28, and `ClaudePToolBridgeHostExecuteTest`, 22).
+
+The instrumentation suite covers the **storage** half of the barrier against real SQLite — which is
+what a JVM test genuinely cannot reach. The receipt-timing half would need a live conversation
+pipeline; it is JVM-tested plus source-placed, and it is not claimed as device evidence here.
+
+## 16.5 The Gate 1 exemption, and why it was sound
+
+Gate 1 was **not** re-run on `676a7895`. The justification, recorded as required: the parent
+`b2ed077c` carries a complete Gate 1 success; the new diff changes only androidTest method
+identifiers; it touches no main source, no JVM test and no APK production content; and the final
+activation SHA still gets a full `build-debug-apk.yml`. The condition attached to the exemption —
+that the diff be exactly the six method names — held: 6 insertions, 6 deletions, one file, and no
+workflow file in it.
+
+## 16.6 The activation
+
+Commit `5c3e81ad`, created only after Run 3 succeeded.
+
+- `offerCatalog` goes from `false` to `true`, inside the labelled ACTIVATION block, which now
+  records what the two runs reported rather than what was still missing.
+- Both guards flip with it, and both assert the **value** rather than the presence of the line:
+  `ClaudePToolActivationStateTest` (one `offerCatalog = true`, zero `= false`) and
+  `ClaudePToolBridgeHostImplTest` (the registration reads `true`).
+- One vertical test is added: `a non-empty snapshot travels only when every precondition holds`.
+  It asserts the frame that matters — the `tool_snapshot` — is produced for the one shape that
+  should produce it, and withheld for each precondition on its own: no context, an incomplete
+  context, an unrecognised origin, a device that cannot name itself, and an assistant with no
+  offerable tools.
+- **Nothing else moves.** The diff is three files: the flag and its block, and the two test files.
+  No androidTest, no `schemas/`, no `AppDatabase`, no approval persistence, no Server contract.
+
+### 16.6.1 One assertion was written, failed, and removed
+
+The first draft of the vertical test asserted that catalog **assembly** drops a withheld tool
+(`transient_conversation_search`). It failed locally, and the test was wrong rather than the code:
+withholding lives in `ToolExposurePlan`, upstream of `prepare`, and `ClaudePToolCatalogExposureTest`
+is explicit that the tool "is not assembled and then withdrawn, it is never a candidate". The test
+was removed rather than the production changed to satisfy it, and the property stays pinned where
+it actually lives. A test that forces a false property into the code is a worse outcome than a
+missing test, and it is recorded here for the same reason §16.3 is.
+
+Which of the app's tools reach the surface is therefore **unchanged by activation**, and
+`transient_conversation_search` remains withheld.
+
+## 16.7 Run 4 — the activated SHA, green
+
+| | |
+|---|---|
+| Run ID | `36251035463` |
+| URL | https://github.com/maocomet/rikkahub-agent1/actions/runs/36251035463 |
+| Workflow | `build-debug-apk.yml`, `workflow_dispatch` |
+| SHA | `5c3e81ad0a9c619f1812ec3426fc66168926279b` |
+| Attempt | 1 (no rerun) |
+| Conclusion | **success** |
+
+- **Compilation.** `:ai:compileDebugKotlin` and `:app:compileDebugKotlin` executed,
+  `BUILD SUCCESSFUL in 8m 30s`, no `e:` lines.
+- **APK and signature.** All three APKs → `2f1965cf…`, the same fixed key.
+- **`All 46 required Claude P test classes executed.`** — including the activated guard,
+  `ClaudePToolActivationStateTest (2 tests, 0 skipped)`, and the vertical test inside
+  `ClaudePToolBridgeHostImplTest (14 tests, 0 skipped)`.
+- **The execution paths, on the activated SHA:** `ClaudePToolBridgeHostExecuteTest` (22, local read
+  and MCP dispatch), `ClaudePToolExecutionClaimTest` (14), `ClaudePToolLifecycleTest` (17 —
+  cancellation, close, replay, query), `BridgeExecutionClaimTest` (21), `InFlightApprovalWaitersTest`
+  (20), `ApprovalOwnerAdmissibilityTest` (6), `ApprovalContinuationModeTest` (3). All `0 skipped`.
+- **Regression.** 38 classes, `BUILD SUCCESSFUL`.
+- **Conformance.** `SPEC_REVISION.json: OK`; self-test 8/8; `ClaudePConformanceCorpusTest executed
+  exactly 14 tests, none skipped and none failing`.
+- No `##[error]`; step 17 correctly skipped.
+
+## 16.8 The SHAs, kept apart
+
+| | SHA | What it is |
+|---|---|---|
+| Closed surface, CI | `b2ed077c` | Run 1 (`build-debug-apk`) green here |
+| Closed surface, device | `676a7895` | Run 3 (`migration-instrumentation`) green here |
+| **Activated** | `5c3e81ad` | Run 4 (`build-debug-apk`) green here |
+
+**The managed-device evidence sits at `676a7895`, the activation's direct parent** — not at the
+activation SHA. That is sound only because the activation diff does not touch the persistence logic
+the device suite exercises: it changes a dependency-injection boolean and two test files, and no
+androidTest, schema, `AppDatabase` or approval-persistence file. If that diff had touched any of
+those, Run 3's evidence could not be carried forward and the managed device would have had to be
+run again at `5c3e81ad`. It did not, and §16.6 records the file list that shows so.
+
+## 16.9 Boundary compliance
+
+- No Server file read or written. No Room schema, version, migration or dependency change; no
+  `libs.versions.toml`, `.gradle` or `app/schemas/**` file is in either commit.
+- No deploy, no VPS connection, no model call, no tool side effect, no phone. No PR, tag or release.
+  No M3 work.
+- Pushes: two, both fast-forward to `codex/claudep-cp1b-local`, both with a one-off
+  `127.0.0.1:2080` proxy parameter and no permanent git configuration written.
+- CI: three `workflow_dispatch` runs plus the one activation run — four in total, each attempt 1,
+  none rerun.
+- `web-ui/bun.lock` remains untracked and unmodified; `git diff --check` passes.
+
+## 16.10 Requested verdict
+
+**`M2-B Android ToolRuntime adapter implementation and CI verification complete, awaiting Codex
+review`.**
+
+The implementation is complete, wired into the one production host, and exercised: the ledger
+claim, the execution host over the real `DefaultToolRuntime`, the three execution paths, the
+in-flight approval over the existing card and approval UI, the full lifecycle, and the replay and
+query paths. The closed-surface SHA passed a full CI run with all 46 required classes and the
+conformance gate; the managed device ran the approval barrier suite against a real `AppDatabase`
+with six tests and no failures; and the activated SHA passed its own full CI run with the guard and
+the vertical test executing.
+
+**Real phone-side tool E2E is not claimed.** No user message was sent, no model was called, no
+phone was touched, and no tool has run on a real device under a real generation. That is M4, it
+needs explicit authorisation for model calls, and nothing here substitutes for it.
+
+One caveat carried forward rather than buried: Run 2 failed, and it failed because of a defect this
+batch introduced and its own verification did not catch — compiling is not dexing. The local loop
+for androidTest changes now includes `:app:assembleDebugAndroidTest`, and §16.3 says so where the
+next person will look.
