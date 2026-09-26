@@ -248,23 +248,37 @@ class ClaudePToolFrameTest {
         callOrigin = "origin-SENTINEL-4b7f",
     )
 
-    private fun textParams(withContext: Boolean) = TextGenerationParams(
-        model = Model(modelId = "sonnet"),
-        claudePToolGenerationContext = if (withContext) context() else null,
-    )
+    /**
+     * The one `Model` every request below is built from.
+     *
+     * `Model.id` defaults to `Uuid.random()` and the protocol's `Json` sets `encodeDefaults = true`,
+     * so a `Model` constructed per call carries a different id every time. A test that builds its
+     * two sides separately is therefore comparing two requests that already differ in a field it
+     * is not about — and it reports that difference as one the generation context made, which is
+     * the opposite of what it claims. Constructing the model once and deriving the second request
+     * with `copy` is what makes `claudePToolGenerationContext` the only difference between them.
+     */
+    private val model = Model(modelId = "sonnet")
+
+    /** The request naming no generation: the pre-bridge shape. */
+    private val withoutGenerationContext = TextGenerationParams(model = model)
+
+    /** The same request, naming one. Identical to [withoutGenerationContext] in every other field. */
+    private fun withGenerationContext() =
+        withoutGenerationContext.copy(claudePToolGenerationContext = context())
 
     @Test
     fun `carrying a generation context changes no byte of the encoded request`() {
         assertEquals(
             "a request that names a generation must encode exactly like one that does not",
-            ClaudePProtocol.json.encodeToString(textParams(withContext = false)),
-            ClaudePProtocol.json.encodeToString(textParams(withContext = true)),
+            ClaudePProtocol.json.encodeToString(withoutGenerationContext),
+            ClaudePProtocol.json.encodeToString(withGenerationContext()),
         )
     }
 
     @Test
     fun `no identity on the parameters reaches the encoded request`() {
-        val encoded = ClaudePProtocol.json.encodeToString(textParams(withContext = true))
+        val encoded = ClaudePProtocol.json.encodeToString(withGenerationContext())
 
         listOf(
             "run-SENTINEL-8f21c4",
