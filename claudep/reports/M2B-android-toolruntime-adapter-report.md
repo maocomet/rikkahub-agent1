@@ -1424,3 +1424,350 @@ Phases C–F, with C3 and C1 being the tractable half and C2 requiring the hands
 - `snapshot` remains empty; `tool_snapshot` is still never sent; the production host offers nothing.
 - `git diff --check` passes; the only working-tree entry is the pre-existing untracked
   `web-ui/bun.lock`; `c6f84fc4`, `5fceaf27` and `a232730f` all remain ancestors.
+
+---
+
+# 13. The M2-B batch: pending publication acknowledgement
+
+This batch implements the handshake §12.3 said had to be designed and reviewed before C2 could be
+written. It closes §12.3. It does **not** attempt C2 itself.
+
+**In scope.** The publication receipt primitive; the provider ↔ ChatService transaction
+acknowledgement; the continuation-mode metadata that lets ChatService tell an in-flight publication
+from an ordinary pending approval; the `isSecondUser` gate replaced by that mode; deterministic
+concurrency tests.
+
+**Out of scope, and unchanged.** Production `ToolRuntime` / `McpManager` / execution gate wiring;
+real tool execution; the cancel lifecycle; snapshot activation; `ToolExecutionHandle`. The
+production host still offers no catalog, so `execute` remains unreachable in production.
+
+## 13.1 The audit, done before any code was written
+
+The instructions required the real call order to be established first, and one of the five
+questions turned out to decide the whole design.
+
+```
+Server tool.invoke
+  → pumpFrames                       ClaudePProvider.kt:766
+  → ClaudePToolFrameHandler.onInvoke ClaudePProvider.kt:801
+  → host.execute(invocation, publishingStatusTo(emit))   ClaudePProvider.kt:807
+        → status.publish(…)  →  emit(chunk)              ClaudePProvider.kt:916
+```
+
+**1. What the status sink is.** A `fun interface` with a `suspend publish(...)` returning
+`Accepted | Refused` — not a Flow, not a Channel. Its implementation
+(`ClaudePProvider.kt:907-920`) emits a `MessageChunk` carrying the tool part and catches failures.
+
+**2. Does the provider wait on the same coroutine as ChatService? No — and this is the finding that
+makes the batch possible.** `ProviderTurnRunner.kt:286` creates
+`Channel<MessageChunk>(capacity = Channel.UNLIMITED)`; the provider flow is collected in a child
+`async` (`:287-360`), while `onChunk` — which is what reaches `emit(GenerationChunk.Messages)` and
+then ChatService's collector — runs on the **caller** coroutine (`:386-388`). `host.execute` runs on
+the provider child. So a `publish` inside `execute` is a non-blocking `Channel.send` that returns
+**before ChatService has looked at the chunk**, and the two sides are genuinely different
+coroutines.
+
+**3. Where the pending part is applied.** `ChatService` applies `UIMessagePart.Tool(Pending)` inside
+`applyRunUpdate { … }` under `chunk.persistenceBarrier == PENDING_APPROVAL`; the barrier itself is
+written by `authority.checkpointWaiting(...)` → `ProductionRuntimeRunAuthority.checkpointWaiting`
+(`ProductionRuntimeCommandAuthority.kt:185`), whose `approvalMutation` calls
+`persistPendingBarrierInCurrentAuthorityTransaction`.
+
+**4. How the transaction outcome is observed.** `checkpointWaiting` returns only after commit
+(`waitingCommitted.set(true)`), and `ChatService` sets `waitingAuthorityCommitted = true`
+immediately afterwards (`:4152`). A rollback is an exception. There is no polling and no callback.
+
+**5. The ring wait.** There is none, for the reason in (2): the host suspends on a receipt while
+ChatService's collector — a different coroutine — processes the chunk and commits. Had the
+provider run its callback inline through a rendezvous channel, the cycle the instructions warned
+about would have been real.
+
+### 13.1.1 The second finding: the bridge path raised no barrier at all
+
+`GenerationPersistenceBarrier.PENDING_APPROVAL` had exactly one producer,
+`GenerationHandler.kt:1697`, in the ordinary tool loop. A bridged call never reaches it — its
+generation does not end while the peer waits — so `ChatService`'s barrier branch was **unreachable
+from the bridge**, and a receipt would have had nothing to complete against. Fixing this was a
+prerequisite, not a nice-to-have, and it is why the batch touches `GenerationHandler`.
+
+## 13.2 The deadlock question, answered
+
+The instructions said to stop and ask if the topology could not avoid a cycle without changing the
+Server contract or adding a dependency. It could, so nothing was stopped.
+
+- No `delay`, no sleep, no DAO polling, no `GlobalScope`, no UI-thread blocking, no unbounded
+  growth. The only deadline is the caller's own, and it is the contract's existing
+  `BridgeLimits.MAX_DEADLINE_MS` rather than a new number.
+- The one Channel involved is pre-existing and belongs to `ProviderTurnRunner`; this batch adds no
+  channel, no job and no scheduler.
+- ChatService can process a pending chunk while the host is suspended because the host's suspension
+  is on the *provider* coroutine, not on the collector's.
+- No terminal path leaks: `release` runs in a `finally` on every exit from the host's publication
+  step, including cancellation.
+
+## 13.3 The receipt
+
+`ClaudePToolPublicationReceipts` (`data/claudep/ClaudePToolPublicationReceipts.kt`).
+
+- **Exact identity.** `ClaudePToolPublicationId(generationId, toolCallId, invocationIdentity)`.
+  `generationId` is the app's run identity — the same value `GenerationRunControl.runId`,
+  `ClaudePToolGenerationContext.runId` and the host's plan all carry. It is deliberately *not* the
+  Server's own `generationId`: the conversation authority never learns that value, and a key that
+  required it could not be rebuilt on the side that answers. Generation-exactness comes from the
+  run id plus the fact that an entry only exists between `begin` and the generation's close.
+- **The approval identity is not in the key.** `approvalId` and `executionId` are produced by the
+  single authoritative derivation site (`SecondUserApprovalLifecycle`) inside the transaction and
+  travel back in `Committed`. The host never derives them — as instructed, and it matters: a second
+  derivation is a second answer to "which approval is this?", and the one that reaches
+  `InFlightApprovalWaiters` has to be the one the tap will match.
+- **Exactly once.** The live entry is removed under the same lock that settles it, so a duplicate
+  finds nothing and changes nothing. A separate bounded `settled` set stops a settled id being
+  re-armed, which is how a stale duplicate would otherwise release a *new* request.
+- **Bounded.** `maxEntries` (64) caps both maps, oldest-first. An evicted live wait is *completed*
+  as `EVICTED`, not dropped, so a publisher fails closed rather than hanging.
+- **In-process only.** No serialization, no wire, no prompt, no fingerprint, no Room, no log —
+  `toString()` renders SHA-256 pseudonyms so a debugger or a test failure cannot leak the
+  identities.
+
+### 13.3.1 Why the arguments are not part of the invocation identity
+
+They were the obvious thing to hash and are the one thing that cannot be: `RuntimeSecretRedactor`
+rewrites `UIMessagePart.Tool.input` *before* the chunk is emitted
+(`RuntimeSecretRedactor.kt:54-59`), while the publisher hashes what it sent. For any
+approval-gated call whose arguments contain a known secret the two digests would differ, so the
+receipt would never complete for exactly the calls where asking the user matters most. The identity
+is therefore the **runtime tool name**, which survives every transform on that path. The call is
+already named exactly by the generation and tool-call fields.
+
+## 13.4 The continuation mode, and the gate it replaces
+
+`ChatService` decided whether to write a barrier with `isSecondUser`, which is wrong for the
+in-flight path and right for the resume path. The instruction to fix it without deleting the gate
+and without keying on the provider is implemented as an explicit mode.
+
+- `ClaudePToolStatusUpdate.pendingContinuation` — a token the **app** declares when it publishes,
+  carried verbatim through `MessageChunk.pendingApprovalContinuation` (both `@Transient`) and mapped
+  by `ApprovalContinuationMode.fromWireOrNull`.
+- `GenerationChunk.Messages.continuationMode` (`@Transient`) carries it into `ChatService`.
+- `GenerationHandler` maps the token by **exact match**. An unrecognised or absent token raises no
+  barrier at all — the card stays on screen and nothing is armed, which is the fail-closed shape.
+- `GenerationHandler.kt:1697` now states `RESUME_COMMAND` explicitly rather than relying on a
+  default, so "missing" really is unknown.
+- In `ChatService`: `RESUME_COMMAND` keeps the original `isSecondUser` rule **verbatim**, including
+  that `pendingTools` is only computed when something will own it (the mapping asserts a schema is
+  present, and asserting that for a card being left alone would turn a working legacy path into a
+  crash). `IN_FLIGHT` is admitted for every subject type and uses `runControl.runId` with **no**
+  command-id fallback. `null` commits nothing.
+
+Nothing infers the mode from `provider == ClaudeP`.
+
+## 13.5 Where the receipt is completed, and nowhere else
+
+`ChatService.kt:4112-4215`. The receipt is completed strictly after `checkpointWaiting` returns and
+`waitingAuthorityCommitted = true` is set. Three other outcomes are answered, and all three are
+refusals:
+
+| outcome | what the publisher is told |
+|---|---|
+| transaction committed, barrier names the card | `Committed(approvalId, executionId)` |
+| rollback / exception / cancellation | `Refused("approval_authority_rollback")` |
+| committed, but no barrier names the card | `Refused("approval_barrier_missing")` |
+| no authority transaction at all | `Refused("approval_authority_transaction_absent")` |
+
+An `emit` that returned, or a `Channel.send` that succeeded, is never treated as a commit.
+
+## 13.6 The DI boundary
+
+One Koin `single` (`DataSourceModule.kt:1253-1261`), shared by the host and `ChatService`, plus one
+constructor parameter on each. This is the narrow exception the batch was granted: a request created
+on one side and completed on the other cannot work without one shared instance, and two instances
+present as a call that sits out its whole deadline instead of failing loudly.
+
+It grants no capability. Not wired: `ToolRuntime`, `McpManager`, the execution gate, the snapshot.
+`offerCatalog` remains `false` (`DataSourceModule.kt:1567`), so no `tool_snapshot` is sent, the
+Server registers no bridge tool, and `execute` stays unreachable in production.
+
+## 13.7 Verification, and the limits of it
+
+Coverage is stated against the fifteen cases the batch was required to cover. Deterministic means
+`CompletableDeferred` handshakes and registry state; there is no `sleep` in any of these, and every
+wait that crosses a coroutine is wrapped in `withTimeout` so a reintroduced cycle **fails** rather
+than hangs.
+
+Run with the worktree's own Android SDK (`D:\Android\Sdk`), `:app:testDebugUnitTest --tests
+"me.rerere.rikkahub.data.claudep.*"` — **91 tests, 0 failures, 0 errors, 0 skipped** across the six
+claudep suites, of which the two this batch writes are `ClaudePToolPublicationReceiptsTest` (20) and
+`ClaudePToolBridgeHostExecuteTest` (17, five of them new).
+
+| required case | where it is covered |
+|---|---|
+| 1. apply-before-host-await | `a receipt committed before the publisher waits is returned immediately` — deadline of 50 ms, so a registry that only completed *present* waiters returns `TIMEOUT` |
+| 2. host-await-before-apply | `a receipt committed while the publisher is suspended releases it` — the authority commits from another thread against a registered, suspended waiter |
+| 3. approval immediately after commit, before await | same two tests, whose point is that neither order is special |
+| 4. transaction rollback | `a refused publication never becomes a commit`; host: `a card whose barrier rolled back is not run` |
+| 5. duplicate receipt completion | `a duplicate completion changes nothing` |
+| 6. wrong publication id | `an id that was never begun settles nothing` |
+| 7. wrong generation / toolCall / tool identity | `a completion for another identity leaves the right waiter untouched`, `the tool name is part of the identity` |
+| 8. timeout | `a wait that outlives its deadline is abandoned and releases nothing` |
+| 9. cancel while awaiting | `a cancel ends the wait and a later commit does not reopen it` |
+| 10. generation terminal / registry close | `a generation close abandons only its own publications`, `a registry close ends every wait` |
+| 11. receipt success, runtime still not called | `an approval-gated call publishes an in-flight card and still runs nothing` |
+| 12. card and barrier atomicity | see the limit below — contract-tested, **not** database-proven |
+| 13. receipt never enters wire / serialization / log | `the continuation never enters a serialized provider chunk` (real bytes), `the generation chunk declares the continuation transient` (declaration, see below), `a publication id does not print what it holds` |
+| 9. cancel while awaiting | `a cancel ends the wait and a later commit does not reopen it`; host: `an unanswered publication is waited on and a cancel ends it` |
+| 14. no second model generation | `the publisher declares the continuation, and it is the in-flight one` — the `IN_FLIGHT` mode is what `isInFlightContinuation()` reads to suppress the resume command (`ChatService.kt:2830`, `:2900`). End-to-end proof needs a device. |
+| 15. no coroutine / deferred / registry residue | `no path leaves an entry behind once released`; `committing does not require the lock a suspended wait holds`; `an evicted publication fails closed rather than hanging`; `remembered terminal ids are bounded too` |
+
+### 13.7.1 What is *not* proven here, stated plainly
+
+**Case 12 is not proven.** These are JVM unit tests on `:ai` and `:app`. No in-memory Room harness
+exists for `ChatService`, and `RuntimeRunAuthority.checkpointWaiting` needs an `AppDatabase` and
+five collaborators. What is proven is that the *registry* makes the four outcomes distinguishable
+and that the host fails closed on all of the non-committed ones. That "the `Pending` card and the
+`IN_FLIGHT` barrier commit together or not at all" is a property of the existing authority
+transaction and of where the completion is placed — verified by reading, not by a passing test.
+Nothing in this section should be read as Room evidence.
+
+**Case 14 is only proven at the token.** The `IN_FLIGHT` barrier is written, and
+`isInFlightContinuation()` is the existing, separately tested mechanism that suppresses the resume
+command. That no second model generation is started has not been exercised end to end.
+
+**The ChatService branch itself is not unit-tested.** The `when (continuation)` block, the atomic
+placement of the completion after `checkpointWaiting`, and the `isSecondUser` → mode replacement
+are all inside a 5 000-line Android service with no test harness. §13.8 names what a managed device
+has to confirm.
+
+**One case-13 assertion is on a declaration, not on bytes.** `GenerationChunk.Messages` turns out
+not to be `@Serializable` at all — the annotation is on the interface and the subclass has no
+serializer, so the hierarchy cannot actually be encoded. The first run of this suite proved it by
+throwing `Serializer for subclass 'Messages' is not found in the polymorphic scope of
+'GenerationChunk'`. Rather than add a subclass serializer so a test could encode a type that
+nothing encodes, the test asserts the `@Transient` declaration. The `MessageChunk` half — the
+carrier that really does cross the provider boundary — is still checked by serializing one. The
+vestigial `@Serializable` on `GenerationChunk` is noted here rather than fixed, because fixing it
+is not this batch's business.
+
+### 13.7.2 Compilation, and the two pre-existing baseline failures
+
+Both modules were compiled with the worktree's own Android SDK (`D:\Android\Sdk` via
+`local.properties`): `:ai:compileDebugKotlin` and `:app:compileDebugKotlin`.
+
+Two failures are **pre-existing** and excluded from this batch's regression conclusion. Neither is
+fixed here. Had either changed shape, or any new failure appeared, this batch would have stopped —
+and it did stop to check when the second one surfaced.
+
+**(a) `P2CapabilityCatalogTest`** — `:app`, already known and recorded before this batch. Its
+subject is the capability catalog, and this batch touches no capability file:
+
+```
+tests="21" skipped="0" failures="1" errors="0"
+java.lang.AssertionError: Unclassified system-assistant tools: [transient_conversation_search]
+```
+
+**(b) `ClaudePConformanceCorpusTest."corpus revision is bound to the specification it was
+derived from"`** — `:ai`, not previously reported, and it surfaced only because this batch ran the
+`:ai` provider suites. It compares a recorded SHA-256 against `claudep/02-wire-protocol-v1.md`.
+
+This one was checked rather than assumed, because a wire-specification digest moving is exactly
+what a batch that touched the provider must rule out. It is a **line-ending artifact of this
+Windows working copy**, proven three ways:
+
+```
+recorded (corpus)  8ff5e6a5a6e494b7fe7546a918d55567c918623853f5fa7367ddb23094ba3e85
+file as-is         6d53aa6393f63dbbfab28c28987ef14a47605aba1fb61b14fbb1ae5a8122ad66   (CRLF)
+file, CR stripped  8ff5e6a5a6e494b7fe7546a918d55567c918623853f5fa7367ddb23094ba3e85   (LF)
+```
+
+The LF-normalized digest equals the recorded one **byte for byte**, and `git status`/`git diff`
+report the file unmodified. So the specification is what the corpus was derived from, and the check
+is failing on `core.autocrlf` alone. This batch cannot have caused it — it writes no markdown under
+`claudep/`, and no code change can alter a file's bytes — and fixing it would mean writing to a spec
+file or a working-copy EOL setting, neither of which is this batch's business.
+
+`:ai` provider suites: **592 tests, 0 errors, 1 failure — that one.**
+
+### 13.7.3 One pre-existing test changed meaning, and that is the batch working
+
+`ClaudePToolBridgeHostExecuteTest.a call that needs approval is refused rather than run` passed
+`ClaudePToolStatusSink.NONE` for an approval-gated call and expected an immediate refusal. On the
+first run after this batch it **hung**, and the thread dump named it: the test worker was parked in
+`runBlocking` for the call's own 30-minute `MAX_DEADLINE_MS`.
+
+The cause is the change itself. `NONE` accepts everything, so the old test's expectation was "a
+sink said `Accepted`, therefore publish is settled, therefore return now" — which is exactly the
+inference the acknowledgement batch removes. After this batch a host that is told `Accepted` and
+then never answered waits out the call's deadline before refusing. That is correct and fail-closed,
+but the old assertion could no longer hold, so the test was not "fixed to pass": it was rewritten
+around the refusal path it was actually trying to describe.
+
+- The refusal case now uses a sink that `Refused` — nothing was shown, nothing can be tapped, no
+  commit is coming — which is the fast, decided path, and the original four assertions are kept
+  verbatim.
+- A new test, `an unanswered publication is waited on and a cancel ends it`, covers the accepted-but-
+  unanswered shape the old test accidentally described: the wait is entered (asserted from the
+  registry's own state, via a `CompletableDeferred` handshake rather than a poll), it is
+  cancellable, nothing runs, and the publication is released.
+- `ClaudePToolStatusSink.NONE`'s own documentation now says that `Accepted` is not evidence of a
+  commit and that handing this sink an approval-gated call costs the full deadline. The footgun is
+  labelled where someone would reach for it.
+
+No other test was affected: every other `NONE` call site in the suite uses a tool that needs no
+decision, and the four new host tests all answer their receipts.
+
+## 13.8 What a managed device still has to confirm
+
+These need a real `AppDatabase` and the instrumentation workflow. They are the items §12.4 F called
+for, narrowed to what this batch now makes reachable.
+
+1. **Atomicity.** Force a failure after the `Pending` part is applied but before the barrier is
+   written; assert the transaction rolls back, that no `PendingToolApprovalRecord` exists, and that
+   the publisher observed `Refused` — not a commit and not a timeout.
+2. **An ordinary assistant's in-flight barrier.** An ordinary (non-second-user) assistant with a
+   Claude P provider and an approval-gated tool: assert the card appears, the barrier is written
+   with `continuationMode = IN_FLIGHT`, and the receipt carries the authority's own `approvalId` /
+   `executionId`.
+3. **No second generation.** Approve that card and assert **no resume command is created** and no
+   second `generation.start` is dispatched.
+4. **The legacy path is untouched.** A second-user assistant in `RESUME_COMMAND` still resumes
+   through a command, and an ordinary assistant in `RESUME_COMMAND` is still refused a barrier.
+5. **A wrong-identity completion is inert.** Deliver a receipt for an adjacent id and assert the
+   real waiter is neither released nor refused.
+6. **Cold restart.** Kill the process with a card pending; assert the existing `IN_FLIGHT` recovery
+   rules invalidate it and nothing resumes automatically.
+
+## 13.9 Boundary compliance
+
+- No production `ToolRuntime`, `McpManager` or execution gate wired; `ToolExecutionHandle` not
+  touched; no snapshot activation; `offerCatalog` still `false`.
+- No real tool execution. A successful receipt still answers the call `unexecuted` (`FAILED`),
+  which is what actually happened — nothing ran.
+- No `Server` file read or written; no Room version, schema or migration change; no new runtime
+  dependency; the only DI additions are the one `single` and the two parameters named in §13.6.
+- No push, CI dispatch, PR, tag, release or deploy. No VPS. No model call. No phone. No M3 work.
+- `git diff --check` passes at each commit; `web-ui/bun.lock` remains untracked and untouched.
+
+## 13.10 Commits
+
+| commit | what |
+|---|---|
+| `d7eb1c75` | `feat(claudep): add the one-shot publication receipt registry` — the primitive alone, referenced by nothing |
+| `d4473ab7` | `feat(claudep): acknowledge a pending card only after its barrier commits` — the plumbing, the mode, the gate, the DI |
+| `9cbb776e` | `test(claudep): cover the publication receipt and the in-flight handshake` — 25 new tests, plus the two findings running them produced |
+| *(this batch)* | `docs(claudep): record the acknowledgement batch` |
+
+## 13.11 Requested verdict
+
+**Stop here, at Codex review — this batch is not declared complete.** Three things specifically
+warrant an adversarial read:
+
+1. **The identity omits the arguments** (§13.3.1). The reasoning is that redaction makes hashing
+   them wrong for the calls that matter most. If that trade is judged wrong, the fix is a different
+   identity, not a different key.
+2. **`generationId` is the run id, not the Server's generation id** (§13.3). This is forced by the
+   authority never learning the Server's id; the generation-exactness argument rests on `begin` /
+   `closeGeneration` lifecycle rather than on the id itself.
+3. **The DI exception** (§13.6) is one binding wider than the batch's stated prohibition. It was
+   granted explicitly, on the grounds that no shared instance means no acknowledgement; it wires no
+   execution capability. If it is judged to exceed the grant, the alternative considered was
+   hanging the registry off the already-injected `ClaudePToolRunControls`, which was rejected as
+   giving that class a second responsibility.
