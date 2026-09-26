@@ -415,9 +415,20 @@ class ClaudePToolBridgeHostImpl(
             BridgeExecutionApproval.NotRequired
         }
 
+        // The pairing, re-checked at the last moment. It is the same question `awaitApproval` asks
+        // before it publishes, and it is asked again here because the answer can change while a
+        // card is on screen: a generation that ended during the wait has retired this association,
+        // and a call whose generation is gone must not be executed under a run that is no longer
+        // serving it. Everything after this line is a call the pairing still covers.
+        if (publications.serverGenerationIdFor(plan.runId) != invocation.binding.generationId) {
+            return unexecuted(invocation)
+        }
+
         // The execution right, and the call it is a right to. Taken here deliberately: after the
-        // decision and immediately before the runtime, so a call that changed in the meantime is
-        // refused rather than executed under an approval it no longer matches.
+        // decision, after the pairing, and immediately before the runtime — so a call that changed
+        // in the meantime is refused rather than executed under an approval it no longer matches.
+        // The claimant re-checks `closing` under the ledger's own lock at this instant, so a
+        // generation whose close has *begun* refuses here even if the pairing line above raced it.
         val canonical = when (
             val claim = claims.claim(claimRequest(invocation, plan, approval))
         ) {

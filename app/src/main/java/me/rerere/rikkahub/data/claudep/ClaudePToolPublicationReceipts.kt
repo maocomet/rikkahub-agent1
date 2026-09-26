@@ -444,6 +444,39 @@ class ClaudePToolPublicationReceipts(
     }
 
     /**
+     * Ends one call's outstanding publication, because that call was cancelled.
+     *
+     * ## Why this exists
+     *
+     * A card that has been published and not yet acknowledged is a host suspended on a receipt. A
+     * cancel that reached the call has to end that suspension, or the host waits out the call's
+     * whole thirty-minute deadline for a card whose answer is already known — and the wait is
+     * precisely the state in which a late commit could still arm a waiter for a cancelled call.
+     *
+     * It is keyed on the **call**, not on the generation: cancelling one call must not conclude
+     * another's publication, which is what [unbindGeneration] is for and why this is not it.
+     *
+     * @return `true` when a live publication was ended. `false` is the ordinary answer for a call
+     *   that has nothing outstanding — a call already committed, already settled, or one whose
+     *   card was never raised — and it changes nothing.
+     */
+    fun cancelFor(
+        serverGenerationId: String,
+        toolCallId: String,
+        reason: ClaudePToolPublicationAbandonReason,
+    ): Boolean {
+        val deferred = synchronized(lock) {
+            val key = pending.entries.firstOrNull { (key, entry) ->
+                entry.invocation.serverGenerationId == serverGenerationId &&
+                    key.toolCallId == toolCallId
+            }?.key ?: return false
+            pending.remove(key)?.deferred ?: return false
+        }
+        deferred.complete(ClaudePToolPublicationOutcome.Abandoned(reason))
+        return true
+    }
+
+    /**
      * Readies a publication, or refuses.
      *
      * @return `null` when this invocation cannot be published: its run and Server generation were

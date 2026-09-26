@@ -877,6 +877,32 @@ internal class ClaudePToolFrameHandler(
     }
 
     /**
+     * What **this generation** holds for one tool call, or `null` when it holds nothing.
+     *
+     * ## What a query is, and the three things it is not
+     *
+     * It is a read of one record, keyed by this generation's own adapter and an exact tool call id.
+     * That is the whole of it:
+     *
+     * - it does **not** execute anything, and there is no path from here to a runtime;
+     * - it does **not** re-dispatch — a call this side already answered answers with its recorded
+     *   outcome, which is the idempotent-recovery answer the Server's own `apply` expects;
+     * - it does **not** move a deadline. The instant stored on the record was fixed when the call
+     *   was admitted, and nothing here reads the clock at all, so a caller cannot extend a call's
+     *   life by asking about it repeatedly.
+     *
+     * A call that is still in flight answers `pending`, which is accurate: it says the answer is
+     * coming, and it is what stops a reconnecting peer from re-running a tool that is already
+     * running. A call this generation has no record of answers `not_found` — and after a process
+     * restart that is the honest answer rather than an invitation to execute, which is why nothing
+     * here may be turned into a retry.
+     *
+     * It is deliberately bound to one generation: the adapter is the generation, so there is no
+     * way to ask this question *across* generations even by naming a conversation or an assistant.
+     */
+    fun queryToolCall(toolCallId: String?): ToolCallOutcome? = adapter.query(toolCallId)
+
+    /**
      * Sends one terminal, if it is one Android may send.
      *
      * [ClaudePToolFrames.asOutboundResult] is the same gate the wire rules already enforce, and

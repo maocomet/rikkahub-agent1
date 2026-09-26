@@ -1572,6 +1572,13 @@ val dataSourceModule = module {
             // other side — so an unpaired generation, or one that has already ended, answers
             // `null` and every question below fails closed on it.
             runIdFor = { serverGenerationId -> receipts.runIdFor(serverGenerationId) },
+            // A cancel has to reach whichever of the call's pending states is live. A host
+            // suspended on a receipt it will never receive would otherwise wait out the call's
+            // whole deadline for an answer that is already known.
+            cancelPublication = { serverGenerationId, toolCallId, reason ->
+                receipts.cancelFor(serverGenerationId, toolCallId, reason)
+                Unit
+            },
         )
         me.rerere.rikkahub.data.claudep.ClaudePToolBridgeHostImpl(
             // The validated device id, or null. Null means this device cannot name itself, and the
