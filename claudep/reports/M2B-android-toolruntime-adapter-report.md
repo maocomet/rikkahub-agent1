@@ -584,9 +584,14 @@ The snapshot remains closed, which is the only safe state until C–F all answer
 # 10. The C5–C8 batch: the load-bearing seams before the production host
 
 - Base of this batch: `5069a7c2` (chosen after the preflight discrepancy in §10.1)
-- HEAD after this batch: `0c87d2e0`
-- Pushed: yes. `origin/codex/claudep-cp1b-local` is `0c87d2e0`, a fast-forward from `84fb7d7d`.
+- Tip at the end of the batch: `c6f84fc4`, which added the C2 threading fix in §10.10 on top of the
+  seam commits
+- Pushed: yes, fast-forward from `84fb7d7d` throughout. `origin/codex/claudep-cp1b-local` is
+  `c6f84fc4`.
 - `84fb7d7d` remains an ancestor and was never rewritten.
+- **CI: green.** Run `36225522688` on `c6f84fc4`, attempt 1 — §10.10. An earlier run
+  (`36224200862` on `0c87d2e0`) failed on a compile error this batch did not introduce and then
+  fixed; §10.9 keeps that record.
 
 Scope, stated up front: this batch builds the seams the production host will sit on. It does
 **not** run a single tool. The default host is still `ClaudePToolBridgeHost.NONE`, its catalog is
@@ -811,21 +816,26 @@ No instrumentation whitelist change: none of the new classes is an instrumentati
 
 | Claim | Kind of evidence |
 |---|---|
-| CI build, regression, Claude P suites, conformance, APK/signature | **CI** — §10.9 |
-| The four new/expanded test classes executed | **CI** — §10.9 |
-| Waiter races fixed; boundary atomic | local executed driver + a pre/post discrimination run; **not** CI |
-| Registry exactness, duplicate refusal, concurrency | local executed driver; **not** CI |
-| Status-to-part mapping | local executed driver; **not** CI |
-| Binding re-open semantics | local executed driver; **not** CI |
-| Provider-level binding ordering | **static audit of source and call sites only** |
-| `:ai` main tree compiles | local compile with bytecode emitted, excluding the pre-existing `ToolResultReplayPlan.kt` android-util artifact |
+| CI build, regression, Claude P suites, conformance, APK/signature | **CI** — §10.9 (failed) and §10.10 (green) |
+| The four new/expanded test classes executed | **CI** — §10.10, with per-class counts |
+| Waiter races fixed; boundary atomic | local executed driver + a pre/post discrimination run; **now also CI-executed** (20 tests) |
+| Registry exactness, duplicate refusal, concurrency | local executed driver; **now also CI-executed** (11 tests) |
+| Status-to-part mapping | local executed driver; **now also CI-executed** (5 tests) |
+| Binding re-open semantics | local executed driver; **now also CI-executed** (18 tests) |
+| Provider-level binding ordering | **static audit of source and call sites only** — unchanged, still no test |
+| `:ai` main tree compiles | local compile with bytecode emitted, **and** real CI compilation |
 | `:app` compiles at all | **CI only** — this machine has no Android SDK |
 
 The local runs use a stub `org.junit` and a small reflective runner. The test bodies and assertions
 genuinely execute; the runner is not the real one. Where §10.9 reports the same classes again, the
 CI figures are the ones to trust.
 
-## 10.9 CI — **the run failed, and the failure is not in this batch's code**
+## 10.9 CI run 1 — **this run failed, and the failure was not in this batch's code**
+
+> **Resolved.** The error below was fixed in `c6f84fc4` and a second run
+> (`36225522688`) is green — see §10.10 for the fix and the verification. This section is
+> kept as the record of what happened, not rewritten, because the failure is what the fix
+> is answerable to.
 
 | | |
 |---|---|
@@ -872,10 +882,17 @@ disclosure did not do is gate the change on the one thing that could have caught
 added in one function and read in another is precisely the class of error that only a real compile
 finds, and it was shipped on the strength of a type-check that could not see the file.
 
-**Consequence for §10.8:** none of the rows marked "CI" in that table are satisfied. No test of any
-kind executed in this run — the build failed before them — so the four test classes this batch adds
-and wires have not been executed in CI, and the REQUIRED gate is moot until `:app` compiles.
-The only CI-backed statement this batch can make is the negative one above.
+**Consequence for §10.8**, as it stood for this run: no row marked "CI" was satisfied. No test of
+any kind executed — the build failed before them — so the four test classes this batch adds and
+wires had not been executed in CI, and the REQUIRED gate was moot until `:app` compiled. The only
+CI-backed statement this run could make was the negative one above. **All of that was then
+satisfied by run 2 — see §10.10.**
+
+One positive fact this run did establish, which is easy to lose: **`:ai` compiled.** The only
+failed task was `:app:compileDebugKotlin`, and `:ai:compileDebugKotlin` ran to completion before
+it. So the `:ai` half of this batch — `BridgeExecutionBindings`, `ClaudePToolStatus`,
+`ClaudePProvider`, `ClaudePToolBridgeHost` — has real CI compilation behind it, not just the local
+harness.
 
 ### What was done about it
 
@@ -889,6 +906,124 @@ that already failed.
 
 ### Note on the report commit itself
 
-The suggested commit 5 (this report) was **not** committed, because the same instruction says not
-to append commits to a failed run. This text therefore exists in the working tree, uncommitted, at
-`0c87d2e0` — the exact SHA the run tested.
+This report was first left uncommitted, because the instruction for a failed run says not to append
+commits to it. It was committed afterwards as `de287c51`, at `0c87d2e0` — the exact SHA that run
+tested — under a separate authorisation. That commit is docs-only: no production code, test,
+workflow, schema or migration is in it.
+
+---
+
+## 10.10 The fix, and the second CI run
+
+### The defect and what was wrong with it
+
+`generateText` declared `claudePToolGenerationContext` and `generateInternal` read it. Nothing
+connected the two, so the name was out of scope where it was used and `:app` did not compile — from
+`bb1b0ad0` (the previous batch's C2) until this fix.
+
+### The fix — `c6f84fc4`
+
+- `generateInternal` takes the parameter.
+- The **generation path** passes the object `generateText` was already handed: the same instance,
+  not a copy and not a rebuild. The six identities are the authority's values, and re-deriving them
+  would be a second chance to disagree about which generation is running.
+- The **final-answer recovery dispatch** passes an explicit `null`. It is a text-only recovery call
+  with `tools = emptyList()`, so it offers Claude nothing to call and there is no tool call there to
+  bind. Passing the context anyway would assert a binding that dispatch does not have, and would do
+  it *by default* — which is how a later change that gave recovery a tool surface would quietly
+  inherit the wrong generation.
+
+Neither site guesses, and neither fills the value from a global, a ThreadLocal, the conversation,
+the assistant or a re-construction.
+
+### Why the audit found no second instance
+
+Searched the whole `app/` and `ai/` chain for the four shapes worth worrying about:
+
+| Shape | Finding |
+|---|---|
+| Declared outside, referenced inside | The one case, fixed. The compiler is the strongest witness: run 1 reported **exactly one** Kotlin error and one failed task, and kotlinc lists every unresolved reference in a module before failing |
+| A copy that drops fields | None — there is no `.copy(...)` on the context anywhere |
+| A default overriding a real value | None — no call site passes a literal in place of the value it holds |
+| Re-derivation from current state | None — exactly one construction in the app (`ChatService.kt:3582`), reading the run control, the durable command row, this conversation's assistant and the resolved origin. Every other `TextGenerationParams` site (background, vision, OCR, pet, memory, connection tests) omits the field and takes the null default, which is the correct fail-closed answer for a call that is not a tool generation |
+
+### Test coverage added
+
+`ClaudePToolGenerationContextTest` gained three cases, each asserting something the threading
+depends on rather than restating Kotlin:
+
+- parameters that name no generation carry **null**, not an empty context — an empty one is the
+  shape that would fail closed for the wrong reason;
+- an identity placed on the parameters comes back as the **same object** (`===`, not `==`:
+  equality would pass for a rebuild that happened to produce the same six strings, and the rebuild
+  is the hazard) with all six fields;
+- `copy` for an unrelated field neither drops nor remakes it.
+
+The class was already in REQUIRED and covered by the `me.rerere.ai.provider.claudep.*` filter, so
+these execute without a workflow change. The wire-byte and identity-leak claims were already
+covered by `ClaudePToolFrameTest`.
+
+### CI run 2
+
+| | |
+|---|---|
+| Run ID | `36225522688` |
+| URL | https://github.com/maocomet/rikkahub-agent1/actions/runs/36225522688 |
+| SHA | `c6f84fc41c1944fc8af124b025f92891935f7df1` |
+| Attempt | 1 (no rerun) |
+| Conclusion | **success** |
+
+Every step succeeded. Step 17 (`Diagnose web-ui build (on failure)`) was correctly skipped.
+
+Each gate, read from the run's own output rather than the summary:
+
+1. **Compilation.** Zero Kotlin errors in the log. `:ai:compileDebugKotlin` and
+   `:app:compileDebugKotlin` both ran to completion. This is the first real compile of `:app` since
+   `bb1b0ad0`.
+2. **APK and fixed signature.** All three APKs verified against the fixed agent-test key:
+   ```
+   app-arm64-v8a-debug.apk -> fixed agent-test key sha256: 2f1965cf7447301f857ec222fb1996ac179b07c771d9b3a636bd0116fefffcc3
+   app-universal-debug.apk -> fixed agent-test key sha256: 2f1965cf7447301f857ec222fb1996ac179b07c771d9b3a636bd0116fefffcc3
+   app-x86_64-debug.apk  -> fixed agent-test key sha256: 2f1965cf7447301f857ec222fb1996ac179b07c771d9b3a636bd0116fefffcc3
+   ```
+   `apksigner` was found, so this is a real comparison and not the skip path.
+3. **Regression tests.** 38 classes executed, including `ApprovalContinuationModeTest`.
+4. **Required Claude P classes.**
+   `All 35 required Claude P test classes executed.` Every listed class reported `0 skipped`, and
+   the step succeeded, which its own gate only does when every class has `tests>0`, `failures=0`,
+   `errors=0` and `skipped=0`.
+5. **This batch's new tests, with the counts CI reported:**
+
+   | Class | Claim it backs | Tests | Skipped |
+   |---|---|---|---|
+   | `InFlightApprovalWaitersTest` | approval waiter atomicity | **20** | 0 |
+   | `ClaudePToolRunControlsTest` | run-control registry | **11** | 0 |
+   | `ClaudePToolStatusMappingTest` | publication seam | **5** | 0 |
+   | `BridgeExecutionBindingsTest` | resume / binding ordering | **18** | 0 |
+   | `ClaudePToolGenerationContextTest` | context threading (extended) | **12** | 0 |
+
+   The last of those is the class extended by the fix; the other four are the batch's own.
+6. **Conformance.** `SPEC_REVISION.json: OK`; `Conformance XML gate self-test: 8 cases behaved as
+   expected.`; `ClaudePConformanceCorpusTest executed exactly 14 tests, none skipped and none
+   failing.`
+7. **Conclusion:** `success`.
+
+### What is still *not* covered by any of this
+
+Two things, unchanged from §10.8 and worth keeping in view:
+
+- **The provider-level binding ordering has no test.** That no tool frame is *consumed* before the
+  binding completes is guaranteed by the shape of the provider — the `openGeneration` call sits
+  between `generation.start`'s answer and the first `pumpFrames` — and is evidenced by reading the
+  code. It is not evidenced by an execution.
+- **The threading itself has no test.** CI proves it *compiles*; nothing yet proves the value
+  reaches the provider. The gap between "compiles" and "runs" is exactly where the original defect
+  lived, and a test for it needs a `GenerationHandler` harness that does not exist.
+
+Neither is claimed as verified.
+
+### Boundary compliance for the fix
+
+No Room schema, version or migration changed; no workflow change; no Server change; no dependency
+added; `web-ui/bun.lock` untouched and untracked. `tool_snapshot` remains empty and the production
+host was not started.
