@@ -84,29 +84,56 @@ sealed interface InFlightApprovalOutcome {
  * timeout — for a call the user explicitly approved. So a decision with nobody waiting is held
  * until somebody asks, which is what makes both orders correct.
  *
- * ## Why a repeat cannot execute twice
+ * ## Exactly one release per identity, and why that is a separate record
  *
- * A duplicate approve (or a second tap on a stale card) reaches [signalDecided] again. The first
- * call completes the waiter and removes it; the second finds neither a waiter nor an expectation,
- * so it changes nothing. A waiter is released exactly once, and the caller's `execute` therefore
- * runs at most once per admitted call — which is the same guarantee the bridge's ledger already
- * gives on the wire.
+ * Every identity reaches **at most one** terminal state here: one decision, or one abandonment,
+ * whichever happens first. Everything afterwards is a complete no-op.
+ *
+ * That needs a record of its own rather than a flag on the delivery maps, because the two answer
+ * different questions. The delivery maps say *"is there something to hand to a waiter that has
+ * not arrived yet?"*, and a decision is **consumed** from them the moment a waiter takes it. If
+ * the exactly-once guard were the same entry, consuming the decision would erase the guard — and
+ * a duplicate approve arriving a moment after the tool started would look like a fresh decision
+ * and be handed to the next wait. [settled] is that guard, it is written before the delivery, and
+ * it is never cleared by a delivery.
+ *
+ * Concretely, these are the cases the guard is for, and each is a no-op after the first:
+ *
+ * - a second tap on a stale card, arriving after the waiter took the decision;
+ * - a decision arriving after the call was abandoned (the generation closed, a cancel landed) —
+ *   which must not become executable later, because nobody is waiting for it any more;
+ * - a second abandonment for the same identity.
+ *
+ * ## Why the registration is one critical section
+ *
+ * A waiter must not be able to slip into the gap between "no decision is waiting for me" and "I am
+ * registered". If those were two separate critical sections, a decision landing between them would
+ * find no waiter, be remembered as an undelivered decision, and the waiter that arrived a
+ * microsecond later would block to its deadline with that decision sitting right there —
+ * unclaimed, for a call the user had already approved.
+ *
+ * So the settled check and the registration happen under one lock, and nothing observes the
+ * intermediate state. This is the same "fast user, slow frame" case as above, arriving through a
+ * narrower door.
  *
  * ## Why nothing here polls
  *
  * There is no database read, no flow collection and no timer beyond the caller's own deadline. The
  * decision is handed over in-process by whoever committed it, so "waiting" costs nothing and
- * cannot observe a half-applied transaction.
+ * cannot observe a half-applied transaction. A deadline is the caller's backstop, never the
+ * mechanism by which a decision is normally received.
  *
  * ## Why it is bounded
  *
- * [maxRememberedDecisions] caps the decisions held for waiters that never arrived. It is a
- * leak bound, not a correctness one: entries are dropped oldest-first, and a dropped entry
- * degrades to a timeout — a lost capability, never an execution.
+ * [maxRememberedDecisions] caps the decisions held for waiters that never arrived and the settled
+ * identities remembered. It is a leak bound, not a correctness one: entries are dropped
+ * oldest-first, and a dropped entry degrades to a timeout — a lost capability, never an execution.
+ * Identities are unique per approval, so reaching the bound needs thousands of approvals that no
+ * one ever waited on.
  */
 class InFlightApprovalWaiters(
     /**
-     * How many decided-but-unclaimed approvals are remembered.
+     * How many decisions and settled identities are remembered.
      *
      * Small on purpose. In normal use a decision is claimed within milliseconds by the wait that
      * is about to be reached, so this only ever holds the handful of taps that raced ahead. A
@@ -127,8 +154,35 @@ class InFlightApprovalWaiters(
     /** Identities abandoned before their waiter arrived, so a late wait does not hang. */
     private val abandonedAhead = LinkedHashMap<InFlightApprovalIdentity, InFlightApprovalOutcome>()
 
+    /**
+     * Identities that have already reached a terminal state — a decision or an abandonment.
+     *
+     * The exactly-once guard. Written **before** the corresponding delivery, and never removed by
+     * one, so a delivery cannot erase the record that it happened. Oldest-first bounded like the
+     * maps above.
+     */
+    private val settled = LinkedHashSet<InFlightApprovalIdentity>()
+
+    /**
+     * A test seam, invoked once inside the registration critical section, after the settled maps
+     * have been consulted and with the waiter already installed.
+     *
+     * It exists so the registration boundary can be exercised **deterministically** rather than by
+     * racing threads and hoping: a test sets this to a body that signals a decision on the same
+     * thread, which reenters the lock. A correct implementation has the waiter installed by then,
+     * so the signal finds it and the wait returns the decision immediately; the two-critical-
+     * section version this replaced would not yet have registered, so the same signal would be
+     * remembered as undelivered and the wait would run to its deadline.
+     *
+     * Production never sets it, and the cost of it there is one null check.
+     */
+    internal var onAwaitRegistration: (() -> Unit)? = null
+
     /** For diagnostics and tests: how many waits are currently suspended. */
     val waitingCount: Int get() = synchronized(lock) { waiting.size }
+
+    /** For diagnostics and tests: how many identities have reached a terminal state. */
+    val settledCount: Int get() = synchronized(lock) { settled.size }
 
     /**
      * Waits for this exact approval's decision, or gives up after [timeoutMs].
@@ -142,16 +196,23 @@ class InFlightApprovalWaiters(
         identity: InFlightApprovalIdentity,
         timeoutMs: Long,
     ): InFlightApprovalOutcome {
-        val settled = synchronized(lock) {
-            decidedAhead.remove(identity) ?: abandonedAhead.remove(identity)
-        }
-        if (settled != null) return settled
-
         val deferred = CompletableDeferred<InFlightApprovalOutcome>()
-        val previous = synchronized(lock) { waiting.put(identity, deferred) }
-        // A second wait for one identity would otherwise strand the first: only one of them could
-        // ever be completed by the single decision this identity can produce.
-        previous?.complete(InFlightApprovalOutcome.Abandoned(InFlightApprovalAbandonReason.CANCELLED))
+
+        // One critical section: consult what has already settled, and register if it has not.
+        val alreadySettled = synchronized(lock) {
+            val recorded = decidedAhead.remove(identity) ?: abandonedAhead.remove(identity)
+            if (recorded != null) {
+                recorded
+            } else {
+                // A second wait for one identity would otherwise strand the first: only one of
+                // them could ever be completed by the single decision this identity can produce.
+                waiting.put(identity, deferred)
+                    ?.complete(InFlightApprovalOutcome.Abandoned(InFlightApprovalAbandonReason.CANCELLED))
+                onAwaitRegistration?.invoke()
+                null
+            }
+        }
+        if (alreadySettled != null) return alreadySettled
 
         val outcome = withTimeoutOrNull(timeoutMs) { deferred.await() }
             ?: InFlightApprovalOutcome.Abandoned(InFlightApprovalAbandonReason.TIMEOUT)
@@ -167,39 +228,48 @@ class InFlightApprovalWaiters(
     /**
      * Hands over the decision that was durably committed for this approval.
      *
-     * Idempotent in both directions: a second call for an identity whose decision is already
-     * claimed changes nothing, which is what keeps a duplicate tap from reaching the runtime.
+     * Idempotent in both directions, and the second direction is the one that matters: a repeat
+     * arriving after a waiter has already taken the decision leaves **no** trace — not a waiter,
+     * not a remembered decision, nothing a later wait could pick up — so a duplicate tap cannot
+     * reach the runtime twice.
      */
     fun signalDecided(identity: InFlightApprovalIdentity, outcome: InFlightApprovalOutcome.Decided) {
         synchronized(lock) {
+            // Before anything else, and before the delivery: an identity that has already reached
+            // a terminal state ignores every later signal, whether or not a waiter claimed it.
+            if (!settled.add(identity)) return
+            trim()
+
             val deferred = waiting.remove(identity)
             if (deferred != null) {
                 deferred.complete(outcome)
                 return
             }
-            if (identity in decidedAhead) return
             decidedAhead[identity] = outcome
-            trim(decidedAhead)
         }
     }
 
     /**
      * Ends a wait with no decision, so the caller fails closed instead of hanging.
      *
-     * A no-op when the identity has already been decided: an abandon must never overwrite a real
-     * decision, because that would turn a granted tool into an unexecuted one.
+     * A no-op when the identity has already reached a terminal state, which is what stops an
+     * abandon from overwriting a real decision — that would turn a granted tool into an
+     * unexecuted one. The converse is also guaranteed by the same guard: once a call has been
+     * abandoned, a decision arriving afterwards is ignored rather than remembered, because the
+     * generation it belonged to is gone and nothing is waiting for it any more.
      */
     fun abandon(identity: InFlightApprovalIdentity, reason: InFlightApprovalAbandonReason) {
         synchronized(lock) {
-            if (identity in decidedAhead) return
-            val deferred = waiting.remove(identity)
+            if (!settled.add(identity)) return
+            trim()
+
             val outcome = InFlightApprovalOutcome.Abandoned(reason)
+            val deferred = waiting.remove(identity)
             if (deferred != null) {
                 deferred.complete(outcome)
                 return
             }
             abandonedAhead[identity] = outcome
-            trim(abandonedAhead)
         }
     }
 
@@ -208,6 +278,11 @@ class InFlightApprovalWaiters(
      *
      * Nothing is executed afterwards: each waiter receives [reason] and the bridge reports the
      * call as it reports any unproven conclusion.
+     *
+     * [settled] is deliberately **not** cleared. The registry closing does not make a decision
+     * that already happened un-happen, and an identity that was released before the shutdown must
+     * stay released after it — otherwise a decision still in flight would look fresh to a
+     * reconnected registry and could run a tool twice.
      */
     fun abandonAll(reason: InFlightApprovalAbandonReason) {
         val toRelease = synchronized(lock) {
@@ -220,7 +295,13 @@ class InFlightApprovalWaiters(
         toRelease.forEach { it.complete(InFlightApprovalOutcome.Abandoned(reason)) }
     }
 
-    /** Drops any remembered decision for this identity. Used when a call is concluded for good. */
+    /**
+     * Drops an **undelivered** decision or abandonment for this identity.
+     *
+     * Used when a call is concluded for good and nobody is coming for the answer. It does not
+     * clear [settled]: forgetting that a decision was delivered is exactly the state in which a
+     * duplicate tap becomes a second execution.
+     */
     fun forget(identity: InFlightApprovalIdentity) {
         synchronized(lock) {
             decidedAhead.remove(identity)
@@ -228,10 +309,18 @@ class InFlightApprovalWaiters(
         }
     }
 
-    private fun trim(map: LinkedHashMap<InFlightApprovalIdentity, InFlightApprovalOutcome>) {
-        while (map.size > maxRememberedDecisions) {
-            val oldest = map.keys.firstOrNull() ?: return
-            map.remove(oldest)
+    private fun trim() {
+        while (decidedAhead.size > maxRememberedDecisions) {
+            val oldest = decidedAhead.keys.firstOrNull() ?: break
+            decidedAhead.remove(oldest)
+        }
+        while (abandonedAhead.size > maxRememberedDecisions) {
+            val oldest = abandonedAhead.keys.firstOrNull() ?: break
+            abandonedAhead.remove(oldest)
+        }
+        while (settled.size > maxRememberedDecisions) {
+            val oldest = settled.firstOrNull() ?: break
+            settled.remove(oldest)
         }
     }
 }
