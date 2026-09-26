@@ -200,9 +200,7 @@ class SecondUserApprovalLifecycle(
             ConversationSourceInvalidationMode.APPLY,
         sourceInvalidationNowMs: Long = nowMs(),
     ): List<PendingToolApprovalRecord> {
-        require(owner.subjectType == SubjectType.LOCAL_SECOND_USER) {
-            "second_user_approval_owner_required"
-        }
+        requireAdmissibleApprovalOwner(owner, continuationMode)
         require(conversation.id.toString() == owner.conversationId) {
             "approval_conversation_mismatch"
         }
@@ -306,9 +304,7 @@ class SecondUserApprovalLifecycle(
         continuationMode: ApprovalContinuationMode = ApprovalContinuationMode.RESUME_COMMAND,
     ): List<PendingToolApprovalRecord> {
         check(database.inTransaction()) { "approval_authority_transaction_required" }
-        require(owner.subjectType == SubjectType.LOCAL_SECOND_USER) {
-            "second_user_approval_owner_required"
-        }
+        requireAdmissibleApprovalOwner(owner, continuationMode)
         if (tools.isEmpty()) return emptyList()
         val requestedAt = nowMs()
         return tools.distinctBy(PendingApprovalTool::toolCallId).map { tool ->
@@ -783,5 +779,46 @@ class SecondUserApprovalLifecycle(
         const val MAX_SUBJECT_CHARS = 160
         const val MAX_CAPABILITY_CHARS = 500
         const val MAX_CATEGORY_CHARS = 80
+    }
+}
+
+/**
+ * Who a pending-approval barrier may be written for.
+ *
+ * ## Why the subject requirement is not a property of approval
+ *
+ * Whether an assistant is a *second user* and which *provider* it is configured with are two
+ * independent settings. Nothing about "this tool call needs a human decision" requires the first,
+ * and conflating them would silently strip approval-gated tools from every ordinary assistant that
+ * happens to use a provider whose calls arrive inside a live generation.
+ *
+ * ## The two continuation modes are genuinely different, so they are gated differently
+ *
+ * [ApprovalContinuationMode.RESUME_COMMAND] is the pre-existing flow: the generation that raised
+ * the call has already ended, so approving it resumes by submitting a durable command. That flow
+ * is second-user-only for reasons that belong to the command and authority machinery around it,
+ * and **its behaviour is deliberately unchanged here** — this function returns exactly what the
+ * old `require` returned for it.
+ *
+ * [ApprovalContinuationMode.IN_FLIGHT] is the new flow: the generation is still running and
+ * blocked, the card is published into the same conversation, the decision releases an in-process
+ * waiter, and no command is created. It needs no second-user identity — it needs the exact
+ * approval identity, which is what [InFlightApprovalIdentity] carries — so it is admitted for any
+ * subject type. The remaining requirements (conversation agreement, exact identity on resolution,
+ * the schema fingerprint, the exact-identity checks on the approve path) are untouched and still
+ * apply.
+ *
+ * This widens nothing about *what may run*: approval is still required, the gate and the assessor
+ * still run, and a decision that never arrives still ends the call without executing it.
+ */
+internal fun requireAdmissibleApprovalOwner(
+    owner: PendingApprovalOwner,
+    continuationMode: ApprovalContinuationMode,
+) {
+    require(
+        owner.subjectType == SubjectType.LOCAL_SECOND_USER ||
+            continuationMode == ApprovalContinuationMode.IN_FLIGHT,
+    ) {
+        "second_user_approval_owner_required"
     }
 }
