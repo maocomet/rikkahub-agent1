@@ -1585,11 +1585,27 @@ val dataSourceModule = module {
             // host answers that the same way it answers every other missing identity: offer
             // nothing. A placeholder here would give two devices the same binding.
             deviceRefProvider = { pairing.currentDeviceIdOrNull() },
-            // CLOSED. The catalog is assembled and validated, but not offered. Offering a tool
-            // Android cannot conclude leaves the Server blocked on that call until its deadline,
-            // which is worse than offering none. This is the single line the activation commit
-            // changes, and it stays closed until the managed-device evidence exists.
+            // ── ACTIVATION ────────────────────────────────────────────────────────────────────
+            // CLOSED, and this is the **single line** the activation commit changes.
+            //
+            // Everything the flag gates is now wired and tested: the catalog assembly, the
+            // execution host over the real `DefaultToolRuntime`, the three execution paths, the
+            // in-flight approval over the existing card and approval UI, the claim that makes a
+            // call run at most once, and the cancel/close/replay/query lifecycle. What is not yet
+            // true is the evidence the plan requires before Claude may be told about a tool:
+            // the managed-device suite in `app/src/androidTest` has been written and gated, and
+            // has **not been executed** — there is no emulator on the development machine and this
+            // batch does not run CI.
+            //
+            // So the flag stays closed, and an accidental opening has to be a deliberate act:
+            // `ClaudePToolActivationStateTest` reads this file and fails if `offerCatalog` stops
+            // being `false`, so opening it means editing the test and saying why.
+            //
+            // Offering a tool Android cannot conclude is worse than offering none: the Server
+            // freezes the catalog, the model calls what it was shown, and a call nobody answers
+            // leaves the peer blocked until its deadline.
             offerCatalog = false,
+            // ── END ACTIVATION ────────────────────────────────────────────────────────────────
             // The app's real runtime, gate and cancellable-tool resolver. Supplying them is what
             // makes `execute` an execution rather than a refusal; they grant the host no authority
             // of their own, because every decision they make is still theirs.

@@ -219,6 +219,7 @@ jobs:
             --tests "me.rerere.rikkahub.data.claudep.ClaudePToolBridgeHostExecuteTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePToolExecutionClaimTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePToolLifecycleTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePToolActivationStateTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePToolProductionWiringTest" \
             --tests "me.rerere.rikkahub.data.capability.CapabilitySubjectResolverTest" \
             --tests "me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest" \
@@ -278,6 +279,7 @@ jobs:
             "app:me.rerere.rikkahub.data.claudep.ClaudePToolBridgeHostExecuteTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePToolExecutionClaimTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePToolLifecycleTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePToolActivationStateTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePToolProductionWiringTest"
             "app:me.rerere.rikkahub.data.capability.CapabilitySubjectResolverTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePToolRunControlsTest"
