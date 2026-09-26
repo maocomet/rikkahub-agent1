@@ -1,11 +1,11 @@
 package me.rerere.rikkahub.data.claudep
 
+import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.io.File
 import kotlinx.serialization.json.Json
 import me.rerere.ai.ui.MessageChunk
 import me.rerere.rikkahub.data.execution.ApprovalContinuationMode
@@ -17,7 +17,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The one-shot publication receipt: exactly-once, exact identity, and no ordering that deadlocks.
+ * The one-shot publication receipt: two identities kept apart, exactly-once, no ordering that
+ * deadlocks.
  *
  * ## What these tests can and cannot prove
  *
@@ -37,18 +38,64 @@ import org.junit.Test
  */
 class ClaudePToolPublicationReceiptsTest {
 
-    private fun id(
-        generationId: String = "run-1",
+    /** The Server's generation id. Never a run id, and never substituted by one anywhere below. */
+    private val serverGenerationId = "server-gen-1"
+
+    private val otherServerGenerationId = "server-gen-2"
+
+    private fun invocation(
+        serverGenerationId: String = this.serverGenerationId,
+        runId: String = "run-1",
         toolCallId: String = "call-1",
         toolName: String = "read_file",
-    ) = ClaudePToolPublicationId.of(generationId, toolCallId, toolName)
+        argsDigest: String = "args-digest-1",
+    ) = ClaudePToolPublicationInvocation(
+        serverGenerationId = serverGenerationId,
+        runId = runId,
+        toolCallId = toolCallId,
+        toolName = toolName,
+        argsDigest = argsDigest,
+    )
+
+    private fun key(
+        runId: String = "run-1",
+        toolCallId: String = "call-1",
+        toolName: String = "read_file",
+    ) = ClaudePToolPublicationKey.of(runId, toolCallId, toolName)
+
+    /**
+     * A registry whose run is already paired with its Server generation.
+     *
+     * That pairing is what the host records at `openGeneration`, and nothing here can publish
+     * without it — which is the first of the properties below.
+     */
+    private fun registry(maxEntries: Int = 64): ClaudePToolPublicationReceipts =
+        ClaudePToolPublicationReceipts(maxEntries).also {
+            assertTrue(
+                "the fixture's own pairing must be admitted",
+                it.bindGeneration(serverGenerationId = serverGenerationId, runId = "run-1"),
+            )
+        }
 
     /** `begin`, asserted to have been admitted, returning the handle. */
-    private fun ClaudePToolPublicationReceipts.began(
-        key: ClaudePToolPublicationId,
+    private fun began(
+        receipts: ClaudePToolPublicationReceipts,
+        runId: String = "run-1",
+        toolCallId: String = "call-1",
+        toolName: String = "read_file",
+        argsDigest: String = "args-digest-1",
+        serverGenerationId: String = this.serverGenerationId,
     ): ClaudePToolPublicationRequest {
-        val request = begin(key)
-        assertNotNull("begin must admit $key", request)
+        val request = receipts.begin(
+            invocation(
+                serverGenerationId = serverGenerationId,
+                runId = runId,
+                toolCallId = toolCallId,
+                toolName = toolName,
+                argsDigest = argsDigest,
+            ),
+        )
+        assertNotNull("begin must admit ($runId, $toolCallId, $toolName)", request)
         return request!!
     }
 
@@ -58,17 +105,160 @@ class ClaudePToolPublicationReceiptsTest {
     )
 
     // ---------------------------------------------------------------------------------------
-    // 1. The answer is the authority's, and it arrives exactly once
+    // 1. The two identities are separate, and both are required
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * A publication cannot exist before its run and Server generation have been paired.
+     *
+     * The pairing is recorded once, when the generation is opened, and this is what makes a key
+     * that was never proved unusable: there is no lookup by conversation, assistant or recency
+     * that could stand in for it.
+     */
+    @Test
+    fun `a publication is refused before its generation is bound`() {
+        val receipts = ClaudePToolPublicationReceipts()
+
+        assertNull(receipts.begin(invocation()))
+        assertEquals(0, receipts.pendingCount)
+    }
+
+    /**
+     * A run cannot be paired with two generations, and a generation cannot serve two runs.
+     *
+     * The first half is the case a caller holding *right run, wrong generation* produces; the
+     * second is *right generation, wrong run*. Both are refused, and refusing them is what makes
+     * the record an association rather than a hint.
+     */
+    @Test
+    fun `a contradicted pairing is refused in both directions`() {
+        val receipts = ClaudePToolPublicationReceipts()
+
+        assertTrue(receipts.bindGeneration(serverGenerationId, "run-1"))
+        assertFalse(
+            "one run cannot serve a second generation",
+            receipts.bindGeneration(otherServerGenerationId, "run-1"),
+        )
+        assertFalse(
+            "one generation cannot be served by a second run",
+            receipts.bindGeneration(serverGenerationId, "run-2"),
+        )
+        assertEquals("and the first pairing still stands", serverGenerationId, receipts.serverGenerationIdFor("run-1"))
+    }
+
+    /**
+     * A publication whose generation does not match the pairing is refused, on either side.
+     *
+     * This is the required case spelled out: right run with the wrong Server generation, and the
+     * right Server generation with the wrong run. Neither is a near-miss to be resolved — a
+     * publication is a claim that a specific remote generation's call belongs to a specific local
+     * run, and a claim that cannot be checked against the record is not one this side may act on.
+     */
+    @Test
+    fun `a publication for a mismatched pairing is refused`() {
+        val receipts = registry()
+
+        assertNull(
+            "right run, wrong Server generation",
+            receipts.begin(invocation(serverGenerationId = otherServerGenerationId)),
+        )
+        assertNull(
+            "right Server generation, wrong run",
+            receipts.begin(invocation(runId = "run-2")),
+        )
+        assertEquals("nothing was admitted", 0, receipts.pendingCount)
+    }
+
+    /** Closing a generation drops its association, and a later publication cannot re-pair it. */
+    @Test
+    fun `closing a generation retires the pairing`() {
+        val receipts = registry()
+
+        receipts.unbindGeneration(serverGenerationId, ClaudePToolPublicationAbandonReason.GENERATION_CLOSED)
+
+        assertEquals(0, receipts.boundRunCount)
+        assertNull("the run can no longer publish", receipts.begin(invocation()))
+        assertNull(receipts.serverGenerationIdFor("run-1"))
+    }
+
+    /**
+     * The invocation record is immutable, and the argument digest is part of it.
+     *
+     * The digest comes from the Server's original invocation, never from a digest recomputed over
+     * the conversation's copy of the arguments — that copy has been through
+     * `RuntimeSecretRedactor`, so a digest taken from it would disagree with the ledger for exactly
+     * the calls that carry a secret. Recording the original here is what makes "the same
+     * invocation" checkable without ever moving the arguments themselves.
+     */
+    @Test
+    fun `the recorded invocation carries the original argument digest`() {
+        val receipts = registry()
+        val request = began(receipts, argsDigest = "digest-from-the-server")
+
+        assertEquals("digest-from-the-server", request.invocation.argsDigest)
+        assertEquals(serverGenerationId, request.invocation.serverGenerationId)
+        assertEquals("run-1", request.invocation.runId)
+        assertEquals(
+            "and the key is the half the authority rebuilds",
+            key(),
+            request.key,
+        )
+    }
+
+    /** Two calls that share a key but differ in any recorded field are not the same call. */
+    @Test
+    fun `sameCallAs compares every recorded field`() {
+        val original = invocation()
+
+        assertTrue(original.sameCallAs(invocation()))
+        assertFalse(original.sameCallAs(invocation(argsDigest = "different")))
+        assertFalse(original.sameCallAs(invocation(toolName = "write_file")))
+        assertFalse(original.sameCallAs(invocation(toolCallId = "call-2")))
+        assertFalse(original.sameCallAs(invocation(runId = "run-2")))
+        assertFalse(original.sameCallAs(invocation(serverGenerationId = otherServerGenerationId)))
+    }
+
+    /**
+     * A key built from a **redacted** part still matches.
+     *
+     * This is the property that makes the whole in-flight path work for a call whose arguments
+     * carry a secret. The conversation authority sees `UIMessagePart.Tool.input` after
+     * `RuntimeSecretRedactor` has rewritten it, and it rebuilds the key from the run, the call id
+     * and the tool name — none of which redaction touches. So the completion arrives, while the
+     * argument digest the registry holds is still the one the Server sent.
+     */
+    @Test
+    fun `redaction of the arguments does not change the key`() = runBlocking {
+        val receipts = registry()
+        val request = began(receipts, argsDigest = "original-args-digest")
+
+        // What the authority can rebuild after the redactor has rewritten the part's input.
+        val rebuiltAfterRedaction = ClaudePToolPublicationKey.of(
+            runId = "run-1",
+            toolCallId = "call-1",
+            toolName = "read_file",
+        )
+
+        assertTrue(receipts.complete(rebuiltAfterRedaction, "approval-1", "execution-1"))
+        assertEquals(committed, request.await(5_000))
+        assertEquals(
+            "and the original digest is what the publisher still holds",
+            "original-args-digest",
+            request.invocation.argsDigest,
+        )
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 2. The answer is the authority's, and it arrives exactly once
     // ---------------------------------------------------------------------------------------
 
     /** A committed receipt carries the identities the authority derived, not ones re-derived here. */
     @Test
     fun `a committed receipt carries the authority's own identities`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val key = id()
-        val request = receipts.began(key)
+        val receipts = registry()
+        val request = began(receipts)
 
-        assertTrue(receipts.complete(key, "approval-9", "execution-9"))
+        assertTrue(receipts.complete(key(), "approval-9", "execution-9"))
 
         assertEquals(
             ClaudePToolPublicationOutcome.Committed("approval-9", "execution-9"),
@@ -85,13 +275,12 @@ class ClaudePToolPublicationReceiptsTest {
      */
     @Test
     fun `a duplicate completion changes nothing`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val key = id()
-        val request = receipts.began(key)
+        val receipts = registry()
+        val request = began(receipts)
 
-        assertTrue("the first completion settles the id", receipts.complete(key, "a-1", "e-1"))
-        assertFalse("the second is a no-op", receipts.complete(key, "a-2", "e-2"))
-        assertFalse("and a refusal after it is too", receipts.refuse(key, "late"))
+        assertTrue("the first completion settles the key", receipts.complete(key(), "a-1", "e-1"))
+        assertFalse("the second is a no-op", receipts.complete(key(), "a-2", "e-2"))
+        assertFalse("and a refusal after it is too", receipts.refuse(key(), "late"))
 
         assertEquals(ClaudePToolPublicationOutcome.Committed("a-1", "e-1"), request.await(5_000))
     }
@@ -99,12 +288,11 @@ class ClaudePToolPublicationReceiptsTest {
     /** A refusal is terminal in the same way, and is what a rolled-back barrier must produce. */
     @Test
     fun `a refused publication never becomes a commit`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val key = id()
-        val request = receipts.began(key)
+        val receipts = registry()
+        val request = began(receipts)
 
-        assertTrue(receipts.refuse(key, "approval_authority_rollback"))
-        assertFalse(receipts.complete(key, "a-1", "e-1"))
+        assertTrue(receipts.refuse(key(), "approval_authority_rollback"))
+        assertFalse(receipts.complete(key(), "a-1", "e-1"))
 
         assertEquals(
             ClaudePToolPublicationOutcome.Refused("approval_authority_rollback"),
@@ -113,28 +301,27 @@ class ClaudePToolPublicationReceiptsTest {
     }
 
     // ---------------------------------------------------------------------------------------
-    // 2. Wrong identity does not touch the right waiter
+    // 3. Wrong identity does not touch the right waiter
     // ---------------------------------------------------------------------------------------
 
     /**
-     * Every field of the id is load-bearing, checked one at a time.
+     * Every field of the key is load-bearing, checked one at a time.
      *
-     * A completion that names a different generation, a different call or a different tool is a
-     * completion for something else, and the waiter it does not describe must stay exactly where it
-     * was — still waiting, not released, not refused.
+     * A completion that names a different run, a different call or a different tool is a completion
+     * for something else, and the waiter it does not describe must stay exactly where it was —
+     * still waiting, not released, not refused.
      */
     @Test
     fun `a completion for another identity leaves the right waiter untouched`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val key = id()
-        val request = receipts.began(key)
+        val receipts = registry()
+        val request = began(receipts)
 
         for (wrong in listOf(
-            id(generationId = "run-other"),
-            id(toolCallId = "call-other"),
-            id(toolName = "write_file"),
+            key(runId = "run-other"),
+            key(toolCallId = "call-other"),
+            key(toolName = "write_file"),
         )) {
-            assertFalse("$wrong must not settle $key", receipts.complete(wrong, "a-x", "e-x"))
+            assertFalse("$wrong must not settle ${key()}", receipts.complete(wrong, "a-x", "e-x"))
         }
 
         assertEquals("the real waiter is still live", 1, receipts.pendingCount)
@@ -145,41 +332,46 @@ class ClaudePToolPublicationReceiptsTest {
         )
     }
 
-    /** An id nobody began settles nothing, and does not grow the registry into doing so. */
+    /** A key nobody began settles nothing, and does not grow the registry into doing so. */
     @Test
-    fun `an id that was never begun settles nothing`() {
-        val receipts = ClaudePToolPublicationReceipts()
-        receipts.began(id())
+    fun `a key that was never begun settles nothing`() {
+        val receipts = registry()
+        began(receipts)
 
-        assertFalse(receipts.complete(id(generationId = "run-other"), "a", "e"))
+        assertFalse(receipts.complete(key(runId = "run-other"), "a", "e"))
         assertEquals(1, receipts.pendingCount)
         assertEquals("nothing was recorded as settled", 0, receipts.settledCount)
     }
 
     /**
-     * An id cannot be published twice while it is live, or while its answer is still remembered.
+     * A key cannot be published twice while it is live, or while its answer is still remembered.
      *
-     * Re-arming a settled id is how a stale duplicate would release a *new* request it does not
-     * describe. Refusing keeps one entry per id, which is what makes "exactly once" true by
-     * construction rather than by timing.
+     * Re-arming a settled key is how a stale duplicate would release a *new* request it does not
+     * describe. This also covers the same call id carrying **different arguments**: the key does
+     * not include the argument digest — it cannot, the authority cannot rebuild it — so the refusal
+     * here is what keeps a second call with different arguments from taking over the first one's
+     * pending answer.
      */
     @Test
-    fun `an id cannot be re-armed while it is live or settled`() {
-        val receipts = ClaudePToolPublicationReceipts()
-        val key = id()
+    fun `a key cannot be re-armed while it is live or settled`() {
+        val receipts = registry()
 
-        assertNotNull(receipts.begin(key))
-        assertNull("live", receipts.begin(key))
+        assertNotNull(receipts.begin(invocation()))
+        assertNull("live", receipts.begin(invocation()))
+        assertNull(
+            "and a live key with different arguments is the same key",
+            receipts.begin(invocation(argsDigest = "tampered")),
+        )
 
-        assertTrue(receipts.complete(key, "a", "e"))
-        assertNull("settled and not yet released", receipts.begin(key))
+        assertTrue(receipts.complete(key(), "a", "e"))
+        assertNull("settled and not yet released", receipts.begin(invocation()))
 
-        receipts.release(key)
-        assertNotNull("released, so publishable again", receipts.begin(key))
+        receipts.release(key())
+        assertNotNull("released, so publishable again", receipts.begin(invocation()))
     }
 
     // ---------------------------------------------------------------------------------------
-    // 3. Both orderings are correct, and neither deadlocks
+    // 4. Both orderings are correct, and neither deadlocks
     // ---------------------------------------------------------------------------------------
 
     /**
@@ -191,11 +383,10 @@ class ClaudePToolPublicationReceiptsTest {
      */
     @Test
     fun `a receipt committed before the publisher waits is returned immediately`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val key = id()
-        val request = receipts.began(key)
+        val receipts = registry()
+        val request = began(receipts)
 
-        assertTrue(receipts.complete(key, "approval-1", "execution-1"))
+        assertTrue(receipts.complete(key(), "approval-1", "execution-1"))
 
         assertEquals(committed, request.await(50))
     }
@@ -210,9 +401,8 @@ class ClaudePToolPublicationReceiptsTest {
      */
     @Test
     fun `a receipt committed while the publisher is suspended releases it`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val key = id()
-        val request = receipts.began(key)
+        val receipts = registry()
+        val request = began(receipts)
 
         val publisherStarted = CompletableDeferred<Unit>()
         val publisher = async(Dispatchers.Default) {
@@ -223,7 +413,7 @@ class ClaudePToolPublicationReceiptsTest {
         assertEquals("the publisher is registered", 1, receipts.pendingCount)
 
         // The authority's half, on this thread, against a genuinely suspended waiter.
-        assertTrue(receipts.complete(key, "approval-1", "execution-1"))
+        assertTrue(receipts.complete(key(), "approval-1", "execution-1"))
 
         assertEquals(committed, withTimeout(5_000) { publisher.await() })
         assertEquals("and nothing is left behind", 0, receipts.pendingCount)
@@ -238,9 +428,8 @@ class ClaudePToolPublicationReceiptsTest {
      */
     @Test
     fun `committing does not require the lock a suspended wait holds`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val keys = (1..4).map { id(toolCallId = "call-$it") }
-        val requests = keys.map { receipts.began(it) }
+        val receipts = registry()
+        val requests = (1..4).map { began(receipts, toolCallId = "call-$it") }
         assertEquals(4, receipts.pendingCount)
 
         val started = CompletableDeferred<Unit>()
@@ -253,24 +442,23 @@ class ClaudePToolPublicationReceiptsTest {
         started.await()
 
         // All four settle from here, while all four waits are suspended elsewhere.
-        assertTrue(keys.all { receipts.complete(it, "approval-$it", "execution-$it") })
+        assertTrue((1..4).all { receipts.complete(key(toolCallId = "call-$it"), "a-$it", "e-$it") })
 
         assertEquals(
-            keys.map { ClaudePToolPublicationOutcome.Committed("approval-$it", "execution-$it") },
+            (1..4).map { ClaudePToolPublicationOutcome.Committed("a-$it", "e-$it") },
             withTimeout(5_000) { waiters.map { it.await() } },
         )
     }
 
     // ---------------------------------------------------------------------------------------
-    // 4. Every way a wait can end without a commit
+    // 5. Every way a wait can end without a commit
     // ---------------------------------------------------------------------------------------
 
     /** The caller's own deadline — the tool deadline, borrowed rather than invented. */
     @Test
     fun `a wait that outlives its deadline is abandoned and releases nothing`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val key = id()
-        val request = receipts.began(key)
+        val receipts = registry()
+        val request = began(receipts)
 
         assertEquals(
             ClaudePToolPublicationOutcome.Abandoned(ClaudePToolPublicationAbandonReason.TIMEOUT),
@@ -279,8 +467,8 @@ class ClaudePToolPublicationReceiptsTest {
 
         // A completion that lands afterwards must not resurrect anything: the host has released,
         // so there is no entry for it to settle.
-        receipts.release(key)
-        assertFalse(receipts.complete(key, "a", "e"))
+        receipts.release(key())
+        assertFalse(receipts.complete(key(), "a", "e"))
         assertEquals(0, receipts.pendingCount)
         assertEquals(0, receipts.settledCount)
     }
@@ -288,9 +476,8 @@ class ClaudePToolPublicationReceiptsTest {
     /** A cancel reaching the call before any commit ends the wait, and stays closed. */
     @Test
     fun `a cancel ends the wait and a later commit does not reopen it`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val key = id()
-        val request = receipts.began(key)
+        val receipts = registry()
+        val request = began(receipts)
 
         val started = CompletableDeferred<Unit>()
         val waiting = async(Dispatchers.Default) {
@@ -305,62 +492,86 @@ class ClaudePToolPublicationReceiptsTest {
             withTimeout(5_000) { waiting.await() },
         )
 
-        receipts.release(key)
-        assertFalse("a commit after the cancel changes nothing", receipts.complete(key, "a", "e"))
+        receipts.release(key())
+        assertFalse("a commit after the cancel changes nothing", receipts.complete(key(), "a", "e"))
     }
 
     /** A generation ending takes its own publications and nothing else's. */
     @Test
     fun `a generation close abandons only its own publications`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val mine = id(generationId = "run-1")
-        val theirs = id(generationId = "run-2", toolCallId = "call-2")
-        val myRequest = receipts.began(mine)
-        val theirRequest = receipts.began(theirs)
+        val receipts = registry()
+        assertTrue(receipts.bindGeneration(otherServerGenerationId, "run-2"))
+        val mine = began(receipts)
+        val theirs = began(
+            receipts,
+            runId = "run-2",
+            toolCallId = "call-2",
+            // A second run is a second generation: publishing it under the first run's Server id
+            // is the mismatched pairing the registry refuses, so the fixture states its own.
+            serverGenerationId = otherServerGenerationId,
+        )
 
-        receipts.abandonGeneration("run-1", ClaudePToolPublicationAbandonReason.GENERATION_CLOSED)
+        receipts.unbindGeneration(
+            serverGenerationId,
+            ClaudePToolPublicationAbandonReason.GENERATION_CLOSED,
+        )
 
         assertEquals(
             ClaudePToolPublicationOutcome.Abandoned(
                 ClaudePToolPublicationAbandonReason.GENERATION_CLOSED,
             ),
-            myRequest.await(5_000),
+            mine.await(5_000),
         )
         assertEquals("the other generation is untouched", 1, receipts.pendingCount)
-        assertTrue(receipts.complete(theirs, "a-2", "e-2"))
+        assertTrue(receipts.complete(key(runId = "run-2", toolCallId = "call-2"), "a-2", "e-2"))
         assertEquals(
             ClaudePToolPublicationOutcome.Committed("a-2", "e-2"),
-            theirRequest.await(5_000),
+            theirs.await(5_000),
         )
+    }
+
+    /** A run ending takes its own publications but keeps its generation pairing. */
+    @Test
+    fun `a run close abandons its publications and keeps the pairing`() = runBlocking {
+        val receipts = registry()
+        val request = began(receipts)
+
+        receipts.abandonRun("run-1", ClaudePToolPublicationAbandonReason.CANCELLED)
+
+        assertEquals(
+            ClaudePToolPublicationOutcome.Abandoned(ClaudePToolPublicationAbandonReason.CANCELLED),
+            request.await(5_000),
+        )
+        assertEquals("the pairing survives a run-scoped close", serverGenerationId, receipts.serverGenerationIdFor("run-1"))
+        assertNotNull("so the run may publish again", receipts.begin(invocation(toolCallId = "call-2")))
     }
 
     /** A registry close ends everything, and does not un-happen an answer already given. */
     @Test
     fun `a registry close ends every wait`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
-        val answered = id(toolCallId = "call-answered")
-        val live = id(toolCallId = "call-live")
-        val answeredRequest = receipts.began(answered)
-        val liveRequest = receipts.began(live)
-        assertTrue(receipts.complete(answered, "a-1", "e-1"))
+        val receipts = registry()
+        val answered = began(receipts, toolCallId = "call-answered")
+        val live = began(receipts, toolCallId = "call-live")
+        assertTrue(receipts.complete(key(toolCallId = "call-answered"), "a-1", "e-1"))
 
         receipts.abandonAll(ClaudePToolPublicationAbandonReason.REGISTRY_CLOSED)
 
         assertEquals(
             ClaudePToolPublicationOutcome.Committed("a-1", "e-1"),
-            answeredRequest.await(5_000),
+            answered.await(5_000),
         )
         assertEquals(
             ClaudePToolPublicationOutcome.Abandoned(
                 ClaudePToolPublicationAbandonReason.REGISTRY_CLOSED,
             ),
-            liveRequest.await(5_000),
+            live.await(5_000),
         )
         assertEquals(0, receipts.pendingCount)
+        assertEquals("and the associations are gone with it", 0, receipts.boundRunCount)
     }
 
     // ---------------------------------------------------------------------------------------
-    // 5. Bounds, and no residue on any path
+    // 6. Bounds, and no residue on any path
     // ---------------------------------------------------------------------------------------
 
     /**
@@ -371,10 +582,10 @@ class ClaudePToolPublicationReceiptsTest {
      */
     @Test
     fun `an evicted publication fails closed rather than hanging`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts(maxEntries = 2)
-        val first = receipts.began(id(toolCallId = "call-1"))
-        receipts.began(id(toolCallId = "call-2"))
-        receipts.began(id(toolCallId = "call-3"))
+        val receipts = registry(maxEntries = 2)
+        val first = began(receipts, toolCallId = "call-1")
+        began(receipts, toolCallId = "call-2")
+        began(receipts, toolCallId = "call-3")
 
         assertTrue("stays inside the bound", receipts.pendingCount <= 2)
         assertEquals(
@@ -383,60 +594,64 @@ class ClaudePToolPublicationReceiptsTest {
         )
     }
 
-    /** Terminal ids are remembered under the same bound, so `settled` cannot grow either. */
+    /** Terminal keys are remembered under the same bound, so `settled` cannot grow either. */
     @Test
-    fun `remembered terminal ids are bounded too`() {
-        val receipts = ClaudePToolPublicationReceipts(maxEntries = 2)
+    fun `remembered terminal keys are bounded too`() {
+        val receipts = registry(maxEntries = 2)
         repeat(5) { index ->
-            val key = id(toolCallId = "call-$index")
-            receipts.began(key)
-            assertTrue(receipts.complete(key, "a-$index", "e-$index"))
+            began(receipts, toolCallId = "call-$index")
+            assertTrue(receipts.complete(key(toolCallId = "call-$index"), "a-$index", "e-$index"))
         }
 
         assertEquals(0, receipts.pendingCount)
-        assertTrue("settled ids stay inside the bound", receipts.settledCount <= 2)
+        assertTrue("settled keys stay inside the bound", receipts.settledCount <= 2)
     }
 
     /**
-     * Every terminal path leaves the registry empty once the publisher is done with the id.
+     * Every terminal path leaves the registry empty once the publisher is done with the key.
      *
      * A leak here is not a crash: it is a map that slowly stops accepting new publications, which
      * presents as approval-gated calls that time out for no visible reason.
      */
     @Test
     fun `no path leaves an entry behind once released`() = runBlocking {
-        val receipts = ClaudePToolPublicationReceipts()
+        val receipts = registry()
 
-        val committedKey = id(toolCallId = "call-committed")
-        receipts.began(committedKey)
-        assertTrue(receipts.complete(committedKey, "a", "e"))
-        receipts.release(committedKey)
+        began(receipts, toolCallId = "call-committed").let {
+            assertTrue(receipts.complete(key(toolCallId = "call-committed"), "a", "e"))
+            receipts.release(it.key)
+        }
 
-        val refusedKey = id(toolCallId = "call-refused")
-        receipts.began(refusedKey)
-        assertTrue(receipts.refuse(refusedKey, "rollback"))
-        receipts.release(refusedKey)
+        began(receipts, toolCallId = "call-refused").let {
+            assertTrue(receipts.refuse(it.key, "rollback"))
+            receipts.release(it.key)
+        }
 
-        val timedOutKey = id(toolCallId = "call-timeout")
-        receipts.began(timedOutKey).await(20)
-        receipts.release(timedOutKey)
+        began(receipts, toolCallId = "call-timeout").let {
+            it.await(20)
+            receipts.release(it.key)
+        }
 
-        val cancelledKey = id(toolCallId = "call-cancelled")
-        receipts.began(cancelledKey).cancel(ClaudePToolPublicationAbandonReason.CANCELLED)
-        receipts.release(cancelledKey)
+        began(receipts, toolCallId = "call-cancelled").let {
+            it.cancel(ClaudePToolPublicationAbandonReason.CANCELLED)
+            receipts.release(it.key)
+        }
 
-        val closedKey = id(toolCallId = "call-closed")
-        receipts.began(closedKey)
-        receipts.abandonGeneration("run-1", ClaudePToolPublicationAbandonReason.GENERATION_CLOSED)
-        receipts.release(closedKey)
+        began(receipts, toolCallId = "call-closed").let {
+            receipts.unbindGeneration(
+                serverGenerationId,
+                ClaudePToolPublicationAbandonReason.GENERATION_CLOSED,
+            )
+            receipts.release(it.key)
+        }
 
         assertEquals("no live entries", 0, receipts.pendingCount)
         assertEquals("no remembered terminals", 0, receipts.settledCount)
-        assertTrue(receipts.pendingIds().isEmpty())
+        assertTrue(receipts.pendingKeys().isEmpty())
     }
 
     // ---------------------------------------------------------------------------------------
-    // 6. It stays inside the process
+    // 7. It stays inside the process
     // ---------------------------------------------------------------------------------------
 
     /**
@@ -489,29 +704,42 @@ class ClaudePToolPublicationReceiptsTest {
         )
     }
 
-    private fun projectFile(vararg candidates: String): File =
-        requireNotNull(candidates.asSequence().map(::File).firstOrNull(File::isFile)) {
-            "Cannot locate ${candidates.joinToString()} from ${File(".").absolutePath}"
-        }
-
-    /** A publication id renders as pseudonyms, so a log line or a test failure cannot leak it. */
+    /**
+     * A publication identity renders as pseudonyms, so a log line or a test failure cannot leak it.
+     *
+     * Both halves are checked, including the Server's generation id — which is the one most easily
+     * mistaken for something harmless to print.
+     */
     @Test
-    fun `a publication id does not print what it holds`() {
-        val rendered = id(
-            generationId = "run-secret",
+    fun `a publication identity does not print what it holds`() {
+        val rendered = invocation(
+            serverGenerationId = "server-gen-secret",
+            runId = "run-secret",
             toolCallId = "call-secret",
             toolName = "read_secret_file",
-        ).toString()
+            argsDigest = "args-secret",
+        ).toString() + " " + key(runId = "run-secret").toString()
 
-        assertFalse(rendered, rendered.contains("run-secret"))
-        assertFalse(rendered, rendered.contains("call-secret"))
-        assertFalse(rendered, rendered.contains("read_secret_file"))
+        for (secret in listOf(
+            "server-gen-secret",
+            "run-secret",
+            "call-secret",
+            "read_secret_file",
+            "args-secret",
+        )) {
+            assertFalse(rendered, rendered.contains(secret))
+        }
     }
 
     /** Two different invocations of the same call id are two different publications. */
     @Test
     fun `the tool name is part of the identity`() {
-        assertFalse(id(toolName = "read_file") == id(toolName = "write_file"))
-        assertEquals(id(toolName = "read_file"), id(toolName = "read_file"))
+        assertFalse(key(toolName = "read_file") == key(toolName = "write_file"))
+        assertEquals(key(toolName = "read_file"), key(toolName = "read_file"))
     }
+
+    private fun projectFile(vararg candidates: String): File =
+        requireNotNull(candidates.asSequence().map(::File).firstOrNull(File::isFile)) {
+            "Cannot locate ${candidates.joinToString()} from ${File(".").absolutePath}"
+        }
 }

@@ -4084,14 +4084,28 @@ class ChatService(
                                     // has a publisher waiting on it: a resume-command card is
                                     // answered by the user's tap and a later command, and nothing
                                     // in this process is blocked on it.
-                                    val publicationIds = if (
+                                    //
+                                    // Addressed by the *Android* run id, which is what this side
+                                    // holds, and never by the Server's generation id, which it
+                                    // never learns. The Server's id was paired with this run when
+                                    // the generation was opened and is checked there — this side
+                                    // could not supply it, and a key that required it could not be
+                                    // rebuilt here at all.
+                                    //
+                                    // The tool name comes from the part, and the parts here are
+                                    // the **post-redaction** copy: `RuntimeSecretRedactor` rewrites
+                                    // `UIMessagePart.Tool.input` before this collector sees it. That
+                                    // is exactly why the key is built from the name and the ids and
+                                    // not from a digest of the input — redaction changes the
+                                    // arguments, never the identity of the call.
+                                    val publicationKeys = if (
                                         continuation == ApprovalContinuationMode.IN_FLIGHT &&
                                         pendingOwner != null
                                     ) {
                                         pendingTools.map { tool ->
                                             me.rerere.rikkahub.data.claudep
-                                                .ClaudePToolPublicationId.of(
-                                                    generationId = pendingOwner.runId,
+                                                .ClaudePToolPublicationKey.of(
+                                                    runId = pendingOwner.runId,
                                                     toolCallId = tool.toolCallId,
                                                     toolName = tool.toolName,
                                                 )
@@ -4159,9 +4173,9 @@ class ChatService(
                                             // state in which a tool must not run. Rethrown
                                             // unchanged: a failed authority commit still fails the
                                             // run, and a cancellation is still a cancellation.
-                                            publicationIds.forEach { id ->
+                                            publicationKeys.forEach { key ->
                                                 claudePToolPublicationReceipts.refuse(
-                                                    id = id,
+                                                    key = key,
                                                     localReason = "approval_authority_rollback",
                                                 )
                                             }
@@ -4174,20 +4188,20 @@ class ChatService(
                                         // that succeeded, says nothing about a commit, and treating
                                         // it as one would let a tool wait on a decision for a
                                         // barrier that rolled back.
-                                        publicationIds.forEach { id ->
-                                            val receipt = barrierReceipts[id.toolCallId]
+                                        publicationKeys.forEach { key ->
+                                            val receipt = barrierReceipts[key.toolCallId]
                                             if (receipt == null) {
                                                 // Committed, but the barrier the authority wrote
                                                 // did not name this card. Refused rather than
                                                 // guessed at: without an exact approval identity
                                                 // there is nothing for a waiter to wait on.
                                                 claudePToolPublicationReceipts.refuse(
-                                                    id = id,
+                                                    key = key,
                                                     localReason = "approval_barrier_missing",
                                                 )
                                             } else {
                                                 claudePToolPublicationReceipts.complete(
-                                                    id = id,
+                                                    key = key,
                                                     approvalId = receipt.first,
                                                     executionId = receipt.second,
                                                 )
@@ -4206,9 +4220,9 @@ class ChatService(
                                         // nothing to acknowledge. A publisher waiting on one of
                                         // these would otherwise hang until its deadline; refusing
                                         // tells it to run nothing straight away.
-                                        publicationIds.forEach { id ->
+                                        publicationKeys.forEach { key ->
                                             claudePToolPublicationReceipts.refuse(
-                                                id = id,
+                                                key = key,
                                                 localReason = "approval_authority_transaction_absent",
                                             )
                                         }

@@ -227,7 +227,30 @@ class ClaudePToolBridgeHostImpl(
     override suspend fun openGeneration(
         generationId: String,
         preparation: ClaudePToolPreparation,
-    ): Boolean = bindings.open(generationId, preparation.executionRef)
+    ): Boolean {
+        // The text path and every refusal carry no execution plan, so there is nothing to pair and
+        // nothing this host could serve. That is a success, exactly as it is for the binding.
+        val executionRef = preparation.executionRef
+            ?: return bindings.open(generationId, null)
+
+        if (!bindings.open(generationId, executionRef)) return false
+
+        // The Server's generation id only exists here — it came back in the answer to
+        // `generation.start` — and this is the one instant at which it can be paired with the run
+        // that serves it. Every later question about the pairing is answered from this record,
+        // never re-derived: a conversation id, an assistant id or "the run that is executing now"
+        // can each *find* a run, and none of them can *prove* which one a call belongs to.
+        //
+        // A refused pairing fails the generation rather than running it. `bindGeneration` refuses
+        // only a contradiction of something already recorded, so reaching it means two different
+        // generations have claimed one run — a state in which no call can be answered correctly.
+        val runId = bindings.lookup(generationId)?.runId ?: return false
+        if (!publications.bindGeneration(serverGenerationId = generationId, runId = runId)) {
+            bindings.close(generationId)
+            return false
+        }
+        return true
+    }
 
     /**
      * Releases a generation's binding, from the same `finally` that closes the tool registry.
@@ -235,8 +258,19 @@ class ClaudePToolBridgeHostImpl(
      * Not suspending on purpose: it runs on a path that may already be cancelled, and a suspension
      * point there is how a release gets skipped and a dead generation's context is kept alive. A
      * no-op for a generation that was never bound.
+     *
+     * The publication association is dropped here too, and for the same reason the binding is: a
+     * terminal, a cancellation, a disconnect and a provider failure are all "this generation is
+     * over", and an association that outlived one would let a later call pair that run with a
+     * generation nothing is serving any more. Its outstanding publications are ended with it, so a
+     * host suspended on one fails closed rather than waiting out a deadline for a generation that
+     * no longer exists.
      */
     override fun closeGeneration(generationId: String) {
+        publications.unbindGeneration(
+            serverGenerationId = generationId,
+            reason = ClaudePToolPublicationAbandonReason.GENERATION_CLOSED,
+        )
         bindings.close(generationId)
     }
 
@@ -380,19 +414,46 @@ class ClaudePToolBridgeHostImpl(
         plan: ClaudePToolExecutionPlan,
         status: ClaudePToolStatusSink,
     ): BridgeToolExecution {
-        // The app's generation identity, which is the run id and not the Server's generation id.
-        // The conversation authority never learns the latter, so a key that required it could not
-        // be recomputed on the side that has to answer.
-        val publicationId = ClaudePToolPublicationId.of(
-            generationId = plan.runId,
+        // Both identities, kept apart. `invocation.binding.generationId` is the **Server's**
+        // generation — the one the frame arrived under — and `plan.runId` is the Android run
+        // serving it. Binding the two together is what `openGeneration` recorded; this asserts
+        // that the record still says what this call assumes, so a call whose generation and run
+        // disagree is refused here rather than executed under another generation's plan.
+        //
+        // The plan was found by `bindings.lookup(invocation.binding.generationId)` — an exact
+        // lookup on the Server's id, with no search by conversation, assistant or recency — so
+        // this is a confirmation of that lookup rather than a second, weaker one.
+        val serverGenerationId = invocation.binding.generationId
+        if (publications.serverGenerationIdFor(plan.runId) != serverGenerationId) {
+            return unexecuted(invocation)
+        }
+
+        // The invocation's own digest must agree with the binding the ledger admitted it under.
+        // The adapter derives both from the same validated arguments, so a disagreement is not a
+        // protocol event — it is a caller that assembled an invocation by hand, or one whose
+        // arguments were swapped after admission while the binding was carried over. Either way
+        // the digest recorded here would describe a call the ledger never admitted, and an
+        // approval earned by the real call could be spent on a different one.
+        if (invocation.argsDigest != invocation.binding.argsDigest) return unexecuted(invocation)
+
+        val publicationInvocation = ClaudePToolPublicationInvocation(
+            serverGenerationId = serverGenerationId,
+            runId = plan.runId,
             toolCallId = invocation.binding.toolCallId,
             toolName = invocation.toolNameForRuntime,
+            // The contract's digest of the arguments the Server actually sent, taken from the
+            // admitted invocation. Never recomputed from the conversation part: that copy has been
+            // through `RuntimeSecretRedactor`, so a digest taken from it would disagree with the
+            // ledger for exactly the calls that carry a secret — the ones most likely to need a
+            // decision. The values themselves stay on this side; only their identity travels.
+            argsDigest = invocation.argsDigest,
         )
 
-        // `null` means this exact card is already live or was already settled and not released.
-        // Either way there is nothing to publish: a second entry under one id would give two
-        // waiters one answer.
-        val request = publications.begin(publicationId) ?: return unexecuted(invocation)
+        // `null` means this invocation cannot be published: its run and generation were never
+        // bound together, or this exact key is already live or settled-but-unreleased. Each is a
+        // refusal rather than a replacement — a second entry under one key would give two waiters
+        // one answer.
+        val request = publications.begin(publicationInvocation) ?: return unexecuted(invocation)
 
         try {
             val published = status.publish(
@@ -414,7 +475,17 @@ class ClaudePToolBridgeHostImpl(
             return when (val receipt = request.await(plan.timeoutMs)) {
                 // Durable. The next batch arms the waiter with these identities and runs the call;
                 // this one reports the call unrun, because that is what happened.
-                is ClaudePToolPublicationOutcome.Committed -> unexecuted(invocation)
+                is ClaudePToolPublicationOutcome.Committed -> {
+                    // The acknowledged record and the invocation about to be run must still be the
+                    // same call. Nothing is executed in this batch, so this cannot yet cost anyone
+                    // a tool run — which is exactly why it is asserted now, while it is still
+                    // checkable rather than load-bearing: the batch that does run the call will
+                    // find the guard already in place rather than a comment promising one.
+                    if (!request.invocation.sameCallAs(publicationInvocation)) {
+                        return unexecuted(invocation)
+                    }
+                    unexecuted(invocation)
+                }
 
                 // Applied but not committed, or never answered, or answered with a wrong identity.
                 // All three mean the same thing to the caller: no decision may be waited on.
@@ -423,10 +494,10 @@ class ClaudePToolBridgeHostImpl(
                 -> unexecuted(invocation)
             }
         } finally {
-            // Whatever happened — including a cancellation of this coroutine — the id stops being
+            // Whatever happened — including a cancellation of this coroutine — the key stops being
             // remembered here. A live wait is ended by the release, and a settled one is forgotten
             // so the map is not the thing that grows.
-            publications.release(publicationId)
+            publications.release(publicationInvocation.key)
         }
     }
 

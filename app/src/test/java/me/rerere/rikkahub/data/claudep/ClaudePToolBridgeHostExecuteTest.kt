@@ -157,6 +157,14 @@ class ClaudePToolBridgeHostExecuteTest {
         generationId: String,
         toolName: String,
         toolCallId: String = "call-1",
+        /**
+         * The digest on the invocation itself. The adapter derives it from the same validated
+         * arguments it binds, so the two agree in every real call; a test separates them to model
+         * an invocation assembled or edited by hand.
+         */
+        argsDigest: String = "args",
+        /** The digest on the binding the ledger admitted the call under. */
+        bindingArgsDigest: String = "args",
     ) = BridgeInvocation(
         binding = InvocationBinding(
             deviceRef = "device-1",
@@ -171,7 +179,7 @@ class ClaudePToolBridgeHostExecuteTest {
             toolCallId = toolCallId,
             toolName = toolName,
             schemaDigest = "schema",
-            argsDigest = "args",
+            argsDigest = bindingArgsDigest,
         ),
         frozenName = toolName,
         // The raw runtime name, which is what `BridgeToolCatalog` sets `displayName` to and what
@@ -179,7 +187,7 @@ class ClaudePToolBridgeHostExecuteTest {
         toolNameForRuntime = toolName,
         arguments = buildJsonObject { put("path", "/tmp/x") },
         canonicalArguments = """{"path":"/tmp/x"}""",
-        argsDigest = "args",
+        argsDigest = argsDigest,
         readOnly = true,
         source = me.rerere.ai.provider.claudep.bridge.ToolSource.LOCAL,
     )
@@ -441,19 +449,22 @@ class ClaudePToolBridgeHostExecuteTest {
     private class AuthoritySink(
         private val receipts: ClaudePToolPublicationReceipts,
         private val runId: String,
-        private val answer: (ClaudePToolPublicationId) -> Unit,
+        private val answer: (ClaudePToolPublicationKey) -> Unit,
     ) : ClaudePToolStatusSink {
         val updates = mutableListOf<ClaudePToolStatusUpdate>()
-        var rebuiltId: ClaudePToolPublicationId? = null
+        var rebuiltKey: ClaudePToolPublicationKey? = null
 
         override suspend fun publish(update: ClaudePToolStatusUpdate): ClaudePToolStatusPublication {
             updates += update
-            val key = ClaudePToolPublicationId.of(
-                generationId = runId,
+            // Rebuilt from what this side can see: the run its own control carries, and the call
+            // id and tool name on the part. It never learns the Server's generation id, and the
+            // key deliberately does not need it.
+            val key = ClaudePToolPublicationKey.of(
+                runId = runId,
                 toolCallId = update.toolCallId,
                 toolName = update.toolName,
             )
-            rebuiltId = key
+            rebuiltKey = key
             answer(key)
             return ClaudePToolStatusPublication.Accepted
         }
@@ -492,8 +503,8 @@ class ClaudePToolBridgeHostExecuteTest {
         )
         assertEquals(
             "and the authority rebuilds the same identity from its own fields",
-            ClaudePToolPublicationId.of(boundRunId, "call-1", "write_file"),
-            sink.rebuiltId,
+            ClaudePToolPublicationKey.of(boundRunId, "call-1", "write_file"),
+            sink.rebuiltKey,
         )
         assertEquals("the runtime is never asked", 0, runtime.requests.size)
         assertEquals("and the tool never runs", 0, tool.invocations.size)
@@ -563,6 +574,76 @@ class ClaudePToolBridgeHostExecuteTest {
         assertEquals(0, runtime.requests.size)
         assertEquals(ToolCallState.FAILED, execution.outcome.state)
         assertEquals("and the publication is released anyway", 0, receipts.pendingCount)
+    }
+
+    /**
+     * The two identities are paired at `openGeneration`, and the pairing is the Server's id with
+     * the run this host is serving — not with anything inferred later.
+     */
+    @Test
+    fun `opening a generation pairs the Server generation with its run`() = runBlocking {
+        val tool = RecordingTool("read_file", needsApproval = false)
+        val receipts = ClaudePToolPublicationReceipts()
+
+        boundHost(listOf(tool.tool), RecordingRuntime(), publications = receipts)
+
+        assertEquals(
+            "the Server's generation id, paired with the Android run that serves it",
+            "gen-1",
+            receipts.serverGenerationIdFor(boundRunId),
+        )
+    }
+
+    /** Closing a generation retires the pairing, so nothing can publish under it afterwards. */
+    @Test
+    fun `closing a generation retires the pairing`() = runBlocking {
+        val tool = RecordingTool("read_file", needsApproval = false)
+        val receipts = ClaudePToolPublicationReceipts()
+        val host = boundHost(listOf(tool.tool), RecordingRuntime(), publications = receipts)
+
+        host.closeGeneration("gen-1")
+
+        assertNull(receipts.serverGenerationIdFor(boundRunId))
+        assertEquals(0, receipts.boundRunCount)
+    }
+
+    /**
+     * An invocation whose own digest disagrees with the binding it carries is refused.
+     *
+     * The adapter derives both from the same validated arguments, so in a real call they are equal
+     * by construction. A disagreement therefore means an invocation that was assembled by hand, or
+     * one whose arguments were swapped after admission while the binding was carried over — and in
+     * both cases the digest the approval would be recorded against describes a call the ledger
+     * never admitted. Nothing is published, because a card for a call that cannot be executed is a
+     * card the user could tap for nothing.
+     */
+    @Test
+    fun `an invocation whose digest disagrees with its binding is refused`() = runBlocking {
+        val tool = RecordingTool("write_file", needsApproval = true)
+        val runtime = RecordingRuntime()
+        val receipts = ClaudePToolPublicationReceipts()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts)
+        var publishes = 0
+        val sink = ClaudePToolStatusSink {
+            publishes++
+            ClaudePToolStatusPublication.Accepted
+        }
+
+        val execution = host.execute(
+            invocation(
+                generationId = "gen-1",
+                toolName = "write_file",
+                argsDigest = "the-arguments-that-were-admitted",
+                bindingArgsDigest = "different-arguments",
+            ),
+            sink,
+        )
+
+        assertEquals("nothing is published for a tampered invocation", 0, publishes)
+        assertEquals("the runtime is never asked", 0, runtime.requests.size)
+        assertEquals("and the tool never runs", 0, tool.invocations.size)
+        assertEquals(ToolCallState.FAILED, execution.outcome.state)
+        assertEquals("nothing is left registered either", 0, receipts.pendingCount)
     }
 
     /** A generation with no plan has nothing to execute under. */
