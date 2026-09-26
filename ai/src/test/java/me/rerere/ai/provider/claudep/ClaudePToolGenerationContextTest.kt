@@ -1,9 +1,12 @@
 package me.rerere.ai.provider.claudep
 
+import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.TextGenerationParams
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -205,6 +208,77 @@ class ClaudePToolGenerationContextTest {
             ?.toList()
             .orEmpty()
         return onField + onSyntheticAccessor
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 5. What the parameters carry, and what carrying nothing means
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The non-Claude-P and no-identity paths, asserted rather than assumed.
+     *
+     * Every `TextGenerationParams` the app builds for something that is not a Claude P tool
+     * generation — background generation, vision, OCR, pet dialogue, the final-answer recovery
+     * dispatch — is built without naming this field, so they all take the declared default. The
+     * test is that the default is *absence*: a params object that offers no identity must say so
+     * with `null`, not with an empty or partly-filled context. An empty one would be worse than
+     * useless here, because a context with blank fields is exactly the shape that fails closed
+     * for the wrong reason — it would look like an answer rather than like "nobody asked".
+     */
+    @Test
+    fun `parameters that name no generation carry no identity at all`() {
+        val params = TextGenerationParams(model = Model(modelId = "sonnet"))
+
+        assertNull(
+            "an unnamed generation must carry null, not an empty context",
+            params.claudePToolGenerationContext,
+        )
+    }
+
+    /**
+     * What is placed on the parameters is what comes back out — the same object, not a copy.
+     *
+     * This is the property the app's threading depends on. `generateText` receives one context and
+     * hands that same instance down; nothing on the way may rebuild it, because a second
+     * construction of a six-field identity is a second chance to disagree with the first about
+     * which generation is running. When the fields do not match, a tool call is answered with
+     * another generation's conversation and approval policy.
+     *
+     * Identity (`===`) rather than equality is the point: `data class` equality would pass for a
+     * rebuild that happened to produce the same six strings, and it is the rebuild that is the
+     * hazard.
+     */
+    @Test
+    fun `an identity placed on the parameters is returned as the same object with all six fields`() {
+        val supplied = context()
+        val params = TextGenerationParams(model = Model(modelId = "sonnet"))
+            .copy(claudePToolGenerationContext = supplied)
+
+        assertSame("the identity was rebuilt rather than carried", supplied, params.claudePToolGenerationContext)
+        assertEquals(runId, params.claudePToolGenerationContext?.runId)
+        assertEquals(commandId, params.claudePToolGenerationContext?.commandId)
+        assertEquals(conversationId, params.claudePToolGenerationContext?.conversationId)
+        assertEquals(assistantId, params.claudePToolGenerationContext?.assistantId)
+        assertEquals(branchId, params.claudePToolGenerationContext?.branchId)
+        assertEquals(callOrigin, params.claudePToolGenerationContext?.callOrigin)
+    }
+
+    /**
+     * Copying the parameters for an unrelated reason neither drops the identity nor remakes it.
+     *
+     * `copy` is how the app adjusts a request — a token budget, a reasoning level — and each of
+     * those is a place the identity could silently be lost or replaced by a fresh instance.
+     */
+    @Test
+    fun `copying the parameters for another field preserves the identity`() {
+        val supplied = context()
+        val original = TextGenerationParams(model = Model(modelId = "sonnet"))
+            .copy(claudePToolGenerationContext = supplied)
+
+        val adjusted = original.copy(maxTokens = 4_096)
+
+        assertSame(supplied, adjusted.claudePToolGenerationContext)
+        assertEquals(supplied, original.claudePToolGenerationContext)
     }
 
     private companion object {

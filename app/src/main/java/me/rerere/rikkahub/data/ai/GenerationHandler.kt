@@ -1122,6 +1122,10 @@ class GenerationHandler(
                         conversationLorebookIds = conversationLorebookIds,
                         workspaceCwd = workspaceCwd,
                         runControl = runControl,
+                        // The same object this call already holds, not a copy and not a rebuild:
+                        // the six identities are the authority's values and re-deriving them here
+                        // would be a second chance to disagree about which generation is running.
+                        claudePToolGenerationContext = claudePToolGenerationContext,
                         contextMessages = continuationContextMessages,
                         continuationHistoryEpoch = continuationHistoryEpoch,
                         continuationHistoryEpochReason = continuationHistoryEpochReason,
@@ -1336,6 +1340,16 @@ class GenerationHandler(
                                             conversationLorebookIds = conversationLorebookIds,
                                             workspaceCwd = workspaceCwd,
                                             runControl = runControl,
+                                            // Explicitly `null`, and not inherited. This is the
+                                            // final-answer recovery dispatch: it passes
+                                            // `tools = emptyList()` and offers Claude nothing to
+                                            // call, so there is no tool call here to bind to a
+                                            // generation. Passing the context anyway would assert a
+                                            // binding this dispatch does not have, and would do it
+                                            // by default — which is exactly how a later change that
+                                            // gives recovery a tool surface would quietly inherit
+                                            // the wrong generation. `null` fails closed instead.
+                                            claudePToolGenerationContext = null,
                                             contextMessages = recoveryBase.compactCurrentTurnForFinalAnswer(),
                                             continuationHistoryEpoch = continuationHistoryEpoch,
                                             continuationHistoryEpochReason = "final_answer_recovery",
@@ -2740,6 +2754,19 @@ class GenerationHandler(
         conversationId: Uuid? = null,
         commandId: Uuid? = null,
         authoritativeCommandId: Uuid? = null,
+        /**
+         * The app's generation identity, for a Claude P tool call to be bound to.
+         *
+         * Threaded through from [generateText] rather than rebuilt here: every field is read from
+         * the authority that owns it, and a second construction is a second chance to disagree
+         * about which generation is running. `null` means the caller has no identity to offer,
+         * which the Claude P bridge reads as "offer no tools" rather than as permission to guess
+         * one — see [me.rerere.ai.provider.claudep.ClaudePToolGenerationContext].
+         *
+         * Transient on the params it reaches, so it never enters a request body, a prompt, a
+         * fingerprint or a log line.
+         */
+        claudePToolGenerationContext: me.rerere.ai.provider.claudep.ClaudePToolGenerationContext? = null,
         toolDiscoveryMetrics: ToolDiscoveryMetrics? = null,
         usageBase: TokenUsage? = null,
         touchedMemoryIds: MutableSet<Int>,
