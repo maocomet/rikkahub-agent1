@@ -1239,6 +1239,11 @@ val dataSourceModule = module {
             trackingHealth = get(),
         )
     }
+    // The waiters a live Claude P generation holds open on an approval, and the *only* instance:
+    // the bridge suspends on this object and `SecondUserApprovalLifecycle.resolve` releases it. Two
+    // instances would mean a decision released into one map while the waiter sat on the other,
+    // which presents as a tool that hangs until its deadline despite the user having tapped.
+    single { me.rerere.rikkahub.data.execution.InFlightApprovalWaiters() }
     single {
         me.rerere.rikkahub.data.execution.SecondUserApprovalLifecycle(
             database = get(),
@@ -1247,6 +1252,7 @@ val dataSourceModule = module {
             executionRepository = get(),
             retentionManager = get(),
             messageAuthorityBinder = get(),
+            inFlightAwaiters = get(),
         )
     }
     single {

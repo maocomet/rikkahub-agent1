@@ -113,6 +113,15 @@ class SecondUserApprovalLifecycle(
     private val executionRepository: ExecutionRepository,
     private val retentionManager: ExecutionRetentionManager,
     private val messageAuthorityBinder: ExecutionMessageAuthorityBinder,
+    /**
+     * Releases the app-side waiters a live Claude P generation holds open on an approval.
+     *
+     * Defaulted to a private instance so a caller that constructs this class directly — a test,
+     * or a path that predates the bridge — gets the `RESUME_COMMAND` behaviour it always had:
+     * nothing waits, so nothing is released. The production graph passes the shared singleton,
+     * which is the same instance the bridge waits on.
+     */
+    private val inFlightAwaiters: InFlightApprovalWaiters = InFlightApprovalWaiters(),
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
     suspend fun findLatest(
@@ -173,6 +182,20 @@ class SecondUserApprovalLifecycle(
         conversation: Conversation,
         owner: PendingApprovalOwner,
         tools: List<PendingApprovalTool>,
+        /**
+         * How an approval of these calls may continue — see [ApprovalContinuationMode].
+         *
+         * Defaults to [ApprovalContinuationMode.RESUME_COMMAND], which is what every existing
+         * caller means: the generation that raised the call has already ended, so approving it
+         * resumes by command. Only the Claude P bridge passes
+         * [ApprovalContinuationMode.IN_FLIGHT], and it is the only caller whose generation is
+         * still waiting.
+         *
+         * The mode is fixed here, when the barrier is created, and never changes afterwards: it
+         * is a statement about who is waiting, and that does not change between the barrier and
+         * the decision.
+         */
+        continuationMode: ApprovalContinuationMode = ApprovalContinuationMode.RESUME_COMMAND,
         sourceInvalidationMode: ConversationSourceInvalidationMode =
             ConversationSourceInvalidationMode.APPLY,
         sourceInvalidationNowMs: Long = nowMs(),
@@ -217,9 +240,8 @@ class SecondUserApprovalLifecycle(
                     stateVersion = 1,
                     // Written explicitly rather than left to the database default. The default is
                     // what a *pre-v52* row means, and a writer that relied on it would be saying
-                    // "this is an upgraded row" instead of "this generation has ended" — which is
-                    // the same value today and a different claim the moment a second mode exists.
-                    continuationMode = ApprovalContinuationMode.RESUME_COMMAND.name,
+                    // "this is an upgraded row" instead of naming who is waiting for this call.
+                    continuationMode = continuationMode.name,
                 )
                 val inserted = approvalDao.insertIgnore(projection)
                 val durableProjection = if (inserted == -1L) {
@@ -280,6 +302,8 @@ class SecondUserApprovalLifecycle(
         tools: List<PendingApprovalTool>,
         assistantMessageId: String,
         assistantMessageRevision: Long,
+        /** Same meaning and same default as the sibling writer above. */
+        continuationMode: ApprovalContinuationMode = ApprovalContinuationMode.RESUME_COMMAND,
     ): List<PendingToolApprovalRecord> {
         check(database.inTransaction()) { "approval_authority_transaction_required" }
         require(owner.subjectType == SubjectType.LOCAL_SECOND_USER) {
@@ -307,10 +331,9 @@ class SecondUserApprovalLifecycle(
                 resourceCategory = resolved.resource.kind.take(MAX_CATEGORY_CHARS),
                 requestedAtMs = requestedAt,
                 stateVersion = 1,
-                // Explicit for the same reason as the sibling writer above: this barrier belongs
-                // to a generation that has already ended, and the code should say so rather than
-                // inherit a schema default.
-                continuationMode = ApprovalContinuationMode.RESUME_COMMAND.name,
+                // Explicit for the same reason as the sibling writer above: the code should name
+                // who is waiting rather than inherit a schema default.
+                continuationMode = continuationMode.name,
             )
             val inserted = approvalDao.insertIgnore(projection)
             val durableProjection = if (inserted == -1L) {
@@ -500,7 +523,50 @@ class SecondUserApprovalLifecycle(
             refreshSearchProjection(updatedConversation)
             retentionManager.requestCleanup(includeGlobalRetention = true)
         }
+        // Released here rather than at the call site because this is the only place that knows the
+        // decision was durably committed, and because it covers both the freshly-applied case and
+        // an idempotent repeat. A repeat reaching this twice is harmless: the waiter completes
+        // once, so the tool still runs exactly once.
+        releaseDecision(result)
         return result
+    }
+
+    /**
+     * Hands an `IN_FLIGHT` approval's decision to whoever is waiting on it.
+     *
+     * The decision is read from the **record**, never from the caller's argument: for the
+     * idempotent path the argument is a repeat, and the row is what was actually committed. A
+     * record in neither `APPROVED` nor `DENIED` is left alone — there is no decision to release
+     * a waiter with, and inventing one is the failure this whole mode exists to avoid.
+     *
+     * `RESUME_COMMAND` rows are untouched: nothing waits on them, and their continuation is the
+     * resume command the caller creates.
+     */
+    private fun releaseDecision(result: ApprovalResolutionResult) {
+        val projection = when (result) {
+            is ApprovalResolutionResult.Applied -> result.projection
+            is ApprovalResolutionResult.Idempotent -> result.projection
+            else -> return
+        }
+        if (ApprovalContinuationMode.fromWireOrNull(projection.continuationMode) !=
+            ApprovalContinuationMode.IN_FLIGHT
+        ) {
+            return
+        }
+        val decision = when (ApprovalStatus.fromWire(projection.status)) {
+            ApprovalStatus.APPROVED -> InFlightApprovalDecision.APPROVED
+            ApprovalStatus.DENIED -> InFlightApprovalDecision.DENIED
+            else -> return
+        }
+        inFlightAwaiters.signalDecided(
+            identity = InFlightApprovalIdentity(
+                approvalId = projection.approvalId,
+                executionId = projection.executionId,
+                conversationId = projection.conversationId,
+                toolCallId = projection.toolCallId,
+            ),
+            outcome = InFlightApprovalOutcome.Decided(decision),
+        )
     }
 
     /**

@@ -88,3 +88,17 @@ enum class ApprovalStatus {
         fun fromWire(value: String?): ApprovalStatus = entries.firstOrNull { it.name == value } ?: INVALIDATED
     }
 }
+
+/**
+ * True when this approval's continuation is the live bridge waiter rather than a resume command.
+ *
+ * A value the app cannot read answers `false` on purpose. [ApprovalContinuationMode.fromWireOrNull]
+ * returns `null` for anything outside the two spellings, and the conservative reading is the
+ * behaviour that existed before the mode did — creating the resume command — rather than
+ * suppressing it, which for an unreadable row would leave a tool the user approved unexecuted and
+ * no continuation at all. An unreadable value is refused at the import boundary precisely so it
+ * cannot reach here; this is the second line of that defence, and it fails towards the old
+ * behaviour rather than towards silence.
+ */
+fun PendingToolApprovalRecord.isInFlightContinuation(): Boolean =
+    ApprovalContinuationMode.fromWireOrNull(continuationMode) == ApprovalContinuationMode.IN_FLIGHT

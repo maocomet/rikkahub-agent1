@@ -83,6 +83,7 @@ import me.rerere.rikkahub.data.ai.tools.ordinaryConversationToolNames
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
+import me.rerere.rikkahub.data.execution.isInFlightContinuation
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
@@ -2815,7 +2816,12 @@ class ChatService(
                     resolutionRequestId = command.resolutionRequestId ?: envelopeId.toString(),
                     trustedAppApproval = origin == CommandOrigin.APP_UI,
                     authorityCommitInCurrentTransaction = { projection, owningCommandId ->
-                        if (!canResume) {
+                        // An IN_FLIGHT approval belongs to a generation that has not ended: the
+                        // Claude P peer is still blocked inside the Worker waiting for this call's
+                        // answer. Creating a resume command here would start a second generation
+                        // nobody asked for, so the decision is released to the waiter that is
+                        // already there instead — see SecondUserApprovalLifecycle.releaseDecision.
+                        if (!canResume || projection.isInFlightContinuation()) {
                             null
                         } else {
                             durableCommandQueue.ensureApprovalResumeInCurrentTransaction(
@@ -2882,7 +2888,10 @@ class ChatService(
                 resolutionRequestId = command.resolutionRequestId ?: envelopeId.toString(),
                 trustedAppApproval = origin == CommandOrigin.APP_UI,
                 authorityCommitInCurrentTransaction = { projection, owningCommandId ->
-                    if (!shouldEnsureResume) {
+                    // Same rule as the sibling site above: an IN_FLIGHT approval's generation has
+                    // not ended, so its decision releases the live waiter instead of creating a
+                    // resume command — which here would be a second generation.
+                    if (!shouldEnsureResume || projection.isInFlightContinuation()) {
                         null
                     } else {
                         durableCommandQueue.ensureApprovalResumeInCurrentTransaction(
