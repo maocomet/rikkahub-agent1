@@ -1771,3 +1771,110 @@ warrant an adversarial read:
    execution capability. If it is judged to exceed the grant, the alternative considered was
    hanging the registry off the already-injected `ClaudePToolRunControls`, which was rejected as
    giving that class a second responsibility.
+
+---
+
+# 14. The C-batch semantic hardening: identity, digest, corpus, classification
+
+Scope of this batch was §1–§4 of the hardening instruction. **§5 (production DI and real
+execution), §6 (instrumentation) and §7 (snapshot activation) were not started** — see §14.5.
+`offerCatalog` remains `false` (`DataSourceModule.kt:1567`).
+
+## 14.1 The Server generation and the run are now separate types
+
+Commit `f272e567`. The receipt called the run id `generationId`, which is the one name it must not
+have — the Server assigns a generation id at `generation.start`, Android has a run id from
+`GenerationRunControl`, and neither is a stand-in for the other.
+
+- `ClaudePToolPublicationKey(runId, toolCallId, invocationIdentity)` is the half the conversation
+  authority can rebuild, and it is what `complete`/`refuse` are addressed by. It **cannot** carry
+  the Server's id: that side never learns it.
+- `ClaudePToolPublicationInvocation(serverGenerationId, runId, toolCallId, toolName, argsDigest)` is
+  the publisher's immutable record.
+- `openGeneration` pairs the two once and refuses a contradiction **in both directions**; `begin`
+  refuses a publication whose halves do not match that pairing; `closeGeneration` retires the
+  pairing with the execution binding. Nothing derives the pairing from a conversation id, an
+  assistant id or "the run that is executing now" — those find a run, none of them proves one.
+
+Tests: `a publication is refused before its generation is bound`, `a contradicted pairing is refused
+in both directions`, `a publication for a mismatched pairing is refused`, `closing a generation
+retires the pairing`, plus host-level `opening a generation pairs the Server generation with its
+run` and `closing a generation retires the pairing`.
+
+## 14.2 The argument digest stays on the publisher's side
+
+The ledger already refused a repeat carrying different arguments (`InvocationDecision.CONFLICT` via
+`BridgeBinding.invocationDigest`), so this batch records rather than reinvents it:
+
+- `argsDigest` is taken from the **Server's original invocation** (`invocation.argsDigest`), never
+  recomputed from the conversation part — `RuntimeSecretRedactor` rewrites
+  `UIMessagePart.Tool.input` before the authority sees it, so a digest taken from there would
+  disagree with the ledger for exactly the calls that carry a secret.
+- It is deliberately **not** in the key, which is why `redaction of the arguments does not change
+  the key` passes: the completion still arrives, and the publisher's record still holds the
+  original digest.
+- `sameCallAs` compares every field including the digest, and the host re-asserts it against
+  `request.invocation` after `Committed`. Nothing executes in this batch, so the guard is asserted
+  while it is still checkable rather than load-bearing.
+- An invocation whose own digest disagrees with the binding it carries is refused before anything is
+  published — `an invocation whose digest disagrees with its binding is refused`.
+- No raw arguments cross to `ChatService`; no credential scanner was added; `toString` redacts every
+  field through `shortRef`, including the digests.
+
+## 14.3 The corpus was a stale checkout, not a missing attribute
+
+**The instruction's premise was wrong, and nothing was committed for this item.** The rule
+`claudep/02-wire-protocol-v1.md text eol=lf` already exists at `.gitattributes:21`, and
+`git check-attr` already reports `eol: lf` for it — adding another entry would have been a
+duplicate no-op. The defect was a stale **working-tree** checkout: CRLF on disk, LF in the blob.
+
+The two spec markdown files were re-materialized from the index. They are now CR=0, and
+`claudep/02-wire-protocol-v1.md` hashes to `8ff5e6a5…`, matching the recorded
+`protocol_spec_sha256` **byte for byte**. `ClaudePConformanceCorpusTest` passes 14/14. No corpus
+content changed, no manifest was recomputed, and `git status` reports no change to those paths —
+which is why there is no commit here. On a fresh checkout this file is already correct; only this
+worktree was stale.
+
+## 14.4 `transient_conversation_search` is withheld, not opened
+
+Commit `37c5eea2`. The tool failed `P2CapabilityCatalogTest` because a rename did not finish: the
+Second-User reader's list and read tools reuse their ordinary names and were covered by accident,
+while this one was renamed to `transient_conversation_search` to break a collision with the ordinary
+`conversation_search`, and no classification was updated.
+
+It is added to `phase1UnavailableToolNames`, **not** to `backgroundToolNames` — and that is
+behaviour-preserving rather than a fix that happened to work. `ToolExposurePlan.blockReason` refuses
+`Phase1Unavailable` and `Unclassified` in exactly the same two places, so the VoiceInteraction
+overlay stays closed to it and the ordinary `LocalChat` path (which returns before any
+classification is consulted) is untouched in both directions. **Nothing about who can reach this
+tool changed**; the withholding became a decision instead of an omission.
+
+It is genuinely read-only, and that is deliberately not why it would be allowed: it reads
+conversation content, so exposing it needs its own privacy decision. `ClaudePToolCatalogExposureTest`
+pins the rule — the system-assistant surface never offers it (both overlay branches), the catalog
+the Claude P host would freeze has no entry for it, the local path is unchanged, and no branch keys
+on the provider's name.
+
+## 14.5 What was **not** done, and why
+
+§5 requires implementing a real `BridgeExecutionHost` (`abandonApproval`, `requestStop`,
+bounded `awaitConclusions`), arming `InFlightApprovalWaiters` on a committed receipt, and wiring
+`DefaultToolRuntime`, the gate and the subject resolver into the production host — new code on the
+path that actually executes tools. §6 and §7 depend on it.
+
+It was not started. The batch stopped at the last self-consistent commit with the snapshot closed,
+as the instruction permits, rather than leaving a partially wired execution path — which is the one
+kind of defect that could run a tool. §12.4 remains the plan of record for C1, C3, D, E and F.
+
+## 14.6 Verification and boundary
+
+- `:ai:compileDebugKotlin` and `:app:compileDebugKotlin` pass. `:app:testDebugUnitTest` over the six
+  claudep suites plus `P2CapabilityCatalogTest`: **102 + 22 tests, 0 failures, 0 errors, 0 skipped**
+  — including `ClaudePToolCatalogExposureTest` (4) and `ClaudePToolPublicationReceiptsTest` (28).
+  `:ai:testDebugUnitTest` for `ClaudePConformanceCorpusTest`: 14/14.
+- The §13 baseline failures are both resolved: `P2CapabilityCatalogTest` by §14.4, the conformance
+  digest by §14.3.
+- No DI file, gradle file, workflow or Room file was touched (`DataSourceModule` and `AppModule` are
+  absent from the batch's diff). No push, no CI dispatch, no deploy, no VPS, no model call, no
+  phone, no M3. `git diff --check` clean; `web-ui/bun.lock` still the only untracked entry.
+- **Not `M2-B complete`.** §5–§7 remain.
