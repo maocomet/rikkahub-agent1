@@ -1586,25 +1586,33 @@ val dataSourceModule = module {
             // nothing. A placeholder here would give two devices the same binding.
             deviceRefProvider = { pairing.currentDeviceIdOrNull() },
             // ── ACTIVATION ────────────────────────────────────────────────────────────────────
-            // CLOSED, and this is the **single line** the activation commit changes.
+            // OPEN. This is the **single line** the activation commit changes, and it was opened
+            // only after both gates answered on a real device.
             //
-            // Everything the flag gates is now wired and tested: the catalog assembly, the
-            // execution host over the real `DefaultToolRuntime`, the three execution paths, the
-            // in-flight approval over the existing card and approval UI, the claim that makes a
-            // call run at most once, and the cancel/close/replay/query lifecycle. What is not yet
-            // true is the evidence the plan requires before Claude may be told about a tool:
-            // the managed-device suite in `app/src/androidTest` has been written and gated, and
-            // has **not been executed** — there is no emulator on the development machine and this
-            // batch does not run CI.
+            // Everything this flag gates is wired, and the two runs that had to answer have:
             //
-            // So the flag stays closed, and an accidental opening has to be a deliberate act:
-            // `ClaudePToolActivationStateTest` reads this file and fails if `offerCatalog` stops
-            // being `false`, so opening it means editing the test and saying why.
+            // - `build-debug-apk.yml` on the parent SHA — `:ai` and `:app` compiled, the APKs
+            //   are signed by the fixed key, the regression suite ran, all 46 required Claude P
+            //   classes executed with zero failures, errors and skips, and the conformance corpus
+            //   gate passed;
+            // - `migration-instrumentation.yml` on this commit's parent — the instrumentation APK
+            //   dexed, the emulator ran 41 tests, and the approval barrier suite reported
+            //   `tests=6 failures=0 errors=0 skipped=0` against a real `AppDatabase`, alongside the
+            //   migration, restore and Koin suites with no regression.
             //
-            // Offering a tool Android cannot conclude is worse than offering none: the Server
-            // freezes the catalog, the model calls what it was shown, and a call nobody answers
-            // leaves the peer blocked until its deadline.
-            offerCatalog = false,
+            // Opening the flag does not widen what may run. Every fail-closed condition in
+            // `ClaudePToolBridgeHostImpl.prepare` and `execute` is unchanged and still refuses:
+            // a missing or incomplete generation context, an unrecognised origin, an assistant
+            // with no offerable tools, a device that cannot name itself, a generation with no
+            // binding, a run with no live control, an unresolvable subject, a runtime that does
+            // not accept the call, a tool the generation did not freeze, a claim the ledger
+            // refuses, and a generation that has closed. And it does not widen which tools exist:
+            // a tool the app's exposure plan withholds — `transient_conversation_search` among
+            // them — is never a candidate for the surface at all, so it cannot be added here.
+            //
+            // `ClaudePToolActivationStateTest` reads this file and fails if the flag stops being
+            // `true`, so closing the surface again is as deliberate as opening it was.
+            offerCatalog = true,
             // ── END ACTIVATION ────────────────────────────────────────────────────────────────
             // The app's real runtime, gate and cancellable-tool resolver. Supplying them is what
             // makes `execute` an execution rather than a refusal; they grant the host no authority

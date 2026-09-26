@@ -6,6 +6,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.provider.claudep.ClaudePToolGenerationContext
 import me.rerere.ai.provider.claudep.ClaudePToolPreparationRefusal
+import me.rerere.ai.ui.UIMessagePart
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -15,19 +16,21 @@ import org.junit.Test
 import java.io.File
 
 /**
- * The production tool host, and the closed surface it deliberately presents.
+ * The production tool host, and the surface it now offers.
  *
- * ## Two claims, tested separately because they fail differently
+ * ## Three claims, tested separately because they fail differently
  *
  * 1. **Every missing identity fails closed.** A generation that cannot be named, a partial
  *    context, an origin token this app does not recognise, a device that cannot name itself — each
  *    must produce a preparation that offers **no** tools. None of them may be completed by
  *    guesswork, and none may degrade to "all tools".
- * 2. **A closed surface offers nothing, and is otherwise a working host.** While `offerCatalog` is
- *    false the catalog is assembled and validated and then not offered: empty catalog, no
- *    snapshot, no staged plan. This is what keeps the app out of the state where Claude has been
- *    told about a tool that nothing can answer — and it is tested *against an open host* so that
- *    "closed" is a decision this class makes rather than a property of a broken assembly.
+ * 2. **The flag decides, and nothing else does.** The surface was closed while the paths that
+ *    answer a call were still being built, and it is open now that both gates have answered on a
+ *    real device. Both readings are asserted against the *same* input, so each is a decision this
+ *    host makes rather than a property of a broken assembly.
+ * 3. **A non-empty catalog travels only when every precondition holds.** The `tool_snapshot` is
+ *    the frame that tells the Server which tools exist, so "which preconditions produce one" is
+ *    the whole of what activation opens.
  *
  * The subject type appears nowhere in these tests because it decides nothing here (§11.5 of the
  * M2-B report): an ordinary assistant and a second user get the same host and the same answer.
@@ -336,25 +339,73 @@ class ClaudePToolBridgeHostImplTest {
     }
 
     /**
-     * The surface is closed at the one site that decides it, and the decision says why.
+     * The surface is open at the one site that decides it.
      *
-     * This asserts the *state* rather than the mechanism: while `execute` is a fail-closed stub and
-     * the execution host proves nothing, the catalog must not be offered. The activation commit is
-     * the change that flips this line, and it is meant to be impossible to flip by accident.
+     * This asserts the *state* rather than the mechanism. It read `offerCatalog = false` while the
+     * surface was closed; the activation commit flipped it, and that flip was gated on the two
+     * runs this file cannot perform — a real compile-and-test run, and a managed-device run whose
+     * approval barrier suite answered against a real `AppDatabase`. Closing the surface again has
+     * to be as deliberate as opening it was, which is why the assertion is on the **value** and
+     * not on the mere presence of the line.
      */
     @Test
-    fun `the production host is registered with the catalog closed`() {
+    fun `the production host is registered with the catalog open`() {
         val module = projectFile(
             "app/src/main/java/me/rerere/rikkahub/di/DataSourceModule.kt",
             "src/main/java/me/rerere/rikkahub/di/DataSourceModule.kt",
         ).readText(Charsets.UTF_8)
 
         assertTrue(
-            "the production host must be registered with offerCatalog = false until every path " +
-                "that can answer a tool call exists; opening it earlier tells Claude about tools " +
-                "Android cannot conclude",
-            "offerCatalog = false" in module,
+            "the production host must be registered with offerCatalog = true: the surface was " +
+                "opened only after the closed-surface CI run and the managed-device run both " +
+                "answered, and this is the state a reader has to be able to see",
+            "offerCatalog = true" in module,
         )
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 5. Activation: what actually travels, and only when everything holds
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The vertical property the activation rests on: a non-empty catalog travels **only** when
+     * every precondition holds, and each one on its own withholds it.
+     *
+     * The `tool_snapshot` is the frame that matters. `ClaudePProvider` sends it when — and only
+     * when — the preparation carries a non-empty catalog, so a preparation that offers nothing
+     * sends nothing, and the Server registers no bridge tool. This walks the preconditions as
+     * separate claims rather than asserting the happy path alone, because a surface that is open
+     * for the *wrong* reason is the failure an activation commit is most likely to introduce: the
+     * flag gets flipped, a dependency is missing, and every test stays green while no tool ever
+     * runs — or worse, while a tool runs that should not have been offered.
+     */
+    @Test
+    fun `a non-empty snapshot travels only when every precondition holds`() = runBlocking {
+        val open = host(offerCatalog = true)
+
+        // The one shape that does travel.
+        val offered = open.prepare(tools(), context())
+        assertFalse(offered.catalog.isEmpty)
+        assertNotNull("the snapshot is the frame, not the catalog", offered.snapshot)
+        assertTrue(offered.snapshot.toString().contains("read_file"))
+
+        // Every precondition, withheld on its own. The assertion is the same for each — no
+        // catalog, therefore no snapshot — because that is the property the provider keys on.
+        val withheld = listOf(
+            "no generation context" to open.prepare(tools(), null),
+            "an incomplete generation context" to open.prepare(tools(), context().copy(assistantId = "")),
+            "an origin this build does not know" to
+                open.prepare(tools(), context().copy(callOrigin = "Localchat")),
+            "a device that cannot name itself" to host(offerCatalog = true, deviceRef = null)
+                .prepare(tools(), context()),
+            "an assistant with no offerable tools" to open.prepare(emptyList(), context()),
+        )
+        withheld.forEach { (what, preparation) ->
+            assertTrue(
+                "$what must offer nothing, and therefore send no snapshot",
+                preparation.catalog.isEmpty && preparation.snapshot == null,
+            )
+        }
     }
 
     private fun projectFile(vararg candidates: String): File =

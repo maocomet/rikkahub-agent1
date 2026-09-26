@@ -41,7 +41,7 @@ class ClaudePToolActivationStateTest {
     }
 
     @Test
-    fun `the production host offers no catalog`() {
+    fun `the production host offers the catalog`() {
         val binding = hostBinding()
 
         assertTrue(
@@ -50,10 +50,12 @@ class ClaudePToolActivationStateTest {
             binding.contains("offerCatalog ="),
         )
         assertEquals(
-            "the surface is closed until the managed-device suite has been executed, not merely " +
-                "written. Opening it means editing this test and stating what evidence now exists.",
+            "the surface is open, and both gates answered before it was: `build-debug-apk.yml` " +
+                "on the closed-surface parent, and the managed-device run whose approval barrier " +
+                "suite reported tests=6 against a real AppDatabase. Closing it again means " +
+                "editing this test and stating why.",
             1,
-            Regex("offerCatalog\\s*=\\s*false").findAll(binding).count(),
+            Regex("offerCatalog\\s*=\\s*true").findAll(binding).count(),
         )
     }
 
