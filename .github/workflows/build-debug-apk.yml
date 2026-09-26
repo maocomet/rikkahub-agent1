@@ -199,10 +199,20 @@ jobs:
             --tests "me.rerere.ai.provider.providers.ClaudePProviderCancellationTest" \
             --tests "me.rerere.ai.provider.ClaudePSettingTest" \
             --tests "me.rerere.ai.provider.ProviderManagerClaudePTest"
+          # The LAST :app:testDebugUnitTest invocation in this job owns
+          # app/build/test-results/testDebugUnitTest: re-running the task with a different
+          # --tests filter replaces that directory, discarding the XML the regression step
+          # above produced. So every app class the reporting step below requires must be
+          # named here -- otherwise its XML is gone by the time that step reads the
+          # directory, and the gate reports "compiled but did not run" for a class that ran
+          # and passed. `ApprovalContinuationModeTest` is run by the regression step for its
+          # own reasons and is listed here for exactly that reason, not because this step is
+          # where it belongs.
           ./gradlew :app:testDebugUnitTest \
             --tests "me.rerere.rikkahub.data.ai.background.ClaudePBackgroundExclusionTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepositoryTest" \
-            --tests "me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest"
+            --tests "me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest" \
+            --tests "me.rerere.rikkahub.data.execution.ApprovalContinuationModeTest"
 
       # Compiling is not running. Gradle only fails when the COMBINED filter matches nothing, and
       # its test logging is off project-wide, so the JUnit XML basenames are the proof.
