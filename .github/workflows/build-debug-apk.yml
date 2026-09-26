@@ -195,6 +195,7 @@ jobs:
           ./gradlew :ai:testDebugUnitTest \
             --tests "me.rerere.ai.provider.claudep.*" \
             --tests "me.rerere.ai.provider.providers.ClaudePProviderStreamTest" \
+            --tests "me.rerere.ai.provider.providers.ClaudePToolStatusMappingTest" \
             --tests "me.rerere.ai.provider.providers.ClaudePProviderIdentityTest" \
             --tests "me.rerere.ai.provider.providers.ClaudePProviderCancellationTest" \
             --tests "me.rerere.ai.provider.ClaudePSettingTest" \
@@ -211,8 +212,10 @@ jobs:
           ./gradlew :app:testDebugUnitTest \
             --tests "me.rerere.rikkahub.data.ai.background.ClaudePBackgroundExclusionTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepositoryTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePToolRunControlsTest" \
             --tests "me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest" \
-            --tests "me.rerere.rikkahub.data.execution.ApprovalContinuationModeTest"
+            --tests "me.rerere.rikkahub.data.execution.ApprovalContinuationModeTest" \
+            --tests "me.rerere.rikkahub.data.execution.InFlightApprovalWaitersTest"
 
       # Compiling is not running. Gradle only fails when the COMBINED filter matches nothing, and
       # its test logging is off project-wide, so the JUnit XML basenames are the proof.
@@ -251,11 +254,14 @@ jobs:
             "ai:me.rerere.ai.provider.providers.ClaudePProviderCancellationTest"
             "ai:me.rerere.ai.provider.providers.ClaudePProviderStreamTest"
             "ai:me.rerere.ai.provider.providers.ClaudePProviderIdentityTest"
+            "ai:me.rerere.ai.provider.providers.ClaudePToolStatusMappingTest"
             "ai:me.rerere.ai.provider.ClaudePSettingTest"
             "ai:me.rerere.ai.provider.ProviderManagerClaudePTest"
             "app:me.rerere.rikkahub.data.execution.ApprovalContinuationModeTest"
+            "app:me.rerere.rikkahub.data.execution.InFlightApprovalWaitersTest"
             "app:me.rerere.rikkahub.data.ai.background.ClaudePBackgroundExclusionTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepositoryTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePToolRunControlsTest"
             "app:me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest"
           )
 
