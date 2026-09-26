@@ -1027,3 +1027,211 @@ Neither is claimed as verified.
 No Room schema, version or migration changed; no workflow change; no Server change; no dependency
 added; `web-ui/bun.lock` untouched and untracked. `tool_snapshot` remains empty and the production
 host was not started.
+
+---
+
+# 11. The A batch: the two execution-level gaps §10.11 named
+
+- Base of this batch: `5fceaf27` (the docs-only CI-evidence commit; kept, not rewritten)
+- Tip after this batch: `ef223b90`
+- Commits this batch: `ef223b90` (A1 + A2 + the one pure seam they need)
+- Pushed: **no**. No CI dispatch, no deployment, no VPS connection, no model call, no tool side
+  effect, no phone. Server remains read-only.
+- `c6f84fc4` and `5fceaf27` both remain ancestors.
+
+§10.11 listed two things that "are not evidenced by an execution", and both are now closed. This
+batch is deliberately narrow: it adds the tests, and the single pure seam one of them needs. **No
+tool runs, the default host is still `NONE`, the catalog is still empty, and `tool_snapshot` is
+still never sent.**
+
+## 11.1 Preflight, and what it found
+
+The stated starting point was verified before anything was changed:
+
+- branch `codex/claudep-cp1b-local`, HEAD `5fceaf27`, `c6f84fc4` its direct parent and ancestor;
+- the only working-tree entry was the pre-existing untracked `web-ui/bun.lock`;
+- `5fceaf27` touches exactly one file, the report — so it is docs-only, as described.
+
+No reset, rebase, amend or discard was performed on it.
+
+**One correction to §7 and §10, and it matters for the rest of the plan.** Both sections state that
+this machine has no Android SDK and that no `app/` code can be compiled here. That is no longer
+true: `local.properties` in this worktree points at `D:\Android\Sdk`, `platforms/android-37.0` is
+present, and both of this batch's suites were **compiled and executed locally**, not merely
+reasoned about. Every claim below is a local execution, and the limits of that are stated where
+they arise (§11.2, §11.4) rather than left implicit.
+
+## 11.2 A1 — the identity reaches the provider, and cannot be reinvented on the way
+
+`ClaudePToolGenerationContextFactory` (`app/…/data/claudep/`) is a pure function from the six
+authorities to the identity. It is an **extraction, not a redesign**: the mapping is
+character-for-character what `ChatService` already did inline, including the `.orEmpty()` on each
+nullable authority. What changes is that the mapping became testable, and that the construction
+site became singular — `ChatService` now contains exactly one occurrence of
+`ClaudePToolGenerationContext` and it is the factory call.
+
+That `.orEmpty()` is kept rather than replaced by a `null` return, and the test says why: a blank
+field already fails `isComplete`, the bridge already refuses on it, and returning `null` instead
+would change which local refusal reason is recorded for a case that is already handled. A mapping
+stays a mapping.
+
+`ClaudePToolGenerationContextWiringTest` — **9 tests, 0 skipped, 0 failures** — asserts:
+
+- each authority lands in its own field, using six **pairwise-distinct** sentinels, because the
+  failure being caught is a swap (`commandId` filled from `runId`, `branchId` from the
+  conversation) and a test with one shared value passes for every permutation;
+- a missing command id is blank rather than filled from the run id — the substitution the
+  surrounding code calls out by name, and the one several paths (cron, workflow, recovery) would
+  produce;
+- an absent authority leaves its field blank **and** makes the identity incomplete;
+- every `ToolCallOrigin` entry survives as the enum spells it — no trimming, no folding, no
+  alias, which is what makes the bridge's exact-match rule meaningful;
+- the threading, and the absence of any rebuild, at all four hops.
+
+### The honest limit on the threading half
+
+`GenerationHandler.generateText` cannot be instantiated in a JVM test — it needs an Android
+`Context` and the full Koin graph, which is the same reason `GenerationHandlerTurnBudgetTest`
+tests the invariants it relies on rather than the handler. So the threading half is asserted
+**against the source**, not by running a turn: that `ChatService` builds through the factory and
+constructs one nowhere else; that `GenerationHandler` contains no construction of the type at all,
+only the parameter and the pass-throughs; that the recovery dispatch passes an explicit `null`;
+and that the provider reads the field off the params rather than rebuilding it.
+
+This is a weaker claim than a behavioural test, it is the same technique
+`LearningArchitectureBoundaryTest` already uses for boundaries that are likewise unreachable from a
+unit test, and the test's own doc comment says so. It closes the specific hazard §10.11 named — a
+rebuild is what would silently disagree about which generation is running — without pretending to
+close more.
+
+## 11.3 A2 — the binding completes before any tool frame is consumed
+
+`ClaudePProviderBindingOrderTest` — **7 tests, 0 skipped, 0 failures** — drives the real provider
+against the deterministic fake gateway. The fake builds its entire script, `tool.invoke` included,
+**inside `startGeneration`**, which is what makes "the frame is already buffered" a fact about the
+implementation under test rather than a staging trick in the test.
+
+The claim is stated carefully, because the obvious version of it is false. The provider does not
+know a generation id before `generation.start` and must never pretend to: the catalog travels
+*inside* that request, so the preparation is built first and the id only comes back afterwards.
+There is no instant at which both are in hand. What the test asserts is the guarantee that is
+actually available — **by the time any `tool.invoke` is read off the stream, the generation it
+names resolves to exactly one plan** — and it asserts it at the instant it would be violated:
+
+- the catalog is in the start frame (without it the Server would never send an invoke, and every
+  later assertion would be vacuous);
+- `prepare` ran before the request left;
+- **no binding had happened when the request left** — checked *inside* `generation.start`, since
+  reading the counter afterwards says nothing about it;
+- the binding happens exactly once, and **no frame was consumed before it**;
+- the executed call belonged to the generation that was bound;
+- the outcome was sent once.
+
+Plus the failure and replay directions: a refused binding fails the generation and executes
+nothing; a replayed frame for a closed generation executes nothing, re-binds nothing and sends no
+second result; and a second provider over the same gateway executes nothing for a generation its
+registry never bound — the process-restart shape.
+
+`BridgeExecutionBindingsTest` already covers the token-once semantics at the table level
+(18 tests), so this class deliberately does not re-test them; it tests the *provider's* sequencing,
+which had no test at all.
+
+## 11.4 Evidence
+
+Both suites were run locally on 2026-09-26:
+
+| Suite | Result |
+|---|---|
+| `ClaudePProviderBindingOrderTest` | 7 tests, 0 skipped, 0 failures, 0 errors |
+| `ClaudePToolGenerationContextWiringTest` | 9 tests, 0 skipped, 0 failures, 0 errors |
+| `:ai` Claude P filter (whole module) | 449 tests, 1 failure — see below |
+
+The single `:ai` failure is `ClaudePConformanceCorpusTest > corpus revision is bound to the
+specification it was derived from`, and it is **not** this batch's code and **not** a regression.
+It hashes `claudep/02-wire-protocol-v1.md` from the working tree and compares that digest to
+`SPEC_REVISION.json`. This machine has `core.autocrlf=true`, so the checked-out file is CRLF while
+the committed blob is LF:
+
+```
+recorded : 8ff5e6a5a6e494b7fe7546a918d55567c918623853f5fa7367ddb23094ba3e85
+LF (git) : 8ff5e6a5a6e494b7fe7546a918d55567c918623853f5fa7367ddb23094ba3e85   <- matches
+CRLF (wt): 6d53aa6393f63dbbfab28c28987ef14a47605aba1fb61b14fbb1ae5a8122ad66
+```
+
+The recorded digest equals the LF blob byte for byte, verified by hashing the blob directly. CI
+checks out LF on Linux and this class is green there. It is recorded here rather than quietly
+excluded, because a local suite that is "449 tests, 1 failure" and a CI suite that is green must
+be reconcilable, and this is the reconciliation.
+
+## 11.5 A blocking constraint found while scoping B, and it changes C2
+
+`SecondUserApprovalLifecycle.persistPendingBarrier` opens with:
+
+```kotlin
+require(owner.subjectType == SubjectType.LOCAL_SECOND_USER) {
+    "second_user_approval_owner_required"
+}
+```
+
+This is a **hard precondition, not a default**. It means the in-flight approval path — the one
+**C2** is specified on, and the one §9.4.1 and §9.4.2 exist to enable — can only be used for a
+generation whose subject is a local second-user conversation. For an ordinary assistant
+conversation the call throws before any card is written.
+
+The consequence for C2's design is that "requires approval" and "can publish a pending card" are
+**not the same predicate**, and the host must distinguish them:
+
+- a call that needs no approval runs on the C1 path regardless of subject;
+- a call that needs approval in a second-user conversation publishes through
+  `persistPendingBarrier(..., IN_FLIGHT)` and suspends on `InFlightApprovalWaiters.await`;
+- a call that needs approval where no second-user subject exists has **no way to show the user
+  anything**, so it must fail closed rather than execute — a `FAILED`/`DENIED` outcome, never a
+  silent run and never a wait on a card that cannot appear.
+
+This is exactly the kind of thing §8 warned about, found by reading the real code rather than by
+assuming the approval mechanism is subject-agnostic. It is recorded here so the next session does
+not rediscover it, and so that C2 is not written as though the gate were unconditional.
+
+## 11.6 What remains
+
+Phases B–F are **not** implemented. The snapshot is still closed and the production host is still
+`NONE`, which is the safe state the plan requires: Claude still cannot see a tool Android cannot
+answer.
+
+1. **B — the production `ClaudePToolBridgeHost` and DI.** Catalog assembly, the bindings, the
+   run-control registry, the status mapping, the publication seam and the execution host all
+   exist; what does not exist is the one production object that composes them, and the Koin
+   binding that makes it the only host. It must fail closed on a missing context, catalog or
+   binding, and keep the text path byte-identical.
+2. **C1/C2/C3 — the three execution paths**, through `DefaultToolRuntime`, the existing approval
+   lifecycle and the existing `McpManager`. C2 carries the constraint in §11.5.
+3. **D — lifecycle and query**, including the four cancel phases, timeout, disconnect and replay,
+   over the real `ToolExecutionHandle`. `ClaudePToolRunControls` already exists for this.
+4. **E — snapshot activation**, only after B–D are tested. Commit order must keep the snapshot
+   closed in every intermediate commit, as this batch does.
+5. **F — tests and the workflow gate.** Every new class must be added to the `--tests` filter, the
+   `REQUIRED` XML list and the instrumentation whitelist, under the existing
+   tests>0 / failures=0 / errors=0 / skipped=0 gate.
+
+The local toolchain now being available (§11.1) materially changes the cost of 1–5: they can be
+compiled and executed here, iteratively, instead of being written blind. That is the single largest
+change in this batch to what the next session can do, and it is why the correction in §11.1 is
+recorded as prominently as it is.
+
+## 11.7 Boundary compliance
+
+- No Server file read or written; the contract of record is unchanged.
+- No Room schema, version, migration or workflow change; `app/schemas/**/52.json` untouched. The
+  workflow file was not touched at all in this batch.
+- No new runtime dependency; no build file or version catalog touched.
+- No push, CI dispatch, PR, tag, release or deploy. No VPS connection. No model call. No tool side
+  effect. No phone. No M3 work.
+- `git diff --check` passes; the only working-tree entry is the pre-existing untracked
+  `web-ui/bun.lock`; `c6f84fc4` and `5fceaf27` remain ancestors and neither was rewritten.
+
+## 11.8 Requested verdict
+
+**Not** `M2-B complete`, and this batch does not claim it. It closes the two gaps §10.11 named —
+both of them, with executions rather than arguments — and adds one pure seam to do it. Phases B–F
+remain, one blocking design constraint is now recorded that would otherwise have been discovered
+mid-implementation, and the environment can now compile and run the work that is left.
