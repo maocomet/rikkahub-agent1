@@ -131,6 +131,19 @@ fun interface ClaudePToolStatusSink {
          *
          * The correct default for a host that needs no approval — the text path and the inert
          * host — because a call that never has to be shown has nothing that can fail to be shown.
+         *
+         * ## What `Accepted` does *not* mean, and the one case where that bites
+         *
+         * `Accepted` says the status was handed over. It does not say the card reached the user,
+         * and it is deliberately not evidence that anything was committed: the receipt is. For a
+         * call that needs no decision the distinction never arises, which is why this is the right
+         * default.
+         *
+         * A host that *does* need a decision must not be handed this one, and the reason is worth
+         * stating rather than discovering: this sink accepts, so the host publishes in good faith,
+         * nothing ever answers, and the call waits out its whole deadline before refusing. That is
+         * fail-closed and correct — a lost capability, never an execution — but it is thirty
+         * minutes of a peer waiting to be told nothing happened.
          */
         val NONE: ClaudePToolStatusSink =
             ClaudePToolStatusSink { ClaudePToolStatusPublication.Accepted }

@@ -118,6 +118,9 @@ enum class ClaudePToolPublicationAbandonReason(val localReason: String) {
     /** The caller's own deadline elapsed first. */
     TIMEOUT("timeout"),
 
+    /** A cancel reached the publication before its barrier committed. */
+    CANCELLED("cancelled"),
+
     /** The publisher gave up on this key — its own attempt ended. */
     RELEASED("released"),
 

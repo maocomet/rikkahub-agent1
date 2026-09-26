@@ -1,13 +1,19 @@
 package me.rerere.rikkahub.data.claudep
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.claudep.ClaudePToolCallStatus
 import me.rerere.ai.provider.claudep.ClaudePToolGenerationContext
+import me.rerere.ai.provider.claudep.ClaudePToolStatusPublication
 import me.rerere.ai.provider.claudep.ClaudePToolStatusSink
 import me.rerere.ai.provider.claudep.ClaudePToolStatusUpdate
 import me.rerere.ai.provider.claudep.bridge.BridgeInvocation
@@ -29,6 +35,7 @@ import me.rerere.rikkahub.data.ai.execution.ToolRuntime
 import me.rerere.rikkahub.data.ai.tools.ToolExecutionContext
 import me.rerere.rikkahub.data.capability.CapabilitySubject
 import me.rerere.rikkahub.data.capability.SubjectType
+import me.rerere.rikkahub.data.execution.ApprovalContinuationMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -338,22 +345,224 @@ class ClaudePToolBridgeHostExecuteTest {
     /**
      * A call that needs a decision is refused, not run without one.
      *
-     * The in-flight approval path is not implemented yet, and the only safe direction for that is
-     * closed: running a write because Android could not ask would be the exact failure the approval
-     * gate exists to prevent.
+     * The in-flight approval path runs nothing in this batch, and the only safe direction for that
+     * is closed: running a write because Android could not ask would be the exact failure the
+     * approval gate exists to prevent.
+     *
+     * ## Why the sink here refuses rather than accepts
+     *
+     * This test used to pass `ClaudePToolStatusSink.NONE` and expect an immediate refusal. That
+     * expectation encoded the very mistake the acknowledgement batch exists to remove — that a
+     * sink answering `Accepted` means the card was published. It means the chunk was handed to the
+     * stream and nothing more, so a host that accepted it and then returned would be deciding to
+     * run a tool on the strength of an emit having returned.
+     *
+     * With the receipt in place, `NONE` on an approval-gated call now means "accepted, never
+     * answered" and the host waits the call's whole deadline before refusing — correct, and
+     * asserted separately below. The *refusal* path is the fast one, and it is this sink that
+     * expresses it: nothing was shown, so nothing can be tapped, so there is no commit coming.
      */
     @Test
     fun `a call that needs approval is refused rather than run`() = runBlocking {
         val tool = RecordingTool("write_file", needsApproval = true)
         val runtime = RecordingRuntime()
         val host = boundHost(listOf(tool.tool), runtime)
+        val sink = ClaudePToolStatusSink {
+            ClaudePToolStatusPublication.Refused("tool_status_not_published")
+        }
 
-        val execution = host.execute(invocation("gen-1", "write_file"), ClaudePToolStatusSink.NONE)
+        val execution = host.execute(invocation("gen-1", "write_file"), sink)
 
         assertEquals("a gated call must not run", 0, tool.invocations.size)
         assertEquals("and the runtime must not be asked", 0, runtime.requests.size)
         assertEquals(ToolCallState.FAILED, execution.outcome.state)
         assertNull("nothing was shown to the user, so nothing is shown back", execution.part)
+    }
+
+    /**
+     * An accepted publication that is never answered is waited on, and a cancel ends that wait.
+     *
+     * This is the shape `ClaudePToolStatusSink.NONE` produces for an approval-gated call, and it is
+     * deliberately not a fast path: the card may genuinely have been published and the conversation
+     * authority may be about to commit it, so the host waits up to the call's own deadline — the
+     * contract's `MAX_DEADLINE_MS`, not a number invented here. Cancelling is what ends it early,
+     * and the assertions are that the wait really was entered, that it is cancellable, and that
+     * nothing ran and nothing was left registered.
+     */
+    @Test
+    fun `an unanswered publication is waited on and a cancel ends it`() = runBlocking {
+        val tool = RecordingTool("write_file", needsApproval = true)
+        val runtime = RecordingRuntime()
+        val receipts = ClaudePToolPublicationReceipts()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts)
+        val published = CompletableDeferred<Unit>()
+        val sink = ClaudePToolStatusSink {
+            published.complete(Unit)
+            ClaudePToolStatusPublication.Accepted
+        }
+
+        val running = async(Dispatchers.Default) {
+            host.execute(invocation("gen-1", "write_file"), sink)
+        }
+        // A handshake rather than a sleep: the sink signalling means the card has been accepted,
+        // and the registry's own state then says whether anything has answered it.
+        withTimeout(5_000) { published.await() }
+        assertEquals("the card was accepted but not answered", 1, receipts.pendingCount)
+
+        running.cancel()
+        assertTrue(
+            "the cancelled wait ends rather than outliving its caller",
+            runCatching { withTimeout(5_000) { running.await() } }.isFailure,
+        )
+        assertEquals("nothing ran", 0, tool.invocations.size)
+        assertEquals("the runtime was never asked", 0, runtime.requests.size)
+        assertEquals("and the publication was released", 0, receipts.pendingCount)
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // C2 — the pending publication handshake
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The run id the test's bound control carries, and therefore the generation the host publishes
+     * under. Written out rather than referenced so the identity below is derived the way the
+     * conversation authority derives it: from what it holds, not from the host.
+     */
+    private val boundRunId = "11111111-1111-1111-1111-111111111111"
+
+    /**
+     * A sink that stands in for the conversation authority.
+     *
+     * It records what was published and then answers the receipt by **rebuilding the publication id
+     * from fields it can see for itself** — the run id its own control carries, and the tool call
+     * and tool name on the part. That is the whole property under test: the publisher and the
+     * authority must agree on the identity without either telling the other what it is.
+     */
+    private class AuthoritySink(
+        private val receipts: ClaudePToolPublicationReceipts,
+        private val runId: String,
+        private val answer: (ClaudePToolPublicationId) -> Unit,
+    ) : ClaudePToolStatusSink {
+        val updates = mutableListOf<ClaudePToolStatusUpdate>()
+        var rebuiltId: ClaudePToolPublicationId? = null
+
+        override suspend fun publish(update: ClaudePToolStatusUpdate): ClaudePToolStatusPublication {
+            updates += update
+            val key = ClaudePToolPublicationId.of(
+                generationId = runId,
+                toolCallId = update.toolCallId,
+                toolName = update.toolName,
+            )
+            rebuiltId = key
+            answer(key)
+            return ClaudePToolStatusPublication.Accepted
+        }
+    }
+
+    /**
+     * The publication half of the in-flight handshake, end to end on this side.
+     *
+     * The host proposes a pending card, declares the continuation, waits on the receipt the
+     * authority completes, and — because this batch stops short of execution — reports the call
+     * unrun. Every one of those is asserted, including that the runtime was never asked: arming a
+     * waiter and running a tool are the next batch's, and shipping a path that runs early is the
+     * failure this whole handshake exists to prevent.
+     */
+    @Test
+    fun `an approval-gated call publishes an in-flight card and still runs nothing`() = runBlocking {
+        val tool = RecordingTool("write_file", needsApproval = true)
+        val runtime = RecordingRuntime()
+        val receipts = ClaudePToolPublicationReceipts()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts)
+        val sink = AuthoritySink(receipts, boundRunId) { key ->
+            // The authority's half: the card is applied and its barrier committed, so the receipt
+            // carries its own approval identity.
+            receipts.complete(key, "approval-1", "execution-1")
+        }
+
+        val execution = host.execute(invocation("gen-1", "write_file"), sink)
+
+        assertEquals("exactly one card is proposed", 1, sink.updates.size)
+        val update = sink.updates.single()
+        assertEquals(ClaudePToolCallStatus.PENDING_APPROVAL, update.status)
+        assertEquals(
+            "the publisher declares the continuation, and it is the in-flight one",
+            ApprovalContinuationMode.IN_FLIGHT.name,
+            update.pendingContinuation,
+        )
+        assertEquals(
+            "and the authority rebuilds the same identity from its own fields",
+            ClaudePToolPublicationId.of(boundRunId, "call-1", "write_file"),
+            sink.rebuiltId,
+        )
+        assertEquals("the runtime is never asked", 0, runtime.requests.size)
+        assertEquals("and the tool never runs", 0, tool.invocations.size)
+        assertEquals(ToolCallState.FAILED, execution.outcome.state)
+        assertEquals("the publication is released", 0, receipts.pendingCount)
+        assertEquals(0, receipts.settledCount)
+    }
+
+    /** A barrier that rolled back is a refusal, and a refusal is never an execution. */
+    @Test
+    fun `a card whose barrier rolled back is not run`() = runBlocking {
+        val tool = RecordingTool("write_file", needsApproval = true)
+        val runtime = RecordingRuntime()
+        val receipts = ClaudePToolPublicationReceipts()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts)
+        val sink = AuthoritySink(receipts, boundRunId) { key ->
+            receipts.refuse(key, "approval_authority_rollback")
+        }
+
+        val execution = host.execute(invocation("gen-1", "write_file"), sink)
+
+        assertEquals("the runtime is never asked", 0, runtime.requests.size)
+        assertEquals("and the tool never runs", 0, tool.invocations.size)
+        assertEquals(ToolCallState.FAILED, execution.outcome.state)
+        assertEquals("nothing is left waiting", 0, receipts.pendingCount)
+    }
+
+    /** A receipt that never commits — a timeout, a cancel, a registry close — is the same answer. */
+    @Test
+    fun `a card whose receipt never commits is not run`() = runBlocking {
+        val tool = RecordingTool("write_file", needsApproval = true)
+        val runtime = RecordingRuntime()
+        val receipts = ClaudePToolPublicationReceipts()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts)
+        val sink = AuthoritySink(receipts, boundRunId) { _ ->
+            receipts.abandonAll(ClaudePToolPublicationAbandonReason.TIMEOUT)
+        }
+
+        val execution = host.execute(invocation("gen-1", "write_file"), sink)
+
+        assertEquals(0, runtime.requests.size)
+        assertEquals(0, tool.invocations.size)
+        assertEquals(ToolCallState.FAILED, execution.outcome.state)
+    }
+
+    /**
+     * A card the sink refuses is not waited on at all.
+     *
+     * Nothing was shown, so nothing can be tapped, so there is no commit coming. Waiting for one
+     * would burn the call's whole deadline to reach an answer already known.
+     */
+    @Test
+    fun `a card the sink refuses is not waited on`() = runBlocking {
+        val tool = RecordingTool("write_file", needsApproval = true)
+        val runtime = RecordingRuntime()
+        val receipts = ClaudePToolPublicationReceipts()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts)
+        var publishes = 0
+        val sink = ClaudePToolStatusSink {
+            publishes++
+            ClaudePToolStatusPublication.Refused("tool_status_not_published")
+        }
+
+        val execution = host.execute(invocation("gen-1", "write_file"), sink)
+
+        assertEquals("the sink is consulted once", 1, publishes)
+        assertEquals(0, runtime.requests.size)
+        assertEquals(ToolCallState.FAILED, execution.outcome.state)
+        assertEquals("and the publication is released anyway", 0, receipts.pendingCount)
     }
 
     /** A generation with no plan has nothing to execute under. */
