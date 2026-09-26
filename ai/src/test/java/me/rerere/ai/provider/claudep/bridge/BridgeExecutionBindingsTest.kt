@@ -167,6 +167,65 @@ class BridgeExecutionBindingsTest {
         assertEquals(setOf("generation-1"), bindings.boundGenerationIds())
     }
 
+    // ---------------------------------------------------------------------------------------
+    // The reconnection and closure cases the provider's ordering depends on
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    fun `a token redeemed for one generation cannot be redeemed for another`() {
+        val bindings = bindings()
+        bindings.stage("ref", "identity", Plan("plan"))
+
+        assertTrue(bindings.open("generation-1", "ref"))
+        assertFalse("the token is spent", bindings.open("generation-2", "ref"))
+        assertNull(bindings.lookup("generation-2"))
+        assertEquals("generation-1", bindings.boundGenerationIds().single())
+    }
+
+    @Test
+    fun `re-opening an already bound generation is idempotent and keeps the one binding`() {
+        val bindings = bindings()
+        bindings.stage("ref", "identity", Plan("plan"))
+
+        assertTrue(bindings.open("generation-1", "ref"))
+        // The token is spent. For a generation that is already bound that is not an error — this
+        // is the reconnect shape — and what must not happen is a second binding.
+        assertTrue(bindings.open("generation-1", "ref"))
+        assertEquals(1, bindings.boundCount)
+        assertEquals("plan", bindings.lookup("generation-1")?.tag)
+    }
+
+    @Test
+    fun `a refused re-open leaves the token staged so the refusal repeats`() {
+        val bindings = bindings()
+        bindings.stage("ref-1", "identity", Plan("first"))
+        bindings.open("generation-1", "ref-1")
+
+        bindings.stage("ref-2", "OTHER", Plan("second"))
+        assertFalse(bindings.open("generation-1", "ref-2"))
+        assertFalse("the refusal is not satisfied by a spent entry", bindings.open("generation-1", "ref-2"))
+        assertEquals("first", bindings.lookup("generation-1")?.tag)
+    }
+
+    @Test
+    fun `binding a generation that was closed needs a fresh preparation, and this table does not refuse it`() {
+        val bindings = bindings()
+        bindings.stage("ref-1", "identity", Plan("first"))
+        bindings.open("generation-1", "ref-1")
+        bindings.close("generation-1")
+
+        // Stated as a test because it is a deliberate division of responsibility, not an
+        // oversight. Reopening a closed generation is refused by `BridgeGenerationRegistry`, which
+        // tombstones the id and is the only thing that decides whether a generation may accept
+        // work. The provider calls it *before* this table, so a closed generation never reaches
+        // `open` at all. What this table guarantees is narrower and is what it is tested for: a
+        // spent token cannot be redeemed, so an old frame cannot ride an old preparation.
+        assertFalse("the spent token stays spent", bindings.open("generation-1", "ref-1"))
+
+        bindings.stage("ref-2", "identity", Plan("second"))
+        assertTrue("a fresh preparation would bind; the registry is what refuses the generation", bindings.open("generation-1", "ref-2"))
+    }
+
     @Test
     fun `closing everything revokes every binding and every staged plan`() {
         val bindings = bindings()

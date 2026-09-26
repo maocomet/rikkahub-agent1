@@ -337,11 +337,33 @@ class ClaudePProvider(
 
             is ClaudePResumeResult.Replayed -> {
                 emit(ClaudePResumeOutcome.Replaying(resumed.outcome))
+                // The **same** handler the live stream uses, found by this exact generation id.
+                //
+                // A replayed stream can carry `tool.invoke` frames — that is the whole reason a
+                // bounded replay buffer exists — and leaving them unrouted meant a re-delivered
+                // call was dropped on the floor and sat until its deadline. Routing them here is
+                // safe precisely because the handler is the same one: it consults the ledger the
+                // generation already has, so a call that settled is answered with its recorded
+                // outcome and a call still running is left alone. Neither path reaches the
+                // runtime, so a reconnect cannot buy a second side effect.
+                //
+                // `lookup` returning null is the fail-closed answer, not a gap to fill: an unknown
+                // generation, one already closed, or one whose adapter this process no longer
+                // holds must not have its frames executed — and, just as importantly, must not
+                // have an adapter invented for it. Nothing here starts a generation; this method
+                // never calls `generation.start`, and a reconnect still cannot buy a model
+                // request.
+                val toolFrames = toolRegistry.lookup(generationId)?.let { adapter ->
+                    ClaudePToolFrameHandler(adapter = adapter, gateway = gateway, host = toolHost)
+                }
                 pumpFrames(
                     frames = flow { resumed.frames.forEach { emit(it) } },
                     gate = ClaudePTerminalGate(),
                     generationId = generationId,
                     onTerminal = {},
+                    onToolFrame = { event ->
+                        toolFrames?.on(event) { chunk -> emit(ClaudePResumeOutcome.Chunk(chunk)) }
+                    },
                     emit = { emit(ClaudePResumeOutcome.Chunk(it)) },
                 )
             }

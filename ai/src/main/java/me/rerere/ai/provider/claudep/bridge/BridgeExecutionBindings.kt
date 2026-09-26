@@ -113,12 +113,21 @@ class BridgeExecutionBindings<T : Any>(
 
         val existing = bound[generationId]
         if (existing != null) {
-            // Already bound. A retry that reaches the same generation is idempotent **only** when
-            // it would bind the same plan; a different one is refused rather than applied. The
-            // staged entry is still consumed, so a token cannot be redeemed twice against two
-            // different generations.
-            val offered = staged.remove(ref)
-            return offered == null || offered.identity == existing.identity
+            // Already bound by an earlier, accepted call.
+            val offered = staged[ref]
+            if (offered == null) {
+                // The token is spent or unknown. That is not an error here: a reconnect reaches
+                // the same generation again with the binding already in place, and this table is
+                // not what decides whether that reconnect is legitimate — the registry runs first
+                // and is the thing that proves the generation, device, assistant, branch and
+                // catalog all still agree. What this branch must not do is *replace* the plan.
+                return true
+            }
+            // A retry that would bind a *different* plan is refused, and the token is left staged
+            // so the refusal is repeatable rather than satisfied by a spent entry on the next try.
+            if (offered.identity != existing.identity) return false
+            staged.remove(ref)
+            return true
         }
 
         val plan = staged.remove(ref) ?: return false
