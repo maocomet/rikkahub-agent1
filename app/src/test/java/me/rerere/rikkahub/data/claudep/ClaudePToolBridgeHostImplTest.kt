@@ -66,6 +66,7 @@ class ClaudePToolBridgeHostImplTest {
     ) = ClaudePToolBridgeHostImpl(
         deviceRefProvider = { deviceRef },
         offerCatalog = offerCatalog,
+        publications = ClaudePToolPublicationReceipts(),
     )
 
     // ---------------------------------------------------------------------------------------

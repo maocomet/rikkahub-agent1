@@ -893,6 +893,10 @@ val appModule = module {
             durableCommandQueue = get(),
             secondUserApprovalLifecycle = get(),
             claudePToolRunControls = get(),
+            // The same instance the Claude P tool host holds. This service is the side that knows
+            // when the barrier behind a pending card has actually committed, so it is the side
+            // that answers; the host is the side that waits.
+            claudePToolPublicationReceipts = get(),
             toolExecutionGate = get(),
             toolRuntime = get(),
             pluginToolCatalog = get(),

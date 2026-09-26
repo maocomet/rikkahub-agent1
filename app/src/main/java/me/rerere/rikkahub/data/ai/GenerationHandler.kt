@@ -31,6 +31,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -76,6 +77,7 @@ import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.MessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_FINAL_ANSWER_REMINDER_PROMPT
+import me.rerere.rikkahub.data.execution.ApprovalContinuationMode
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.diagnostics.RecentGenerationDiagnostics
 import me.rerere.rikkahub.diagnostics.GenerationDiagnosticHandle
@@ -449,6 +451,37 @@ sealed interface GenerationChunk {
     data class Messages(
         val messages: List<UIMessage>,
         val persistenceBarrier: GenerationPersistenceBarrier = GenerationPersistenceBarrier.NONE,
+        /**
+         * Which continuation an accompanying pending approval is being raised for, or `null`.
+         *
+         * ## Why the barrier alone is not enough
+         *
+         * `PENDING_APPROVAL` says a card is being persisted; it does not say which of two opposite
+         * things happens when the user taps. A card raised by the ordinary tool loop belongs to a
+         * turn that is about to break, so approving it resumes through a command. A card published
+         * from inside a Claude P generation belongs to a turn that is still open — the peer is
+         * blocked on the call — so approving it must release a waiter and must never create a
+         * second generation.
+         *
+         * The conversation authority is where that difference has to be acted on, and it cannot
+         * recover it from the messages: a pending part looks identical either way. So the value
+         * travels with the chunk that raised it, declared by whoever did — never inferred from the
+         * provider that happens to be running, which is a rule that would be right today and
+         * silently wrong for the next provider.
+         *
+         * ## Why it is nullable, and what absence means
+         *
+         * `null` is "the declarer did not say", and it is **not** a default to fill in. A
+         * `PENDING_APPROVAL` chunk with no continuation is refused rather than assumed: a caller
+         * that guesses is a caller that can arm an in-flight waiter for a call whose generation
+         * has already ended. Every construction site therefore states its mode explicitly.
+         *
+         * `@Transient` because this is Android-process-local by construction: it is not part of any
+         * persisted shape, any Server frame or any model request, and making "never serialized" a
+         * property of the declaration is what keeps that true as the type is reused.
+         */
+        @Transient
+        val continuationMode: ApprovalContinuationMode? = null,
     ) : GenerationChunk
 }
 
@@ -1082,29 +1115,52 @@ class GenerationHandler(
                     }
                     val providerToolsInternal = providerToolDefinitions
                         .materializeProviderToolSchemas()
+                    // One body for both emissions, so a barrier-tagged chunk carries exactly the
+                    // same messages the ordinary update does. The only thing that differs between
+                    // them is the barrier — duplicating the transform chain for the second one
+                    // would be a second chance for the two to describe different conversations.
+                    suspend fun emitMessages(
+                        updated: List<UIMessage>,
+                        barrier: GenerationPersistenceBarrier,
+                        continuation: ApprovalContinuationMode?,
+                    ) {
+                        messages = updated.transforms(
+                            transformers = outputTransformers,
+                            context = context,
+                            model = model,
+                            assistant = assistant,
+                            settings = settings
+                        )
+                        emit(
+                            GenerationChunk.Messages(
+                                messages = messages.visualTransforms(
+                                    transformers = outputTransformers,
+                                    context = context,
+                                    model = model,
+                                    assistant = assistant,
+                                    settings = settings
+                                ),
+                                persistenceBarrier = barrier,
+                                continuationMode = continuation,
+                            )
+                        )
+                    }
                     stepTerminal = generateInternal(
                         assistant = assistant,
                         settings = settings,
                         systemAddendum = effectiveSystemAddendum,
                         messages = messages,
-                        onUpdateMessages = {
-                            messages = it.transforms(
-                                transformers = outputTransformers,
-                                context = context,
-                                model = model,
-                                assistant = assistant,
-                                settings = settings
-                            )
-                            emit(
-                                GenerationChunk.Messages(
-                                    messages.visualTransforms(
-                                        transformers = outputTransformers,
-                                        context = context,
-                                        model = model,
-                                        assistant = assistant,
-                                        settings = settings
-                                    )
-                                )
+                        onUpdateMessages = { emitMessages(it, GenerationPersistenceBarrier.NONE, null) },
+                        // Raised from **inside** the provider turn, because the turn has not
+                        // ended: the peer is blocked on this call, so nothing after the stream
+                        // would ever run. The mode is the publisher's declaration, mapped here by
+                        // exact match; an unrecognised token produces no barrier at all, which
+                        // leaves the card on screen and releases nothing.
+                        onPendingApprovalPublished = { updated, continuation ->
+                            emitMessages(
+                                updated,
+                                GenerationPersistenceBarrier.PENDING_APPROVAL,
+                                continuation,
                             )
                         },
                         transformers = inputTransformers,
@@ -1633,6 +1689,12 @@ class GenerationHandler(
                         GenerationChunk.Messages(
                             messages = messages,
                             persistenceBarrier = GenerationPersistenceBarrier.PENDING_APPROVAL,
+                            // Stated, not defaulted. A card raised by this loop belongs to a turn
+                            // that is about to break so the user can be asked, and approving it
+                            // resumes through a command — the behaviour that predates the bridge.
+                            // The other mode belongs to a generation that is still open, and only
+                            // a publisher that knows that may claim it.
+                            continuationMode = ApprovalContinuationMode.RESUME_COMMAND,
                         ),
                     )
                 }
@@ -2721,6 +2783,20 @@ class GenerationHandler(
         systemAddendum: String? = null,
         messages: List<UIMessage>,
         onUpdateMessages: suspend (List<UIMessage>) -> Unit,
+        /**
+         * The messages as they stand now, plus the continuation the publisher declared, for a
+         * pending card that arrived **inside** the provider's own stream.
+         *
+         * Separate from [onUpdateMessages] because the two happen for different reasons and only
+         * this one carries a barrier. It has to be callable mid-stream: a generation whose tool
+         * call is waiting on the user does not end, so there is no "after the turn" at which this
+         * could be emitted instead.
+         *
+         * Defaulted to nothing so the paths that never publish in-flight — and every existing
+         * test — are unaffected.
+         */
+        onPendingApprovalPublished: suspend (List<UIMessage>, ApprovalContinuationMode) -> Unit =
+            { _, _ -> },
         transformers: List<MessageTransformer>,
         model: Model,
         providerImpl: Provider<ProviderSetting>,
@@ -3915,6 +3991,17 @@ class GenerationHandler(
                             }
                         }
                         onUpdateMessages(messages)
+                        // A card the app published from inside this very stream. The token is
+                        // mapped by exact match and never defaulted: an unrecognised or absent
+                        // continuation writes no barrier at all, so nothing is armed for a call
+                        // whose generation may already be over. The card itself is on screen
+                        // already, from the update above — which is the fail-closed shape, visible
+                        // and unable to run.
+                        chunk.pendingApprovalContinuation?.let { token ->
+                            ApprovalContinuationMode.fromWireOrNull(token)?.let { mode ->
+                                onPendingApprovalPublished(messages, mode)
+                            }
+                        }
                     },
                     onBeforeRetry = { stall ->
                         val seconds = stall.observationMillis.coerceAtLeast(1L) / 1_000.0

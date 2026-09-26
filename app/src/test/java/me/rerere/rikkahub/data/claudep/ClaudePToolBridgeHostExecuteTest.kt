@@ -185,6 +185,7 @@ class ClaudePToolBridgeHostExecuteTest {
         gate: ClaudePToolGate = ClaudePToolGate { _, _, _ -> ToolPreExecutionDecision.Allow },
         subject: CapabilitySubject? = CapabilitySubject("44444444-4444-4444-4444-444444444444", SubjectType.LOCAL_ASSISTANT),
         generationId: String = "gen-1",
+        publications: ClaudePToolPublicationReceipts = ClaudePToolPublicationReceipts(),
     ): ClaudePToolBridgeHostImpl = runBlocking {
         val controls = ClaudePToolRunControls()
         runControl?.let { controls.register(it.runId.toString(), it) }
@@ -196,6 +197,7 @@ class ClaudePToolBridgeHostExecuteTest {
             runControls = controls,
             gate = gate,
             subjectFor = { _, _, _ -> subject },
+            publications = publications,
         )
         val preparation = host.prepare(tools, context())
         check(host.openGeneration(generationId, preparation)) { "the test's own binding must succeed" }
@@ -431,6 +433,7 @@ class ClaudePToolBridgeHostExecuteTest {
                 deviceRefProvider = { "device-1" },
                 offerCatalog = true,
                 // No runtime, no gate, no subject: the unwired shape.
+                publications = ClaudePToolPublicationReceipts(),
             )
             val preparation = instance.prepare(listOf(tool.tool), context())
             check(instance.openGeneration("gen-1", preparation))

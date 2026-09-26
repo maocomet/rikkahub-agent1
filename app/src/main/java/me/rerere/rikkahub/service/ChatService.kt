@@ -83,6 +83,7 @@ import me.rerere.rikkahub.data.ai.tools.ordinaryConversationToolNames
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.createWorkspaceTools
+import me.rerere.rikkahub.data.execution.ApprovalContinuationMode
 import me.rerere.rikkahub.data.execution.isInFlightContinuation
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
@@ -627,6 +628,29 @@ class ChatService(
      * executing is discoverable while it runs and not afterwards.
      */
     private val claudePToolRunControls: me.rerere.rikkahub.data.claudep.ClaudePToolRunControls,
+    /**
+     * The acknowledgement this service owes a Claude P host that published a pending card.
+     *
+     * ## Why this service is the one that answers
+     *
+     * A card published from inside a live Claude P generation only counts as published once the
+     * barrier behind it is durably committed — and the commit is this service's: it owns
+     * `checkpointWaiting`, it is the side that knows the transaction succeeded, and it is the side
+     * the approval's own identity is derived by. A host that waited on anything less would be
+     * waiting on an `emit` having returned, which says nothing.
+     *
+     * ## The one Koin binding this costs, and what it does not buy
+     *
+     * This is the acknowledgement seam and nothing else. It grants no tool execution: the runtime,
+     * the MCP manager and the execution gate are wired exactly as before, the host still offers no
+     * catalog, and no snapshot is sent. It exists because a request created on one side and
+     * completed on the other cannot work without one shared instance.
+     *
+     * Never held by the host as a `Conversation`, and never used to assemble a persisted copy —
+     * the host asks a question here, it does not get to answer it.
+     */
+    private val claudePToolPublicationReceipts:
+        me.rerere.rikkahub.data.claudep.ClaudePToolPublicationReceipts,
     private val toolExecutionGate: me.rerere.rikkahub.data.ai.ToolExecutionGate,
     private val toolRuntime: me.rerere.rikkahub.data.ai.execution.ToolRuntime,
     private val pluginToolCatalog: me.rerere.rikkahub.plugin.PluginToolCatalog,
@@ -3971,14 +3995,76 @@ class ChatService(
                                 if (chunk.persistenceBarrier ==
                                     GenerationPersistenceBarrier.PENDING_APPROVAL
                                 ) {
+                                    // Which continuation this card is for decides who may own its
+                                    // barrier, and what approving it does afterwards. The chunk
+                                    // states it; nothing here infers it from the provider that
+                                    // happens to be running. An absent or unrecognised mode is not
+                                    // resolved by falling back to the legacy path — a card whose
+                                    // continuation nobody can name is one whose approval might arm
+                                    // a waiter for a generation that has already ended, so nothing
+                                    // is committed behind it and no publisher is answered. The card
+                                    // stays on screen and cannot run.
+                                    val continuation = chunk.continuationMode
                                     val isSecondUser = capabilitySubject.type ==
                                         me.rerere.rikkahub.data.capability.SubjectType.LOCAL_SECOND_USER
-                                    val pendingTools = if (isSecondUser) correlatedMessages
+                                    val pendingParts = correlatedMessages
                                         .lastOrNull()
                                         ?.parts
                                         ?.filterIsInstance<UIMessagePart.Tool>()
                                         ?.filter { it.isPending }
-                                        ?.map { tool ->
+                                        .orEmpty()
+                                    // The owner is the admission decision, and it is the one place
+                                    // the two modes differ in *who* may hold a barrier:
+                                    //   RESUME_COMMAND keeps the original rule verbatim — only a
+                                    //     second user owns one, and an ordinary assistant is
+                                    //     refused exactly as it was before any of this existed;
+                                    //   IN_FLIGHT is admitted for every subject type, because the
+                                    //     generation that raised the card has not ended and its
+                                    //     peer is blocked on the answer.
+                                    val pendingOwner = when (continuation) {
+                                        ApprovalContinuationMode.IN_FLIGHT ->
+                                            me.rerere.rikkahub.data.execution.PendingApprovalOwner(
+                                                // The run that is actually executing, with no
+                                                // fallback. The publisher found its run control by
+                                                // this exact id, so a barrier keyed on the command
+                                                // id instead would describe a generation the
+                                                // publisher cannot name.
+                                                runId = requireNotNull(runControl?.runId) {
+                                                    "in_flight_approval_run_missing"
+                                                }.toString(),
+                                                commandId = authoritativeCommandId?.toString(),
+                                                conversationId = conversationId.toString(),
+                                                subjectId = capabilitySubject.id,
+                                                subjectType = capabilitySubject.type,
+                                                origin = callOrigin,
+                                            )
+
+                                        ApprovalContinuationMode.RESUME_COMMAND ->
+                                            if (isSecondUser) {
+                                                me.rerere.rikkahub.data.execution
+                                                    .PendingApprovalOwner(
+                                                        runId = (runControl?.runId
+                                                            ?: effectiveCommandId).toString(),
+                                                        commandId = authoritativeCommandId?.toString(),
+                                                        conversationId = conversationId.toString(),
+                                                        subjectId = capabilitySubject.id,
+                                                        subjectType = capabilitySubject.type,
+                                                        origin = callOrigin,
+                                                    )
+                                            } else {
+                                                null
+                                            }
+
+                                        null -> null
+                                    }
+                                    // Built only when something will own it, exactly as before: the
+                                    // mapping asserts a schema is present, and asserting that for a
+                                    // card that is being left alone would turn a working legacy
+                                    // path into a crash.
+                                    val pendingTools = if (pendingOwner == null) {
+                                        emptyList()
+                                    } else {
+                                        pendingParts.map { tool ->
                                             val schemaFingerprint = me.rerere.rikkahub.toolcatalog
                                                 .ToolCatalogSnapshot
                                                 .fromDefinitions(toolExecutionSurface.snapshot())
@@ -3993,52 +4079,120 @@ class ChatService(
                                                 toolSchemaFingerprint = schemaFingerprint,
                                             )
                                         }
-                                        .orEmpty() else emptyList()
-                                    val pendingOwner = if (isSecondUser) {
-                                        me.rerere.rikkahub.data.execution.PendingApprovalOwner(
-                                            runId = (runControl?.runId ?: effectiveCommandId).toString(),
-                                            commandId = authoritativeCommandId?.toString(),
-                                            conversationId = conversationId.toString(),
-                                            subjectId = capabilitySubject.id,
-                                            subjectType = capabilitySubject.type,
-                                            origin = callOrigin,
-                                        )
-                                    } else {
-                                        null
                                     }
+                                    // What this commit acknowledges. Only an in-flight publication
+                                    // has a publisher waiting on it: a resume-command card is
+                                    // answered by the user's tap and a later command, and nothing
+                                    // in this process is blocked on it.
+                                    val publicationIds = if (
+                                        continuation == ApprovalContinuationMode.IN_FLIGHT &&
+                                        pendingOwner != null
+                                    ) {
+                                        pendingTools.map { tool ->
+                                            me.rerere.rikkahub.data.claudep
+                                                .ClaudePToolPublicationId.of(
+                                                    generationId = pendingOwner.runId,
+                                                    toolCallId = tool.toolCallId,
+                                                    toolName = tool.toolName,
+                                                )
+                                        }
+                                    } else {
+                                        emptyList()
+                                    }
+                                    // The authority's own approval and execution identities, by
+                                    // card, as produced inside the transaction by the single site
+                                    // that derives them. Captured rather than recomputed: the
+                                    // publisher is waiting for exactly these, and a second
+                                    // derivation here would be a second answer to give it.
+                                    var barrierReceipts: Map<String, Pair<String, String>> = emptyMap()
                                     val owningMessage = correlatedMessages.lastOrNull()
                                         ?: error("approval_assistant_message_missing")
                                     val existingExecutionIds = owningMessage
                                         .persistedToolExecutionIds(runControl)
                                     if (authority != null) {
-                                        authority.checkpointWaiting(
-                                            conversation = updatedConversation,
-                                            assistantMessageId = owningMessage.id,
-                                            approvalMutation = { messageId, revision ->
-                                                pendingOwner?.let { owner ->
-                                                    secondUserApprovalLifecycle
-                                                        .persistPendingBarrierInCurrentAuthorityTransaction(
-                                                            owner = owner,
-                                                            tools = pendingTools,
-                                                            assistantMessageId = messageId,
-                                                            assistantMessageRevision = revision,
-                                                        )
-                                                }
-                                                executionMessageAuthorityBinder
-                                                    .requireBoundInCurrentAuthorityTransaction(
-                                                        existingExecutionIds.map { executionId ->
-                                                            me.rerere.rikkahub.data.execution
-                                                                .ExecutionOwningMessageAuthority(
-                                                                    executionId = executionId,
+                                        try {
+                                            authority.checkpointWaiting(
+                                                conversation = updatedConversation,
+                                                assistantMessageId = owningMessage.id,
+                                                approvalMutation = { messageId, revision ->
+                                                    pendingOwner?.let { owner ->
+                                                        barrierReceipts =
+                                                            secondUserApprovalLifecycle
+                                                                .persistPendingBarrierInCurrentAuthorityTransaction(
+                                                                    owner = owner,
+                                                                    tools = pendingTools,
                                                                     assistantMessageId = messageId,
                                                                     assistantMessageRevision = revision,
+                                                                    // Non-null whenever an owner
+                                                                    // exists: an owner is only built
+                                                                    // for a mode this chunk named.
+                                                                    continuationMode =
+                                                                        requireNotNull(continuation),
                                                                 )
-                                                        },
-                                                    )
-                                            },
-                                            occurredAtMs = persistenceSourceInvalidationNowMs,
-                                        )
-                                        waitingAuthorityCommitted = true
+                                                                .associate { record ->
+                                                                    record.toolCallId to
+                                                                        (record.approvalId to
+                                                                            record.executionId)
+                                                                }
+                                                    }
+                                                    executionMessageAuthorityBinder
+                                                        .requireBoundInCurrentAuthorityTransaction(
+                                                            existingExecutionIds.map { executionId ->
+                                                                me.rerere.rikkahub.data.execution
+                                                                    .ExecutionOwningMessageAuthority(
+                                                                        executionId = executionId,
+                                                                        assistantMessageId = messageId,
+                                                                        assistantMessageRevision = revision,
+                                                                    )
+                                                            },
+                                                        )
+                                                },
+                                                occurredAtMs = persistenceSourceInvalidationNowMs,
+                                            )
+                                            waitingAuthorityCommitted = true
+                                        } catch (rollback: Throwable) {
+                                            // The card and the barrier failed as one transaction,
+                                            // so nothing behind the card is durable. Answering here
+                                            // is what lets the publisher fail closed now instead of
+                                            // at its deadline, and it is answered with a refusal —
+                                            // never a commit, because a rollback is precisely the
+                                            // state in which a tool must not run. Rethrown
+                                            // unchanged: a failed authority commit still fails the
+                                            // run, and a cancellation is still a cancellation.
+                                            publicationIds.forEach { id ->
+                                                claudePToolPublicationReceipts.refuse(
+                                                    id = id,
+                                                    localReason = "approval_authority_rollback",
+                                                )
+                                            }
+                                            throw rollback
+                                        }
+                                        // Only here. The transaction has committed, the barrier is
+                                        // durable and the card is applied — so the publisher may
+                                        // now arm its waiter. Nothing above this line may
+                                        // acknowledge: an `emit` that returned, or a Channel send
+                                        // that succeeded, says nothing about a commit, and treating
+                                        // it as one would let a tool wait on a decision for a
+                                        // barrier that rolled back.
+                                        publicationIds.forEach { id ->
+                                            val receipt = barrierReceipts[id.toolCallId]
+                                            if (receipt == null) {
+                                                // Committed, but the barrier the authority wrote
+                                                // did not name this card. Refused rather than
+                                                // guessed at: without an exact approval identity
+                                                // there is nothing for a waiter to wait on.
+                                                claudePToolPublicationReceipts.refuse(
+                                                    id = id,
+                                                    localReason = "approval_barrier_missing",
+                                                )
+                                            } else {
+                                                claudePToolPublicationReceipts.complete(
+                                                    id = id,
+                                                    approvalId = receipt.first,
+                                                    executionId = receipt.second,
+                                                )
+                                            }
+                                        }
                                     } else if (pendingOwner != null) {
                                         secondUserApprovalLifecycle.persistPendingBarrier(
                                             conversation = updatedConversation,
@@ -4046,7 +4200,18 @@ class ChatService(
                                             tools = pendingTools,
                                             sourceInvalidationMode = persistenceSourceInvalidationMode,
                                             sourceInvalidationNowMs = persistenceSourceInvalidationNowMs,
+                                            continuationMode = requireNotNull(continuation),
                                         )
+                                        // No authority transaction means no commit, so there is
+                                        // nothing to acknowledge. A publisher waiting on one of
+                                        // these would otherwise hang until its deadline; refusing
+                                        // tells it to run nothing straight away.
+                                        publicationIds.forEach { id ->
+                                            claudePToolPublicationReceipts.refuse(
+                                                id = id,
+                                                localReason = "approval_authority_transaction_absent",
+                                            )
+                                        }
                                     }
                                 }
                                 updateConversation(conversationId, updatedConversation)

@@ -1250,6 +1250,15 @@ val dataSourceModule = module {
     // instances would mean a control published into one map while the bridge searched the other,
     // which presents as a tool call that cannot be cancelled.
     single { me.rerere.rikkahub.data.claudep.ClaudePToolRunControls() }
+    // The acknowledgement a Claude P host is owed when it publishes a pending card, and the *only*
+    // instance: the host creates the request, `ChatService` completes it once the authority
+    // transaction behind the card has committed. Two instances would mean a host waiting on a
+    // registry nobody answers — a call that sits out its whole deadline instead of failing loudly.
+    //
+    // This binding is the acknowledgement seam and nothing more. It wires no runtime, no MCP
+    // manager and no execution gate, and the host below still offers no catalog, so no tool can
+    // reach it in production yet.
+    single { me.rerere.rikkahub.data.claudep.ClaudePToolPublicationReceipts() }
     single {
         me.rerere.rikkahub.data.execution.SecondUserApprovalLifecycle(
             database = get(),
@@ -1556,6 +1565,10 @@ val dataSourceModule = module {
             // an unanswered call leaves the Server blocked until its deadline. This is the single
             // line the activation commit changes.
             offerCatalog = false,
+            // The same instance `ChatService` completes from. It carries no capability of its own:
+            // it lets this host ask whether a card it published is durably committed, which is the
+            // one question it cannot answer by itself.
+            publications = get(),
         )
     }
 

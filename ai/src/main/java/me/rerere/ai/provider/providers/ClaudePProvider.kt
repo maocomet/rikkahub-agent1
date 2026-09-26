@@ -807,7 +807,10 @@ internal class ClaudePToolFrameHandler(
                 val execution = host.execute(decision.invocation, publishingStatusTo(emit))
                 // Shown before the answer is sent, so the conversation already holds the call
                 // when the terminal arrives and the two cannot be observed out of order.
-                execution.part?.let { emit(toolCallChunk(it)) }
+                //
+                // `null` continuation: this is the call's *outcome*, not a publication. There is
+                // no card being raised here and therefore no barrier to raise for it.
+                execution.part?.let { emit(toolCallChunk(it, pendingContinuation = null)) }
 
                 val outcome = execution.outcome
                 when (adapter.complete(outcome.toolCallId, outcome.state, outcome.body)) {
@@ -906,7 +909,11 @@ internal class ClaudePToolFrameHandler(
             val part = update.asInterimToolPart()
                 ?: return@ClaudePToolStatusSink ClaudePToolStatusPublication.Accepted
             try {
-                emit(toolCallChunk(part))
+                // The app's declared continuation rides with the card, so the conversation
+                // authority can tell an in-flight publication from an ordinary pending approval
+                // without asking which provider is running. Absent stays absent: this layer never
+                // supplies a default, because a default here would be a decision it must not make.
+                emit(toolCallChunk(part, update.pendingContinuation))
                 ClaudePToolStatusPublication.Accepted
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -915,7 +922,10 @@ internal class ClaudePToolFrameHandler(
             }
         }
 
-    private fun toolCallChunk(part: UIMessagePart.Tool): MessageChunk = MessageChunk(
+    private fun toolCallChunk(
+        part: UIMessagePart.Tool,
+        pendingContinuation: String?,
+    ): MessageChunk = MessageChunk(
         id = generationId,
         model = PROVIDER_MODEL_FALLBACK,
         choices = listOf(
@@ -926,6 +936,9 @@ internal class ClaudePToolFrameHandler(
                 finishReason = null,
             ),
         ),
+        // Carried verbatim, and only ever for a card the app raised. The alternative part below
+        // — the call's *outcome* — is not a publication and carries no continuation.
+        pendingApprovalContinuation = pendingContinuation,
     )
 }
 

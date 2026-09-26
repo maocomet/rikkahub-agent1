@@ -8,6 +8,7 @@ import me.rerere.ai.provider.claudep.ClaudePToolCallStatus
 import me.rerere.ai.provider.claudep.ClaudePToolGenerationContext
 import me.rerere.ai.provider.claudep.ClaudePToolPreparation
 import me.rerere.ai.provider.claudep.ClaudePToolPreparationRefusal
+import me.rerere.ai.provider.claudep.ClaudePToolStatusPublication
 import me.rerere.ai.provider.claudep.ClaudePToolStatusSink
 import me.rerere.ai.provider.claudep.ClaudePToolStatusUpdate
 import me.rerere.ai.provider.claudep.bridge.BridgeExecutionBindings
@@ -28,6 +29,7 @@ import me.rerere.rikkahub.data.ai.limits.ToolRuntimeLimits
 import me.rerere.rikkahub.data.ai.tools.ToolExecutionContext
 import me.rerere.rikkahub.data.capability.CapabilitySubject
 import me.rerere.rikkahub.data.capability.SubjectType
+import me.rerere.rikkahub.data.execution.ApprovalContinuationMode
 import me.rerere.rikkahub.toolcatalog.ToolCatalogSnapshot
 import kotlin.uuid.Uuid
 
@@ -103,6 +105,21 @@ class ClaudePToolBridgeHostImpl(
      * policy bypass.
      */
     private val gate: ClaudePToolGate = ClaudePToolGate.DENY,
+    /**
+     * The one acknowledgement registry, shared with the service that commits the barrier.
+     *
+     * ## Why it must be the same instance
+     *
+     * A publication request is created here and completed there. Two instances would mean a host
+     * waiting on a registry nothing ever answers — which is not a loud failure, it is a call that
+     * sits until its deadline and then runs nothing. Required rather than defaulted for exactly
+     * that reason: a defaulted fresh instance is the silent version of the same bug, and the
+     * wiring site is where a reader can see it is not one.
+     *
+     * It holds no runtime, no MCP manager, no gate and no conversation. Injected, it grants this
+     * host nothing but the ability to ask whether a card it published is durable.
+     */
+    private val publications: ClaudePToolPublicationReceipts,
     /**
      * The real capability subject for a generation, or `null` when it cannot be resolved.
      *
@@ -276,12 +293,9 @@ class ClaudePToolBridgeHostImpl(
         // Whether this call needs a human decision is the existing policy's answer — the tool's own
         // `needsApproval` against the real arguments, exactly as every other provider asks it. It
         // is read, not re-derived: a second opinion here would be a second approval policy.
-        //
-        // The in-flight approval path is not implemented in this stage (see the class doc and §12.3
-        // of the report: the card has to be published and observed as applied before a barrier can
-        // be persisted against it). Until it is, a call that needs a decision is refused rather
-        // than run without one — failing closed is the only safe direction.
-        if (tool.needsApproval(invocation.arguments)) return unexecuted(invocation)
+        if (tool.needsApproval(invocation.arguments)) {
+            return publishPendingApproval(invocation, plan, status)
+        }
 
         // Nothing needed a decision, so the runtime may run it now. The status is published before
         // the call so the conversation shows it as running while it is, and the result comes back
@@ -332,6 +346,88 @@ class ClaudePToolBridgeHostImpl(
                 approvalState = ToolApprovalState.Auto,
             ),
         )
+    }
+
+    /**
+     * Publishes a pending card and waits for the commit behind it to be acknowledged.
+     *
+     * ## What this does, and what it deliberately stops short of
+     *
+     * It performs the publication half of the in-flight approval handshake: create the request,
+     * publish the pending status, wait for the receipt, release. The receipt is the *only* evidence
+     * that the card is applied and its barrier durably committed — the provider hands the chunk to
+     * a stream that does not wait for it (`ProviderTurnRunner` forwards through an unbounded
+     * channel), so a `publish` that returned says nothing at all, and neither does a `Refused`
+     * that did not.
+     *
+     * On success the returned receipt carries the approval's own `approvalId` and `executionId`,
+     * derived by the single authoritative site inside the authority's transaction. This host never
+     * derives them itself, and must not start: a second derivation is a second answer to "which
+     * approval is this?", and the one that reaches `InFlightApprovalWaiters` has to be the one the
+     * tap will match.
+     *
+     * ## Why nothing runs, even on a successful receipt
+     *
+     * Arming the waiter and running the tool are the next batch's, and this method ends where they
+     * begin rather than pretending otherwise. The answer is therefore [unexecuted]: this host
+     * published a card and did not run the call, which is precisely what `FAILED` claims.
+     *
+     * It is unreachable in production while [offerCatalog] is false — no snapshot means no bridge
+     * tool, which means no invoke.
+     */
+    private suspend fun publishPendingApproval(
+        invocation: BridgeInvocation,
+        plan: ClaudePToolExecutionPlan,
+        status: ClaudePToolStatusSink,
+    ): BridgeToolExecution {
+        // The app's generation identity, which is the run id and not the Server's generation id.
+        // The conversation authority never learns the latter, so a key that required it could not
+        // be recomputed on the side that has to answer.
+        val publicationId = ClaudePToolPublicationId.of(
+            generationId = plan.runId,
+            toolCallId = invocation.binding.toolCallId,
+            toolName = invocation.toolNameForRuntime,
+        )
+
+        // `null` means this exact card is already live or was already settled and not released.
+        // Either way there is nothing to publish: a second entry under one id would give two
+        // waiters one answer.
+        val request = publications.begin(publicationId) ?: return unexecuted(invocation)
+
+        try {
+            val published = status.publish(
+                ClaudePToolStatusUpdate(
+                    toolCallId = invocation.binding.toolCallId,
+                    toolName = invocation.toolNameForRuntime,
+                    arguments = invocation.arguments,
+                    status = ClaudePToolCallStatus.PENDING_APPROVAL,
+                    // Declared here because this is the side that knows it: the peer is blocked
+                    // inside the Worker on this very call, so approving it must release a waiter
+                    // and must never create a resume command that starts a second generation.
+                    pendingContinuation = ApprovalContinuationMode.IN_FLIGHT.name,
+                ),
+            )
+            // A refusal means the card is not on screen, so nothing can be tapped, so nothing may
+            // wait. Fail closed without waiting out the deadline.
+            if (published !is ClaudePToolStatusPublication.Accepted) return unexecuted(invocation)
+
+            return when (val receipt = request.await(plan.timeoutMs)) {
+                // Durable. The next batch arms the waiter with these identities and runs the call;
+                // this one reports the call unrun, because that is what happened.
+                is ClaudePToolPublicationOutcome.Committed -> unexecuted(invocation)
+
+                // Applied but not committed, or never answered, or answered with a wrong identity.
+                // All three mean the same thing to the caller: no decision may be waited on.
+                is ClaudePToolPublicationOutcome.Refused,
+                is ClaudePToolPublicationOutcome.Abandoned,
+                -> unexecuted(invocation)
+            }
+        } finally {
+            // Whatever happened — including a cancellation of this coroutine — the id stops being
+            // remembered here. A live wait is ended by the release, and a settled one is forgotten
+            // so the map is not the thing that grows.
+            publications.release(publicationId)
+        }
     }
 
     /**

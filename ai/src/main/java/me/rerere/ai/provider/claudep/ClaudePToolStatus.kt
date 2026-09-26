@@ -77,6 +77,29 @@ data class ClaudePToolStatusUpdate(
     val toolName: String,
     val arguments: JsonElement,
     val status: ClaudePToolCallStatus,
+    /**
+     * Which approval-continuation the app intends for this pending card, as a token.
+     *
+     * ## Why the app has to say it, and why it is a token
+     *
+     * A card published **from inside this stream** belongs to a generation that has not ended: the
+     * peer is blocked on the call. A card raised by an ordinary tool loop belongs to a turn that is
+     * about to finish, and approving it resumes through a command. Those two need opposite things
+     * to happen on approval, and the app is the only side that knows which one it is looking at.
+     *
+     * Nothing here may guess it. In particular it must not be inferred from which provider is
+     * running: a provider name is not a continuation, and a rule keyed on one would silently give
+     * every future provider whichever behaviour was written first.
+     *
+     * So it is a token the app supplies, carried verbatim and never interpreted in this module —
+     * the same shape as `ClaudePToolGenerationContext.callOrigin`, and for the same reason: the
+     * vocabulary belongs to the app's execution layer. The app maps it by exact match and refuses
+     * anything it does not recognise, which fails closed.
+     *
+     * `null` means the app did not say, which is the legacy behaviour and is not a default to fill
+     * in. It never travels: this type is local, and nothing here reaches a frame.
+     */
+    val pendingContinuation: String? = null,
 )
 
 /** What publishing one status did. A closed set, so an unhandled failure is a compile error. */

@@ -5,6 +5,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.MessageRole
@@ -925,6 +926,30 @@ data class MessageChunk(
     val choices: List<UIMessageChoice>,
     val usage: TokenUsage? = null,
     val terminal: GenerationTerminal? = null,
+    /**
+     * The approval-continuation the app declared for a pending card this chunk carries, as a token.
+     *
+     * ## Why this rides on the chunk
+     *
+     * A Claude P tool call that needs approval is published as a tool part *inside the provider's
+     * own stream*, and the turn that raised it has not ended — so the barrier the conversation
+     * authority has to write is not the ordinary one. The only thing that distinguishes the two is
+     * what the app declared when it raised the card
+     * ([me.rerere.ai.provider.claudep.ClaudePToolStatusUpdate.pendingContinuation]), and the only
+     * place that declaration is still attached to the part is here.
+     *
+     * Carrying it rather than re-deriving it downstream is deliberate: a later reader could infer
+     * "this came from a stream, so it must be in-flight" or "the provider is Claude P, so it must
+     * be in-flight", and both are the same mistake — a rule that is right today and silently wrong
+     * for the next provider. The token is opaque in this module; the app maps it by exact match and
+     * refuses what it does not recognise.
+     *
+     * [Transient] so "this never enters a serialized form" is a property of the declaration rather
+     * than a rule someone has to remember. It is `null` for every chunk that carries no pending
+     * card, which is nearly all of them.
+     */
+    @Transient
+    val pendingApprovalContinuation: String? = null,
 ) {
     fun resolvedTerminal(): GenerationTerminal? {
         terminal?.let { return it }
