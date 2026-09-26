@@ -194,7 +194,7 @@ class ImportedDatabaseReconcilerContractTest {
     @Test
     fun `cold staged restore accepts only exact frozen v46 and v47 identities`() {
         assertEquals(
-            listOf(46 to 47, 47 to 48, 48 to 49, 49 to 50, 50 to 51),
+            listOf(46 to 47, 47 to 48, 48 to 49, 49 to 50, 50 to 51, 51 to 52),
             ImportedDatabaseReconciler.STAGED_COLD_RESTORE_MIGRATIONS.map {
                 it.startVersion to it.endVersion
             },
