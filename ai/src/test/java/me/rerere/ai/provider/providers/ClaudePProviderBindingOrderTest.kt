@@ -34,6 +34,7 @@ import me.rerere.ai.provider.claudep.ClaudePToolStatusSink
 import me.rerere.ai.provider.claudep.FakeClaudePGatewayClient
 import me.rerere.ai.provider.claudep.FakeFrame
 import me.rerere.ai.provider.claudep.bridge.BridgeCatalogBuild
+import me.rerere.ai.provider.claudep.bridge.BridgeExecutionClaimant
 import me.rerere.ai.provider.claudep.bridge.BridgeExecutionHost
 import me.rerere.ai.provider.claudep.bridge.BridgeInvocation
 import me.rerere.ai.provider.claudep.bridge.BridgeToolCandidate
@@ -187,6 +188,10 @@ class ClaudePProviderBindingOrderTest {
         var executedGenerationId: String? = null
             private set
 
+        /** Whether the provider handed over an execution right with the invocation. */
+        var claimantSupplied: Boolean = false
+            private set
+
         override suspend fun prepare(
             tools: List<Tool>,
             context: ClaudePToolGenerationContext?,
@@ -224,9 +229,15 @@ class ClaudePProviderBindingOrderTest {
         override suspend fun execute(
             invocation: BridgeInvocation,
             status: ClaudePToolStatusSink,
+            claims: BridgeExecutionClaimant,
         ): BridgeToolExecution {
             executeCalls++
             executedGenerationId = invocation.binding.generationId
+            // The claimant the provider hands over is the generation's own ledger. This host only
+            // has to be able to *see* that it was supplied — reaching a ledger by naming a
+            // conversation is the failure that parameter exists to make inexpressible — so the
+            // assertion is that a claimant arrived, not what it answers.
+            claimantSupplied = true
             events += "execute"
             return BridgeToolExecution(
                 outcome = ToolCallOutcome(
@@ -370,6 +381,10 @@ class ClaudePProviderBindingOrderTest {
         //    mechanism exists to make impossible.
         assertEquals("the call must execute exactly once", 1, host.executeCalls)
         assertEquals(generationId, host.executedGenerationId)
+        assertTrue(
+            "and the execution right travels with it, so the app can claim the call before it runs",
+            host.claimantSupplied,
+        )
 
         // 7. The order, end to end. `execute` between `open` and `close` is the same claim as (5)
         //    and (6) read as a sequence.
