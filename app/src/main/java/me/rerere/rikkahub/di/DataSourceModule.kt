@@ -1536,6 +1536,29 @@ val dataSourceModule = module {
         )
     }
 
+    // The one production Claude P tool host.
+    //
+    // Declared as `single<ClaudePToolBridgeHost>` — the *interface* — so that exactly one instance
+    // exists and the provider, or anything else that ever needs to ask it a question, resolves the
+    // same object rather than racing a private copy. The provider default is `NONE`; this binding
+    // is what replaces it, and a second registration for this type would be a wiring bug rather
+    // than an alternative.
+    single<me.rerere.ai.provider.claudep.ClaudePToolBridgeHost> {
+        val pairing: me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository = get()
+        me.rerere.rikkahub.data.claudep.ClaudePToolBridgeHostImpl(
+            // The validated device id, or null. Null means this device cannot name itself, and the
+            // host answers that the same way it answers every other missing identity: offer
+            // nothing. A placeholder here would give two devices the same binding.
+            deviceRefProvider = { pairing.currentDeviceIdOrNull() },
+            // CLOSED. The catalog is assembled and validated, but not offered, until every path
+            // that can *answer* a tool call exists and is tested. Opening this while `execute` is
+            // still a fail-closed stub would tell Claude about tools Android cannot conclude, and
+            // an unanswered call leaves the Server blocked until its deadline. This is the single
+            // line the activation commit changes.
+            offerCatalog = false,
+        )
+    }
+
     single {
         val settingsStore: me.rerere.rikkahub.data.datastore.SettingsStore = get()
         val codexRepository: CodexAccountRepository = get()
@@ -1578,6 +1601,10 @@ val dataSourceModule = module {
                     // (NOT_PAIRED, zero dispatch) — never papered over with a placeholder, and never
                     // served from a cache a revocation could have invalidated.
                     deviceIdProvider = { claudePPairing.currentDeviceIdOrNull() },
+                    // The one production tool host. Resolved rather than constructed here, so that
+                    // exactly one instance is shared by the provider and by anything else that ever
+                    // needs to ask it a question.
+                    toolHost = get(),
                 ),
             )
         }
