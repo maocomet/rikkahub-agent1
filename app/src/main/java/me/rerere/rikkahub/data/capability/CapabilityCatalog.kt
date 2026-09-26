@@ -390,6 +390,31 @@ object CapabilityCatalog {
         "whisper_status",
         "clipboard_tool",
         "text_to_speech",
+        // Read-only, and deliberately withheld anyway.
+        //
+        // This one is classified rather than left to fall through, and the distinction is the whole
+        // point of the entry. It was `Unclassified` only by accident: the Second-User reader's list
+        // and read tools reuse their ordinary names (`conversation_list_recent`,
+        // `conversation_read_recent`) and were therefore already covered, while this one was
+        // renamed to `transient_conversation_search` to break a collision with the ordinary
+        // `conversation_search` — and the rename updated the capability descriptor without
+        // updating any classification. Landing in `Unclassified` kept it out of the privileged
+        // overlay, but for the wrong reason: it read as "nobody decided" rather than "decided
+        // against".
+        //
+        // Naming it here changes **no behaviour**. `ToolExposurePlan.blockReason` refuses
+        // `Phase1Unavailable` and `Unclassified` in exactly the same two places, so the
+        // VoiceInteraction overlay stays closed to it; and the ordinary `LocalChat` path returns
+        // before any classification is consulted, so it is untouched in both directions. What
+        // changes is that the withholding is now a statement rather than an omission.
+        //
+        // Read-only is not the question. It has no write, no side effect and no remote call, but it
+        // reads the **content of conversations**, and being unable to modify anything is not the
+        // same as being safe to offer. Opening it to the system-assistant overlay, to a background
+        // caller, or to any new consumer needs its own privacy and exposure decision; until that
+        // decision is made it stays here, and it must not be moved to `backgroundToolNames` on the
+        // grounds that it is only a reader.
+        "transient_conversation_search",
     )
 
     /**

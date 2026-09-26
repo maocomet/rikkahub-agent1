@@ -477,4 +477,32 @@ class P2CapabilityCatalogTest {
 
         assertTrue("Unclassified system-assistant tools: $unclassified", unclassified.isEmpty())
     }
+
+    /**
+     * The Second-User conversation reader's search tool is **withheld on purpose**.
+     *
+     * It is named here so the reason is recorded against the tool rather than inferred from its
+     * absence from a failure message. It was `Unclassified` only because a rename that broke a name
+     * collision with the ordinary `conversation_search` did not carry the new name into any
+     * classification — its two siblings reuse their ordinary names and were covered by accident.
+     *
+     * It is genuinely read-only, and that is deliberately **not** a reason to allow it. It reads
+     * conversation content, so exposing it to the system-assistant overlay or to any new consumer
+     * needs its own privacy decision. This assertion is therefore a statement about intent, not a
+     * bug fixed to make the test above pass: the tool stays exactly as reachable as it was.
+     */
+    @Test
+    fun `the transient conversation search is withheld rather than unclassified`() {
+        val toolName = me.rerere.rikkahub.data.ai.tools.TRANSIENT_CONVERSATION_SEARCH_TOOL_NAME
+
+        assertEquals(
+            "a decision, not an omission",
+            ToolInvocationSurface.Phase1Unavailable,
+            CapabilityCatalog.toolInvocationSurface(toolName),
+        )
+        assertTrue(
+            "and it is still declared by the capability that owns it",
+            CapabilityCatalog.byToolName(toolName) != null,
+        )
+    }
 }
