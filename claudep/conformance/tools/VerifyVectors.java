@@ -77,6 +77,19 @@ public final class VerifyVectors {
 
     private static final String FINGERPRINT_DOMAIN = "rikkahub-claude-p-request-fingerprint-v1";
 
+    /**
+     * Shared inputs for the v1-r4 M3 vectors — the same values as `AUTO_*` in gen-vectors.mjs.
+     *
+     * A divergence between the two files' constants would make the cross-check compare different
+     * inputs, which is the one way this comparison could pass while proving nothing.
+     */
+    private static final String AUTO_BRANCH_A =
+            "3f2a9c4e7b1d8056af3e21c9d0b47e6a5c8f1d2e3b4a59687766554433221100";
+    private static final String AUTO_BRANCH_B =
+            "0a1b2c3d4e5f60718293a4b5c6d7e8f900112233445566778899aabbccddeeff";
+    private static final String AUTO_ASSISTANT_A = "11111111-2222-3333-4444-555555555555";
+    private static final String AUTO_ASSISTANT_B = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+
     private static final class TurnPart {
         final String type;
         final String text;
@@ -98,11 +111,31 @@ public final class VerifyVectors {
         digest.update(bytes);
     }
 
+    /**
+     * Legacy (v1-r3) shape: no tail fields. Delegates rather than duplicating the body, so the
+     * seven v1-r3 vectors below are computed by exactly the code that computes the r4 ones — if
+     * the append rule were wrong, these would move and the corpus would say so.
+     */
     private static String requestFingerprint(
             String deviceId, String remoteThreadId, String remoteBranchId,
             String mode, String modelAlias, String systemPrompt,
             Turn turn, List<Turn> rebuildHistory, String toolSnapshot,
             String attachmentManifest) throws Exception {
+        return requestFingerprint(deviceId, remoteThreadId, remoteBranchId, mode, modelAlias,
+                systemPrompt, turn, rebuildHistory, toolSnapshot, attachmentManifest, null, null);
+    }
+
+    /**
+     * v1-r4 shape. `remoteBranchId`, `assistantId` and `bindingIntent` are all nullable;
+     * `remoteBranchId`'s null is carried by the field's own presence byte at item 4, while the
+     * two tail fields are appended **only when non-null** and write nothing when they are.
+     */
+    private static String requestFingerprint(
+            String deviceId, String remoteThreadId, String remoteBranchId,
+            String mode, String modelAlias, String systemPrompt,
+            Turn turn, List<Turn> rebuildHistory, String toolSnapshot,
+            String attachmentManifest, String assistantId, String bindingIntent)
+            throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
 
         // `field(label, value)`: label is always length-prefixed and written; the value is
@@ -147,6 +180,13 @@ public final class VerifyVectors {
         }
         fw.field("tool_snapshot", toolSnapshot);
         fw.field("attachment_manifest", attachmentManifest);
+
+        // Conditional tail fields (§12.4 items 16-17, §12.12). Appended, and **only when
+        // present**: an absent one contributes no bytes at all, which is what leaves the seven
+        // v1-r3 digests above untouched. Written with `if` rather than by passing null through,
+        // because `field(label, null)` would emit a 0x00 presence byte and drift every r3 digest.
+        if (assistantId != null) fw.field("assistant_id", assistantId);
+        if (bindingIntent != null) fw.field("binding_intent", bindingIntent);
 
         return toHex(digest.digest());
     }
@@ -240,6 +280,48 @@ public final class VerifyVectors {
         sb.append("fingerprint-part-boundary-shifted\t").append(requestFingerprint(
                 "dev-01", "thread-01", "branch-01", "new", "sonnet",
                 null, boundaryB, null, null, null)).append('\n');
+
+        // --- v1-r4 conditional tail fields (§12.4 items 16-17, §12.12) ---
+        //
+        // Each of these is defined by *which single field* differs from its sibling, so the
+        // shared values are spelled once and reused. Two of them describe shapes §5.4 refuses;
+        // they test the encoder, not the shape validator.
+
+        Turn autoHello = new Turn("user", parts("text", "hello"));
+
+        sb.append("fingerprint-auto-immediate\t").append(requestFingerprint(
+                "dev-01", "thread-01", AUTO_BRANCH_A, "auto", "sonnet",
+                null, autoHello, null, null, null,
+                AUTO_ASSISTANT_A, "immediate")).append('\n');
+
+        sb.append("fingerprint-auto-deferred\t").append(requestFingerprint(
+                "dev-01", "thread-01", null, "auto", "sonnet",
+                null, autoHello, null, null, null,
+                AUTO_ASSISTANT_A, "deferred")).append('\n');
+
+        // Encoder vector: auto + deferred + branch PRESENT (§5.4 row 6 refuses it). Differs from
+        // fingerprint-auto-deferred in branch presence alone.
+        sb.append("fingerprint-auto-branch-absent\t").append(requestFingerprint(
+                "dev-01", "thread-01", AUTO_BRANCH_A, "auto", "sonnet",
+                null, autoHello, null, null, null,
+                AUTO_ASSISTANT_A, "deferred")).append('\n');
+
+        sb.append("fingerprint-auto-second-branch\t").append(requestFingerprint(
+                "dev-01", "thread-01", AUTO_BRANCH_B, "auto", "sonnet",
+                null, autoHello, null, null, null,
+                AUTO_ASSISTANT_A, "immediate")).append('\n');
+
+        sb.append("fingerprint-auto-assistant-changed\t").append(requestFingerprint(
+                "dev-01", "thread-01", AUTO_BRANCH_A, "auto", "sonnet",
+                null, autoHello, null, null, null,
+                AUTO_ASSISTANT_B, "immediate")).append('\n');
+
+        // Encoder vector: auto + immediate + branch ABSENT (§5.4 row 5 refuses it). Differs from
+        // fingerprint-auto-deferred in binding_intent alone.
+        sb.append("fingerprint-auto-intent-changed\t").append(requestFingerprint(
+                "dev-01", "thread-01", null, "auto", "sonnet",
+                null, autoHello, null, null, null,
+                AUTO_ASSISTANT_A, "immediate")).append('\n');
 
         System.out.print(sb);
     }

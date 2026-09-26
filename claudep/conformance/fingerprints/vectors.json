@@ -1,7 +1,7 @@
 {
   "kind": "request-fingerprint",
-  "derivedFrom": "ai/src/main/java/me/rerere/ai/provider/claudep/ClaudePGatewayClient.kt:153-219",
-  "algorithm": "SHA-256 over a label/value stream. Every label is written as a 4-byte big-endian UTF-8 byte length followed by its bytes. Every value is preceded by a presence byte (0 = null, 1 = present) and, only when present, a 4-byte big-endian UTF-8 byte length followed by its bytes. NOTE this framing is deliberately DIFFERENT from the transcripts above, which use a decimal `length:` prefix over UTF-16 code units.",
+  "derivedFrom": "ai/src/main/java/me/rerere/ai/provider/claudep/ClaudePGatewayClient.kt — object ClaudePRequestFingerprint (compute + updateLengthPrefixed)",
+  "algorithm": "SHA-256 over a label/value stream. Every label is written as a 4-byte big-endian UTF-8 byte length followed by its bytes. Every value is preceded by a presence byte (0 = null, 1 = present) and, only when present, a 4-byte big-endian UTF-8 byte length followed by its bytes. NOTE this framing is deliberately DIFFERENT from the transcripts above, which use a decimal `length:` prefix over UTF-16 code units. v1-r4 adds two CONDITIONAL TAIL fields (assistant_id, binding_intent): they are appended after attachment_manifest and, when absent, write ZERO BYTES — not a 0x00 presence byte. That is what keeps every v1-r3 digest in this file unchanged.",
   "domain": "rikkahub-claude-p-request-fingerprint-v1",
   "field_order": [
     "domain",
@@ -22,10 +22,22 @@
     "tool_snapshot",
     "attachment_manifest"
   ],
+  "conditional_tail_field_order": [
+    "assistant_id",
+    "binding_intent"
+  ],
+  "field_tiers": {
+    "fixed": "The labels of field_order, in that order. Every one is ALWAYS written; an absent value is written as a 0x00 presence byte. (02-wire-protocol-v1.md numbers these as §12.4 items 1-15, because two of its rows cover two labels each; the flat list here has 17.)",
+    "conditional_tail": "conditional_tail_field_order, appended strictly after the last fixed field and in the listed order. Written ONLY when the request carries the field; when it does not, the entire block (label length prefix + label + presence byte) is omitted. Removing this distinction — e.g. writing 0x00 for an absent tail field — changes every v1-r3 digest."
+  },
   "invariants": [
     "system_prompt null and \"\" MUST produce different digests (presence byte).",
     "parts [\"ab\",\"c\"] and [\"a\",\"bc\"] MUST produce different digests (length prefixes).",
-    "field ORDER is part of the input; reordering the labels changes the digest."
+    "field ORDER is part of the input; reordering the labels changes the digest.",
+    "remote_branch_id absent (null) and \"\" MUST produce different digests; null is how a deferred request encodes \"this branch does not exist yet\".",
+    "A request carrying NO conditional tail field MUST produce the same digest it produced under v1-r3. The seven fingerprint-* vectors without AUTO_* siblings are the evidence.",
+    "assistant_id and binding_intent MUST each be bound into the digest, not merely carried alongside it.",
+    "The tail order is fixed: assistant_id before binding_intent, and only ever at the end."
   ],
   "verification": "dual-implementation (gen-vectors.mjs + VerifyVectors.java) agreed byte-for-byte",
   "vectors": [
@@ -229,6 +241,168 @@
         "attachmentManifest": null
       },
       "sha256Hex": "f8008a58c987a6a96a3bc2b70c312a299b892474660410ce893122531e907c00"
+    },
+    {
+      "id": "fingerprint-auto-immediate",
+      "note": "M3 auto/immediate: legal §5.4 shape 2. Branch is the 64-lowercase-hex digest and both tail fields are present, so the stream ends with assistant_id then binding_intent.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "3f2a9c4e7b1d8056af3e21c9d0b47e6a5c8f1d2e3b4a59687766554433221100",
+        "mode": "auto",
+        "bindingIntent": "immediate",
+        "assistantId": "11111111-2222-3333-4444-555555555555",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "2c390882316568913416db226d68a2486e6ac2c4fe317147e74298a785d2d567"
+    },
+    {
+      "id": "fingerprint-auto-deferred",
+      "note": "M3 auto/deferred: legal §5.4 shape 3. remoteBranchId is null — the branch does not exist yet — so item 4 writes the presence byte 0x00. Must differ from fingerprint-auto-immediate, which is otherwise identical apart from carrying a branch.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": null,
+        "mode": "auto",
+        "bindingIntent": "deferred",
+        "assistantId": "11111111-2222-3333-4444-555555555555",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "ad55fcb3d440e2ca133f8b4f4b7a59b1d2e79f366a39b675709721c033a08ed6"
+    },
+    {
+      "id": "fingerprint-auto-branch-absent",
+      "note": "ENCODER vector, not a legal shape: auto + deferred + branch PRESENT is refused by §5.4 row 6. It differs from fingerprint-auto-deferred in exactly one thing — branch presence — so the two digests must differ, which is what proves remote_branch_id is still bound at item 4 with its original presence semantics rather than moved to the tail.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "3f2a9c4e7b1d8056af3e21c9d0b47e6a5c8f1d2e3b4a59687766554433221100",
+        "mode": "auto",
+        "bindingIntent": "deferred",
+        "assistantId": "11111111-2222-3333-4444-555555555555",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "ecd1be30f81525592ac7c4da97343eb0ddc5107317edb13fec6d679066977d78"
+    },
+    {
+      "id": "fingerprint-auto-second-branch",
+      "note": "Identical to fingerprint-auto-immediate except for the branch VALUE. Two different branches must not share an idempotency key, or one branch could replay another's answer.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "0a1b2c3d4e5f60718293a4b5c6d7e8f900112233445566778899aabbccddeeff",
+        "mode": "auto",
+        "bindingIntent": "immediate",
+        "assistantId": "11111111-2222-3333-4444-555555555555",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "093c81741004aa1d27cf323cdeac226d08897e8e2214efc5c479fba580ff7bd9"
+    },
+    {
+      "id": "fingerprint-auto-assistant-changed",
+      "note": "Identical to fingerprint-auto-immediate except for assistant_id. The tail field must be bound into the digest, not merely carried alongside it.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": "3f2a9c4e7b1d8056af3e21c9d0b47e6a5c8f1d2e3b4a59687766554433221100",
+        "mode": "auto",
+        "bindingIntent": "immediate",
+        "assistantId": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "a22babfa93148c48963ea4b6f019afbbdfdbd6a9974b25828261f2a626c030fa"
+    },
+    {
+      "id": "fingerprint-auto-intent-changed",
+      "note": "ENCODER vector, not a legal shape: auto + immediate + branch ABSENT is refused by §5.4 row 5. It differs from fingerprint-auto-deferred in exactly one thing — binding_intent — so the two digests must differ, which is what proves the new field is bound rather than decoration. Without this pair, immediate and deferred would be indistinguishable in the idempotency key whenever the branch is absent.",
+      "input": {
+        "deviceId": "dev-01",
+        "remoteThreadId": "thread-01",
+        "remoteBranchId": null,
+        "mode": "auto",
+        "bindingIntent": "immediate",
+        "assistantId": "11111111-2222-3333-4444-555555555555",
+        "modelAlias": "sonnet",
+        "systemPrompt": null,
+        "turn": {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "rebuildHistory": null,
+        "toolSnapshot": null,
+        "attachmentManifest": null
+      },
+      "sha256Hex": "af60aadffeb12a50fe9bef62e8fe72a8b048705bbbb35677e5bdb3c2832c61bb"
     }
   ]
 }

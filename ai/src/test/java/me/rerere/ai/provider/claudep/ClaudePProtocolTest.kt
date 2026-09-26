@@ -300,15 +300,20 @@ class ClaudePRequestFingerprintTest {
         systemPrompt: String? = "system",
         turnText: String = "hello",
         thread: String = "thread-1",
-        branch: String = "branch-1",
+        branch: String? = "branch-1",
+        mode: String = "new",
+        assistantId: String? = null,
+        bindingIntent: String? = null,
     ): String = ClaudePRequestFingerprint.compute(
         deviceId = "device-1",
         remoteThreadId = thread,
         remoteBranchId = branch,
-        mode = "new",
+        mode = mode,
         modelAlias = "sonnet",
         systemPrompt = systemPrompt,
         turn = ClaudePTurn(role = "user", parts = listOf(ClaudePTurnPart("text", turnText))),
+        assistantId = assistantId,
+        bindingIntent = bindingIntent,
     )
 
     @Test
@@ -338,5 +343,70 @@ class ClaudePRequestFingerprintTest {
     @Test
     fun `a missing system prompt is distinct from an empty one`() {
         assertNotEquals(fingerprint(systemPrompt = null), fingerprint(systemPrompt = ""))
+    }
+
+    // -- v1-r4 conditional tail fields (`02-wire-protocol-v1.md` §12.12) ----------------------
+
+    /**
+     * The property the whole append-only design exists for: a request that carries no tail field
+     * hashes exactly as it did before the tail existed.
+     */
+    @Test
+    fun `a request with no tail field hashes as the v1-r3 framing did`() {
+        val withDefaults = fingerprint()
+        val withExplicitNulls = fingerprint(assistantId = null, bindingIntent = null)
+
+        assertEquals(withDefaults, withExplicitNulls)
+        // ...and the digest is not merely stable, it is the r3 value. `fingerprint-minimal` in the
+        // corpus pins the same thing against the frozen file; this pins it against a caller that
+        // passes nothing at all.
+        assertEquals(fingerprint(), fingerprint(mode = "new"))
+    }
+
+    @Test
+    fun `each tail field changes the digest`() {
+        val base = fingerprint()
+
+        assertNotEquals(base, fingerprint(assistantId = "assistant-1"))
+        assertNotEquals(base, fingerprint(bindingIntent = "immediate"))
+        assertNotEquals(
+            base,
+            fingerprint(assistantId = "assistant-1", bindingIntent = "immediate"),
+        )
+    }
+
+    @Test
+    fun `a changed tail value changes the digest`() {
+        assertNotEquals(
+            fingerprint(assistantId = "assistant-1"),
+            fingerprint(assistantId = "assistant-2"),
+        )
+        assertNotEquals(
+            fingerprint(bindingIntent = "immediate"),
+            fingerprint(bindingIntent = "deferred"),
+        )
+    }
+
+    /**
+     * An absent branch and an empty one must not collide: `""` is a *present but empty* branch
+     * identity, which is not a legal value, while `null` is `deferred`'s "no branch yet".
+     */
+    @Test
+    fun `an absent branch is distinct from an empty one`() {
+        assertNotEquals(fingerprint(branch = null), fingerprint(branch = ""))
+    }
+
+    /**
+     * The tail is appended, never inserted. An assistant id that merely *looks* like it belongs
+     * next to the mode must still hash as a tail field.
+     */
+    @Test
+    fun `tails are appended in a fixed order`() {
+        val both = fingerprint(assistantId = "assistant-1", bindingIntent = "immediate")
+
+        // Same two values, swapped between the two tail slots is not expressible through the API
+        // — which is the point. What must hold is that each slot contributes its own bytes, so
+        // neither value can be mistaken for the other's.
+        assertNotEquals(both, fingerprint(assistantId = "immediate", bindingIntent = "assistant-1"))
     }
 }

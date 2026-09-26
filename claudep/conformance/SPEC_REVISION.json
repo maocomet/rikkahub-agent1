@@ -1,7 +1,7 @@
 {
-  "spec_revision": "v1-r3",
+  "spec_revision": "v1-r4",
   "protocol_spec": "claudep/02-wire-protocol-v1.md",
-  "protocol_spec_sha256": "8ff5e6a5a6e494b7fe7546a918d55567c918623853f5fa7367ddb23094ba3e85",
+  "protocol_spec_sha256": "7c7915a989904806c0218e338246e4199506db13b0ed291af38f657ec28205e0",
   "trust_boundaries": "claudep/01-architecture-and-trust-boundaries.md",
   "trust_boundaries_sha256": "a253465953e62586658c4067dbfb81a2942de309e21a299e1acb2783066a6d87",
   "protocol_id": "rikkahub.claude-p.v1",

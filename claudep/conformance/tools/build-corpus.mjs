@@ -345,13 +345,18 @@ writeJson('transcripts/pairing.json', {
 
 writeJson('fingerprints/vectors.json', {
   kind: 'request-fingerprint',
-  derivedFrom: 'ai/src/main/java/me/rerere/ai/provider/claudep/ClaudePGatewayClient.kt:153-219',
+  derivedFrom:
+    'ai/src/main/java/me/rerere/ai/provider/claudep/ClaudePGatewayClient.kt — ' +
+    'object ClaudePRequestFingerprint (compute + updateLengthPrefixed)',
   algorithm:
     'SHA-256 over a label/value stream. Every label is written as a 4-byte big-endian ' +
     'UTF-8 byte length followed by its bytes. Every value is preceded by a presence byte ' +
     '(0 = null, 1 = present) and, only when present, a 4-byte big-endian UTF-8 byte length ' +
     'followed by its bytes. NOTE this framing is deliberately DIFFERENT from the ' +
-    'transcripts above, which use a decimal `length:` prefix over UTF-16 code units.',
+    'transcripts above, which use a decimal `length:` prefix over UTF-16 code units. ' +
+    'v1-r4 adds two CONDITIONAL TAIL fields (assistant_id, binding_intent): they are ' +
+    'appended after attachment_manifest and, when absent, write ZERO BYTES — not a 0x00 ' +
+    'presence byte. That is what keeps every v1-r3 digest in this file unchanged.',
   domain: 'rikkahub-claude-p-request-fingerprint-v1',
   field_order: [
     'domain', 'device_id', 'remote_thread_id', 'remote_branch_id', 'mode', 'model_alias',
@@ -359,10 +364,32 @@ writeJson('fingerprints/vectors.json', {
     'rebuild_history_turns', 'rebuild_{i}.role', 'rebuild_{i}.{j}.type', 'rebuild_{i}.{j}.text',
     'tool_snapshot', 'attachment_manifest',
   ],
+  conditional_tail_field_order: [
+    'assistant_id',
+    'binding_intent',
+  ],
+  field_tiers: {
+    fixed:
+      'The labels of field_order, in that order. Every one is ALWAYS written; an absent value ' +
+      'is written as a 0x00 presence byte. (02-wire-protocol-v1.md numbers these as §12.4 ' +
+      'items 1-15, because two of its rows cover two labels each; the flat list here has 17.)',
+    conditional_tail:
+      'conditional_tail_field_order, appended strictly after the last fixed field and in the ' +
+      'listed order. Written ONLY when the request carries the field; when it does not, the ' +
+      'entire block (label length prefix + label + presence byte) is omitted. Removing this ' +
+      'distinction — e.g. writing 0x00 for an absent tail field — changes every v1-r3 digest.',
+  },
   invariants: [
     'system_prompt null and "" MUST produce different digests (presence byte).',
     'parts ["ab","c"] and ["a","bc"] MUST produce different digests (length prefixes).',
     'field ORDER is part of the input; reordering the labels changes the digest.',
+    'remote_branch_id absent (null) and "" MUST produce different digests; null is how a ' +
+      'deferred request encodes "this branch does not exist yet".',
+    'A request carrying NO conditional tail field MUST produce the same digest it produced ' +
+      'under v1-r3. The seven fingerprint-* vectors without AUTO_* siblings are the evidence.',
+    'assistant_id and binding_intent MUST each be bound into the digest, not merely ' +
+      'carried alongside it.',
+    'The tail order is fixed: assistant_id before binding_intent, and only ever at the end.',
   ],
   verification: 'dual-implementation (gen-vectors.mjs + VerifyVectors.java) agreed byte-for-byte',
   vectors: generated.fingerprints,

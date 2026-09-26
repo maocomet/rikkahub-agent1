@@ -177,14 +177,49 @@ class ClaudePGatewayException(
  * model, system prompt, turn/history, tool snapshot and attachment manifest. Fields are
  * length-prefixed before hashing so that concatenation ambiguities cannot collide two different
  * requests — the same discipline the repo already uses for background dispatch attestations.
+ *
+ * ## The two tiers of field, and why the difference matters
+ *
+ * The **first fifteen** fields are *fixed*: every one is always written, and an absent value is
+ * written as a presence byte of `0x00` (§12.3, §12.5). They are the v1-r3 field sequence and
+ * their order is frozen by review.
+ *
+ * [assistantId] and [bindingIntent] are **conditional tail fields** (§12.4 items 16 and 17,
+ * §12.12). They are appended *after* `attachment_manifest`, and when the caller does not supply
+ * one, **nothing at all is written** — not the label, not a length prefix, not a `0x00`.
+ *
+ * That asymmetry is the whole point. Writing `0x00` for an absent tail field would append a byte
+ * to the stream of every request that does not use one, which would change the digest of every
+ * request frozen under v1-r3 — including the ones already written into a dispatch ledger. Writing
+ * *nothing* is what makes "this request carries no assistant" produce the byte stream v1-r3
+ * produced, so the frozen corpus digests do not move. `fingerprint-minimal` and its six siblings
+ * in `claudep/conformance/fingerprints/vectors.json` are the acceptance test for exactly this.
+ *
+ * The tail order is fixed: [assistantId] before [bindingIntent], and only ever at the end. A tail
+ * field inserted anywhere earlier would change every digest that carries it, which is the opposite
+ * of what appending is for.
  */
 object ClaudePRequestFingerprint {
     private const val DOMAIN = "rikkahub-claude-p-request-fingerprint-v1"
 
+    /**
+     * Computes the digest.
+     *
+     * @param remoteBranchId the branch identity, or `null` when the request carries none.
+     *   `null` is how a `deferred` request (`02-wire-protocol-v1.md` §5.2) encodes "this branch
+     *   does not exist yet": the field's own presence byte then says *absent*. It is deliberately
+     *   **not** expressible as `""` — an empty string is a *present but empty* branch identity,
+     *   which is not a legal value, and folding the two together would give two different request
+     *   shapes one shared idempotency key.
+     * @param assistantId the assistant the generation belongs to, or `null` when the request does
+     *   not name one. **Appended only when present** — see the class doc.
+     * @param bindingIntent `immediate` or `deferred` (`02-wire-protocol-v1.md` §5.2), or `null`
+     *   for a legacy request that carries none. **Appended only when present.**
+     */
     fun compute(
         deviceId: String,
         remoteThreadId: String,
-        remoteBranchId: String,
+        remoteBranchId: String?,
         mode: String,
         modelAlias: String,
         systemPrompt: String?,
@@ -192,6 +227,8 @@ object ClaudePRequestFingerprint {
         rebuildHistory: List<ClaudePTurn>? = null,
         toolSnapshot: String? = null,
         attachmentManifest: String? = null,
+        assistantId: String? = null,
+        bindingIntent: String? = null,
     ): String {
         val digest = MessageDigest.getInstance("SHA-256")
         fun field(label: String, value: String?) {
@@ -231,6 +268,17 @@ object ClaudePRequestFingerprint {
         }
         field("tool_snapshot", toolSnapshot)
         field("attachment_manifest", attachmentManifest)
+
+        // Conditional tail fields (§12.4 items 16-17, §12.12). Appended, and **only when
+        // present**: the label block is omitted entirely rather than written with a `0x00`
+        // presence byte, so a request that carries neither produces the byte stream v1-r3
+        // produced. The order is fixed — `assistant_id` first, then `binding_intent`.
+        //
+        // The Server already appends `assistant_id` here (see `computeRequestFingerprint` in
+        // `src/idempotency/fingerprint.ts`); this is the Android half of that same contract,
+        // not a second spelling of it. The conformance corpus is what proves the two agree.
+        if (assistantId != null) field("assistant_id", assistantId)
+        if (bindingIntent != null) field("binding_intent", bindingIntent)
 
         return digest.digest().joinToString("") { byte ->
             (byte.toInt() and 0xff).toString(16).padStart(2, '0')

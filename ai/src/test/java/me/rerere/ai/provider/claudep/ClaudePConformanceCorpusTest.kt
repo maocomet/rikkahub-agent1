@@ -250,7 +250,10 @@ class ClaudePConformanceCorpusTest {
         return ClaudePRequestFingerprint.compute(
             deviceId = input.mustGet("deviceId").jsonPrimitive.content,
             remoteThreadId = input.mustGet("remoteThreadId").jsonPrimitive.content,
-            remoteBranchId = input.mustGet("remoteBranchId").jsonPrimitive.content,
+            // Nullable, and read through `str` rather than `mustGet`: the v1-r4 `deferred`
+            // vector carries a JSON `null` here on purpose, and that null is the whole point of
+            // the vector. `mustGet` would fail the test rather than the implementation.
+            remoteBranchId = str("remoteBranchId"),
             mode = input.mustGet("mode").jsonPrimitive.content,
             modelAlias = input.mustGet("modelAlias").jsonPrimitive.content,
             systemPrompt = str("systemPrompt"),
@@ -258,8 +261,20 @@ class ClaudePConformanceCorpusTest {
             rebuildHistory = rebuild,
             toolSnapshot = str("toolSnapshot"),
             attachmentManifest = str("attachmentManifest"),
+            assistantId = str("assistantId"),
+            bindingIntent = str("bindingIntent"),
         )
     }
+
+    /** The corpus vectors, indexed by `id`. */
+    private fun fingerprintVectorInputs(): Map<String, JsonObject> =
+        readJson("fingerprints/vectors.json").mustGet("vectors").jsonArray
+            .map { it.jsonObject }
+            .associateBy { it.mustGet("id").jsonPrimitive.content }
+            .mapValues { it.value.mustGet("input").jsonObject }
+
+    private fun fingerprintOf(id: String): String =
+        fingerprintFromVector(fingerprintVectorInputs().mustGet(id))
 
     @Test
     fun `request fingerprints match the corpus`() {
@@ -316,6 +331,124 @@ class ClaudePConformanceCorpusTest {
         )
 
         assertNotEquals("[\"ab\",\"c\"] and [\"a\",\"bc\"] must not collide", left, right)
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // v1-r4 conditional tail fields
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * The literal v1-r3 digests, recorded from the corpus as it stood before r4.
+     *
+     * `request fingerprints match the corpus` proves the *implementation* agrees with the corpus,
+     * but it cannot prove the corpus itself has not moved: regenerating the corpus from a drifted
+     * implementation would move both sides together and the test would still pass. Hardcoding the
+     * r3 values here is what makes "zero drift" a checkable claim rather than a restatement of
+     * the file under test.
+     *
+     * **These seven strings must never change.** A change means the conditional append stopped
+     * being conditional — an absent tail field started writing bytes it must not write.
+     */
+    private val v1r3Digests = mapOf(
+        "fingerprint-minimal" to
+            "f4bb36ce2f6417def4955166c20a5f61c00fc9b1f69f5ecd000d5f593f287525",
+        "fingerprint-null-vs-empty-system-prompt" to
+            "a9e96a2b31f99cf7a7cde45a2db790d57964abfd1dcc7a9c378dcd0f3f052e2f",
+        "fingerprint-with-history" to
+            "41a9abe0748912df1cdd6207bdfa96bccfa1cad1ecf94182c0429d2883e4c5ce",
+        "fingerprint-unicode" to
+            "fd9f6d0dda1a72d2d9df62ad49b9e626257a2339241d05163e1285d73afb52e0",
+        "fingerprint-empty-turn-parts" to
+            "39e472401f402569dd2ea55c114a419041307d0389e00bb69abbf8dbd2bd7063",
+        "fingerprint-part-boundary" to
+            "e5c5d7445e48c5088233739b5cbebe09674c4ee0e8903065d118c3f96fc41d5d",
+        "fingerprint-part-boundary-shifted" to
+            "f8008a58c987a6a96a3bc2b70c312a299b892474660410ce893122531e907c00",
+    )
+
+    @Test
+    fun `v1-r4 does not move a single v1-r3 digest`() {
+        for ((id, expected) in v1r3Digests) {
+            assertEquals(
+                "v1-r3 digest drifted for $id — the tail fields are no longer append-only",
+                expected,
+                fingerprintOf(id),
+            )
+        }
+    }
+
+    /**
+     * The corpus still carries those exact digests too, so the file and this test cannot drift
+     * apart from each other either.
+     */
+    @Test
+    fun `the corpus still records the v1-r3 digests verbatim`() {
+        val recorded = readJson("fingerprints/vectors.json").mustGet("vectors").jsonArray
+            .map { it.jsonObject }
+            .associate { entry ->
+                entry.mustGet("id").jsonPrimitive.content to
+                    entry.mustGet("sha256Hex").jsonPrimitive.content
+            }
+
+        for ((id, expected) in v1r3Digests) {
+            assertEquals("corpus no longer records the v1-r3 digest for $id", expected, recorded[id])
+        }
+    }
+
+    @Test
+    fun `each conditional tail field is bound into the digest`() {
+        // Each pair below differs in exactly one input field, so a shared digest would mean that
+        // field was carried but not hashed.
+        assertNotEquals(
+            "assistant_id must be bound, not merely carried",
+            fingerprintOf("fingerprint-auto-immediate"),
+            fingerprintOf("fingerprint-auto-assistant-changed"),
+        )
+        assertNotEquals(
+            "binding_intent must be bound, not merely carried",
+            fingerprintOf("fingerprint-auto-deferred"),
+            fingerprintOf("fingerprint-auto-intent-changed"),
+        )
+        assertNotEquals(
+            "two different branches must not share an idempotency key",
+            fingerprintOf("fingerprint-auto-immediate"),
+            fingerprintOf("fingerprint-auto-second-branch"),
+        )
+        assertNotEquals(
+            "a present branch and an absent one must not share an idempotency key",
+            fingerprintOf("fingerprint-auto-deferred"),
+            fingerprintOf("fingerprint-auto-branch-absent"),
+        )
+        assertNotEquals(
+            "immediate and deferred must not share an idempotency key",
+            fingerprintOf("fingerprint-auto-immediate"),
+            fingerprintOf("fingerprint-auto-deferred"),
+        )
+    }
+
+    /**
+     * No two vectors in the corpus may collide.
+     *
+     * A blanket check rather than another hand-written pair: the pairs above name the properties
+     * someone thought to check, and this one catches the pair nobody thought of. It is cheap
+     * because the corpus is small, and it is the check that would have caught a tail field being
+     * silently dropped.
+     */
+    @Test
+    fun `no two fingerprint vectors collide`() {
+        val inputs = fingerprintVectorInputs()
+        val byDigest = mutableMapOf<String, String>()
+
+        for (id in inputs.keys) {
+            val digest = fingerprintOf(id)
+            val clash = byDigest.put(digest, id)
+            assertTrue(
+                "fingerprint collision between '$clash' and '$id'",
+                clash == null,
+            )
+        }
+
+        assertEquals("ordinal check: every vector was hashed", inputs.size, byDigest.size)
     }
 
     // -----------------------------------------------------------------------------------------

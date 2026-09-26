@@ -78,6 +78,23 @@ They are not interchangeable. An emoji is `2` under the first framing and `4` by
 the second. `handshake-astral-emoji` and `fingerprint-unicode` exist to catch exactly
 this.
 
+### Two *tiers* of fingerprint field, and the trap in the second one
+
+Within the fingerprint framing there is a further distinction that is easy to miss and
+expensive to get wrong:
+
+| Tier | Absent value writes | Which fields |
+|---|---|---|
+| **Fixed** | a `0x00` presence byte (the label is still written) | the 17 fields of `field_order` |
+| **Conditional tail** | **nothing at all** — no label, no length prefix, no presence byte | `assistant_id`, `binding_intent` |
+
+The conditional tail exists so that r4 could add fields **without moving a single bit** of
+the v1-r3 digests. Writing `0x00` for an absent tail field would append a byte to every
+request that does not use one and drift all seven legacy vectors — and, worse, the digests
+already recorded in a dispatch ledger. Removing the tier distinction is the single easiest
+way to break this corpus while every test still *looks* like it passes; the "no tail field
+means the r3 bytes" invariant in `fingerprints/vectors.json` is the guard.
+
 ## Two different digests, for two different jobs
 
 This directory records hashes in two places and they are **not** computed the same way.
