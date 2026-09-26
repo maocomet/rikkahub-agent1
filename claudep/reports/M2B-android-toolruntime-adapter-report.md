@@ -1290,3 +1290,137 @@ recorded as prominently as it is.
 both of them, with executions rather than arguments — and adds one pure seam to do it. Phases B–F
 remain, one blocking design constraint is now recorded that would otherwise have been discovered
 mid-implementation, and the environment can now compile and run the work that is left.
+
+---
+
+# 12. The B batch, and the integration map C needs
+
+- Base of this batch: `7eff85f0`
+- Commits this batch: `5dec9798` (the production host, surface closed)
+- Pushed: **no**. No CI dispatch, no deploy, no VPS, no model call, no phone.
+- Snapshot: **still closed.** `offerCatalog = false` at the one construction site.
+
+## 12.1 What landed
+
+`ClaudePToolBridgeHostImpl` composes what the earlier batches built — the catalog assembly and
+`BridgeExecutionBindings` — and is registered as the single
+`single<ClaudePToolBridgeHost>`, so the provider resolves it instead of keeping its `NONE` default.
+`ClaudePToolBridgeHostImplTest` runs 13 tests, 0 skipped, 0 failures, 0 errors.
+
+`prepare` fails closed on every missing identity — no context, an incomplete one, an unrecognised
+origin token, a device that cannot name itself — each a distinct locally-recorded refusal. The
+origin mapping is an exact match on the enum's own `name`; `"localchat"`, `"LOCALCHAT"` and
+`" LocalChat "` are all refused, which is what makes the bridge's exact-match rule meaningful.
+
+The one test worth calling out is that the closed surface is asserted **against an open host that
+really does produce a catalog and stage a plan**. Without that pairing, "closed offers nothing"
+would pass for the wrong reason — a broken assembly — and the activation commit could silently
+still offer nothing while every test stayed green.
+
+## 12.2 The integration map for C, established by reading the real code
+
+This is the part worth keeping. It was gathered by reading the actual call sites, and it is what
+made the obstacle in §12.3 visible.
+
+### The template the host must copy, not reinvent
+
+`GenerationHandler`'s single-tool site (`GenerationHandler.kt:1984-2031`) is the canonical shape:
+`DefaultToolRuntime.execute(ToolExecutionPlanRequest(...))` with
+
+- `executionContext = ToolExecutionContext(runId, conversationId, assistantId, callOrigin,
+  commandId, toolCallId, workspaceId, workspaceCwd, capabilitySubject,
+  selectedPrivilegedConversation)`;
+- `startableTool = startableTools[name] ?: toolStartableResolver.resolve(toolDef, owner)`, and
+  `legacyExecute = { element -> toolDef.execute(element.jsonObject) }` always supplied;
+- `wallClockBudgetMs` = the remaining turn budget;
+- `preExecutionGate = { when (gate.evaluate(...)) { Allowed -> Allow; is Denied -> Deny("tool_blocked", reason) } }`;
+- `toolSchemaFingerprint = ToolCatalogSnapshot.fromDefinitions(listOf(toolDef)).entry(name)?.schemaFingerprint`.
+
+The result is consumed as `runtimeResult.output` and copied onto the existing `UIMessagePart.Tool`
+via `copy(output = ...)`; `ToolExecutionPlanResult` never carries `approvalState`.
+
+### C3 is nearly free, and that is the good news
+
+**An MCP tool's `Tool.execute` already calls `McpManager.callTool(serverId, tool.name, args)`**
+(`ChatService.kt:3889-3891`). The assembled list the host already receives in `prepare` therefore
+carries a working MCP dispatcher, and the host can run MCP tools through the *same* `legacyExecute`
+path as every other tool. It never needs a reference to `McpManager`, never sees a server id it did
+not receive as a closure, and never touches OAuth state or a token. The "OAuth/token/config must
+never reach the catalog, arguments, Server, Worker, Claude Code or logs" requirement is satisfied
+by *not handling them at all* rather than by filtering them — which is the stronger form.
+
+`invocation.toolNameForRuntime` is the raw app tool name: `BridgeToolCatalog` sets
+`displayName = candidate.name`, and the adapter binds `toolNameForRuntime = entry.displayName`. So
+the lookup key for the plan's tool list is exact and already correct.
+
+### The two things that are not free
+
+**Subject resolution.** `ToolExecutionContext.capabilitySubject` must be the *real* subject, and
+passing `null` is not a safe default: `ToolExecutionGate` skips the whole capability branch when it
+is null (`ToolExecutionGate.kt:452`), which for a second-user conversation would skip the
+selected-privileged-conversation check and allow *more*, not less. The app's rule lives in
+`ChatService.capabilitySubjectFor` (`ChatService.kt:1055-1095`) and is private. The host needs it,
+so either it is exposed or the host takes a provider wired to the same rule — and it must consult
+`SecondUserAuthorityRegistry` for the privileged case rather than re-deriving a second-user subject
+from a string, because that is precisely the "make the assistant a second user" substitution the
+brief forbids.
+
+**Wiring weight.** The host will need `DefaultToolRuntime`, `ToolExecutionGate`,
+`ToolStartableResolver`, `ClaudePToolRunControls` (already registered at `DataSourceModule:1252`),
+the approval lifecycle, the in-flight waiters and the conversation repository. The provider is
+registered inside a `single { ProviderManager(...).also { ... } }` block, so any cycle between
+those and `ProviderManager` surfaces as a Koin failure at startup, not at compile time.
+
+## 12.3 The obstacle in C2, stated before writing it rather than after
+
+C2's ordering is: publish the `Pending` card → the user can see it → `persistPendingBarrier(...,
+IN_FLIGHT)` → await → execute on approve. The card is *not* written by the host: the host publishes
+it through `ClaudePToolStatusSink`, whose implementation in the provider turns it into a
+`MessageChunk` and emits it into the stream (`ClaudePProvider.kt:904-916`). ChatService applies
+that chunk to the conversation graph asynchronously in its collector.
+
+But `persistPendingBarrier(conversation, owner, tools, ...)` takes a `Conversation` and persists it
+**inside its transaction** (`SecondUserApprovalLifecycle.kt:211-291`), and the projection it writes
+is what the approval UI resolves against. So the barrier must be persisted against a conversation
+that *already contains* the pending assistant message — and the host has no way to know that the
+emit it just performed has been applied.
+
+The normal path does not have this problem because ChatService does both in one `applyRunUpdate`
+block (`ChatService.kt:3996-4074`): it persists the card into the graph and the barrier in the same
+authority transaction, and only then publishes. The in-flight path cannot reuse that, because its
+generation is still running and its `execute` is suspended inside the provider's collection.
+
+This is the concrete form of what §7 called "the hard half and the reason this was not rushed", and
+§9.4.1/§9.4.2 were written to prepare for it. It needs a designed handshake — most plausibly a way
+for `execute` to await confirmation that its published part has been applied to the authority
+graph, rather than assuming it — and that handshake should be designed and reviewed before the code
+is written, not discovered by a failing test.
+
+**Nothing in this batch assumes otherwise.** With the surface closed, `execute` is unreachable and
+answers `FAILED` if a wiring bug ever reached it, which claims no execution and no stop.
+
+## 12.4 What remains
+
+Phases C–F, with C3 and C1 being the tractable half and C2 requiring the handshake above.
+
+1. **C1 — local read.** Through `DefaultToolRuntime` with the real subject and a re-assessment
+   against the real arguments. Ready to write.
+2. **C3 — MCP.** The same path; the dispatcher is already inside the `Tool` closure. Ready to write.
+3. **C2 — local write approval.** Blocked on the §12.3 handshake.
+4. **D — lifecycle and query**, over the real `ToolExecutionHandle` via `ClaudePToolRunControls`.
+5. **E — snapshot activation**, only after B–D are tested, as the last independent commit.
+6. **F — tests and the workflow gate**, including the instrumentation tests the plan calls for
+   (ordinary assistant `IN_FLIGHT` persists a barrier; second user `RESUME_COMMAND` still works;
+   ordinary assistant `RESUME_COMMAND` still refused; approve/deny use exact identity; no wrong
+   resume command). Those need a managed device and a real `AppDatabase`, which is exactly what
+   `migration-instrumentation.yml` already provides.
+
+## 12.5 Boundary compliance
+
+- No Server file read or written. No Room schema, version or migration change.
+- No new runtime dependency; no workflow change in this batch.
+- No push, CI dispatch, PR, tag, release or deploy. No VPS connection. No model call. No tool side
+  effect. No phone. No M3 work.
+- `snapshot` remains empty; `tool_snapshot` is still never sent; the production host offers nothing.
+- `git diff --check` passes; the only working-tree entry is the pre-existing untracked
+  `web-ui/bun.lock`; `c6f84fc4`, `5fceaf27` and `a232730f` all remain ancestors.
