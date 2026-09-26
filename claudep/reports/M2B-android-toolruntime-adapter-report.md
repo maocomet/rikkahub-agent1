@@ -578,3 +578,317 @@ approval path — now has its two structural obstacles written down in §9.4.1 a
 than waiting to be discovered.
 
 The snapshot remains closed, which is the only safe state until C–F all answer.
+
+---
+
+# 10. The C5–C8 batch: the load-bearing seams before the production host
+
+- Base of this batch: `5069a7c2` (chosen after the preflight discrepancy in §10.1)
+- HEAD after this batch: `0c87d2e0`
+- Pushed: yes. `origin/codex/claudep-cp1b-local` is `0c87d2e0`, a fast-forward from `84fb7d7d`.
+- `84fb7d7d` remains an ancestor and was never rewritten.
+
+Scope, stated up front: this batch builds the seams the production host will sit on. It does
+**not** run a single tool. The default host is still `ClaudePToolBridgeHost.NONE`, its catalog is
+still empty, `tool_snapshot` is still never sent, and `execute` is unreachable rather than merely
+unused. No Local tool, no write approval, no MCP tool, no snapshot activation.
+
+**The production host itself is not implemented and was not started.** No `ClaudePToolProductionHost`,
+no DI binding for one, and no path by which a non-empty snapshot could be produced. The snapshot
+remains closed, which is the only safe state until the execution, approval and cancel paths all
+answer.
+
+## 10.1 Preflight, and the one discrepancy
+
+Read-only, before anything was written.
+
+| Claim | Result |
+|---|---|
+| Branch is `codex/claudep-cp1b-local` | yes |
+| HEAD is `5a01fc22` | **no** — HEAD was `5069a7c2` |
+| `84fb7d7d` is the origin tip | yes, and untouched |
+| `5a01fc22` is an ancestor of HEAD | yes |
+| Only `web-ui/bun.lock` untracked | yes |
+
+`5069a7c2` is the previous batch's report commit — the one that batch's own instructions listed as
+commit `7. report`. The delta was therefore fully accounted for and not an unknown change, but the
+instruction is to stop on a mismatch, so I stopped and asked rather than deciding. The ruling was
+to proceed from `5069a7c2` with no reset, no rebase, no amend and no history rewrite, which is what
+was done.
+
+## 10.2 A — the two approval-waiter races, and how each is proven fixed
+
+Both were recorded in §9.2.1 as non-blocking because both failed closed. They are fixed here
+because the production host is about to depend on exactly these two guarantees.
+
+### A1 — a duplicate decision could be consumed twice
+
+`signalDecided` completed a live waiter and returned without recording that the identity had been
+settled. A second tap then found no waiter, saw nothing in `decidedAhead`, and **wrote** a decision
+that the next `await` would take and act on.
+
+The delivery maps cannot be the exactly-once record, because a delivery *consumes* the decision —
+the guard would be erased by the act of honouring it. So `settled` is now a record of its own,
+written **before** the delivery and removed by nothing. A second signal, a second abandon, and a
+decision arriving after an abandonment are all complete no-ops. That last one is a fix in its own
+right: such a decision used to become executable again, for a generation that was already gone.
+
+`abandonAll` deliberately still does not clear `settled`, and `forget` still does not either: a
+shutdown does not make a decision that already happened un-happen, and clearing the guard is
+precisely the state in which a duplicate tap becomes a second execution.
+
+### A2 — the registration was two critical sections
+
+A decision landing between "no decision is waiting for me" and "I am registered" found no waiter,
+was remembered as undelivered, and the waiter registering a moment later blocked to its deadline
+with the decision sitting right there, unclaimed, for a call the user had already approved. They
+are one critical section now.
+
+### How this is proven rather than argued
+
+The registration boundary is exercised **deterministically**, not by racing threads. A new
+`internal` seam, `onAwaitRegistration`, runs inside the critical section on the caller's thread and
+therefore reenters the lock. A correct implementation has the waiter installed by then, so a signal
+injected there finds it and the wait returns the decision immediately; the two-section version had
+nothing registered yet, so the same signal would be remembered and the wait would time out. No
+sleeps, no retries, no timing assumptions.
+
+`InFlightApprovalWaitersTest` covers both orderings, the boundary, duplicates before and after a
+claim, approve and deny, the deadline, abandonment before and during a wait,
+abandon-never-overwrites-a-decision, decision-after-abandonment, `abandonAll`, `forget`,
+exact-identity isolation, a duplicate registration stranding the first waiter, and the bounded
+settled record.
+
+**The A1 fix is also shown to discriminate.** The same sequence run against the pre-fix class,
+extracted from `5069a7c2` with `git show`, prints:
+
+```
+PRE-FIX   await after duplicate = Decided(decision=APPROVED)   <- re-consumed
+FIXED     await after duplicate = Abandoned(reason=TIMEOUT)    <- no trace
+```
+
+**The A2 fix is not provable the same way**, and that limit is stated rather than papered over: the
+old structure has no seam to inject at, because there the corresponding point is *between* the two
+sections. What backs A2 is the deterministic test passing plus the diff showing one `synchronized`
+block. No dynamic evidence of the old behaviour exists for it.
+
+## 10.3 B — the publication seam, and the order it forces
+
+A Claude P tool call arrives inside a live stream with the peer blocked on it. A call that needs
+approval cannot run until the user taps — and the card they tap must be in the conversation
+**before** the wait starts, which means it must be published from *inside* `execute`, not returned
+from it. `BridgeToolExecution.part` is the *result*, and a result that only arrives after the
+decision is a decision nobody could make.
+
+`execute` now takes a `ClaudePToolStatusSink`. The seam carries no `UIMessagePart`, no Room and no
+Compose: it carries a status, an identity and the arguments.
+
+### The real order, as implemented
+
+1. create the approval's exact identity;
+2. publish `PENDING_APPROVAL` through the sink and **require `Accepted`**;
+3. only then register with (or obtain) the `InFlight` waiter;
+4. wait for the decision;
+5. only after an approval, run the tool.
+
+A `Refused` answer means nothing was shown, so nothing can be tapped, so the caller must run
+nothing. It is a value the host has to handle rather than a failure it can ignore. The order is
+written on the vocabulary rather than left to the implementation.
+
+### Where the mapping lives, and why
+
+The vocabulary is deliberately **not** the wire's `ToolCallState`: it has `PENDING_APPROVAL`, which
+the Server has no word for because an approval is Android's business, and it lacks the Server's own
+verdicts, because nothing here may pronounce one. That separation is what stops a later
+convenience from turning an approval into something the peer can name.
+
+Rendering a status into the conversation is the provider's, because the conversation stream is the
+provider's — putting it in the app would mean the app writing to a stream it does not own. The
+**approval lifecycle** stays entirely in the app. That split is a decision, recorded as one.
+
+The terminal statuses map to no interim part at all: their outcome part comes back through
+`BridgeToolExecution`, shaped by the app that ran the call. A mapping that rendered them would put
+a tap target on screen for a call that is already over.
+
+## 10.4 C — the run-control registry and its lifecycle
+
+The host that needs a run's control is a long-lived singleton; the control is created per run.
+`ClaudePToolRunControls` is the one thing that closes that gap, and it is only that: it holds a
+reference the app already created, returns it by exact id and drops it when the run ends. It creates
+nothing, persists nothing and schedules nothing, and cancellation stays `GenerationRunControl`'s —
+the registry has no opinion about what cancelling means and must never grow one.
+
+Lifecycle, precisely:
+
+- **Registered in `ConversationRuntime.startRun`**, after the control is constructed and before the
+  job starts, so there is no instant in which a run could be serving a tool call while its control
+  is undiscoverable.
+- **Removed in `job.invokeOnCompletion`** — the only "finally" a run is guaranteed to reach, since
+  the run-finished handler can decline a run it no longer considers active, and a control left
+  behind by a superseded run would be found by nothing and leak. The removal is identity-checked,
+  so a late completion cannot withdraw a newer run's control.
+- **A duplicate id is refused, not replaced.** Replacing would move an in-flight call's
+  cancellation onto a control that is not running it.
+- **Nothing is evicted.** Dropping a live run's entry makes an in-flight tool uncancellable, which
+  is worse than a map one entry too large. The real bound is the number of concurrent runs.
+- **One Koin `single`.** `ConversationRuntime`'s parameter is defaulted to `null`, so the ~45
+  existing test constructions are untouched; with `null` nothing is published and nothing is
+  discoverable, which is the fail-closed default.
+
+## 10.5 D — how `resumeStream` avoids a second execution
+
+`resumeStream` pumped the replay buffer with **no tool handler at all**, so a re-delivered
+`tool.invoke` was silently discarded and then sat until its deadline — while the answer was already
+recorded a few lines away in the generation's own ledger.
+
+It now builds the **same** `ClaudePToolFrameHandler` the live stream uses, found by this exact
+generation id. Using the same handler is what makes it safe rather than a second execution path:
+
+- a call that **settled** → `Replay`, and the recorded outcome is re-sent. Nothing runs.
+- a call still **running** → `Await`, and nothing is sent. Nothing runs.
+- a frame for an **unknown generation or call id** → `lookup` returns `null`, the frame is dropped,
+  and no adapter is invented. The Server's own deadline concludes it.
+
+So a reconnect cannot buy a second tool side effect: there is no path from a replayed frame to the
+runtime that does not go through the ledger. And nothing here calls `generation.start`, so a
+reconnect still cannot buy a model request. A tool frame after a terminal is refused by the
+adapter's own closing flag rather than by the adapter's absence.
+
+## 10.6 E — the binding's guaranteed semantics, and its literal limit
+
+The two-step design from `5a01fc22` is kept.
+
+**The literal limit, stated plainly:** it is **impossible** to know the Server's `generationId`
+before sending a non-empty `tool_snapshot`, because that snapshot travels *in* `generation.start`
+and the id only comes back in the answer. No implementation can satisfy a literal "binding before
+the snapshot". This report does not claim it.
+
+**What is guaranteed instead:** binding is completed before any returned frame is *consumed*. The
+provider performs `openGeneration` in the window between `generation.start`'s answer and the first
+`pumpFrames` call, so no `tool.invoke` can be read for a generation whose plan is not yet in hand;
+and a failed binding closes the registry (tombstoning the id) and throws, so the generation fails
+loudly rather than running with tools it cannot answer.
+
+Tested at the level where it can be tested:
+
+- a token redeemed for one generation cannot be redeemed for another;
+- re-opening an already-bound generation is idempotent and keeps the one binding;
+- a token that would bind a *different* plan is refused, and left staged so the refusal repeats
+  rather than being satisfied by a spent entry;
+- an unknown token on a *new* generation refuses and binds nothing;
+- reopening a **closed** generation is refused by `BridgeGenerationRegistry`, which tombstones the
+  id — the test says so explicitly rather than implying this table holds that guarantee.
+
+**Not proven by a test, and marked as such:** the provider-level ordering itself. No test this
+batch drives a real provider through a queued replay buffer. That ordering is evidenced by the code
+and its call sites — a statement about the source, not about an execution.
+
+## 10.7 F — tests and gates
+
+Three new classes, and none of them would have run without wiring:
+
+| Class | Module | Wired into |
+|---|---|---|
+| `InFlightApprovalWaitersTest` | `:app` | last `:app:testDebugUnitTest` `--tests` + REQUIRED |
+| `ClaudePToolRunControlsTest` | `:app` | same |
+| `ClaudePToolStatusMappingTest` | `:ai` | `:ai:testDebugUnitTest` `--tests` + REQUIRED |
+
+`BridgeExecutionBindingsTest` was already in REQUIRED from the previous batch and is covered by the
+existing `me.rerere.ai.provider.claudep.*` filter.
+
+The `:app` entries are in the **last** `:app:testDebugUnitTest` invocation for the reason that step's
+own comment already gives: re-running the task with a different filter replaces
+`app/build/test-results/testDebugUnitTest`, so a class named only in an earlier step has its XML
+discarded and the gate reports "compiled but did not run" for a class that ran and passed. That is
+the specific failure the previous CI fix (`84fb7d7d`) addressed, and it is not repeated here.
+
+The REQUIRED gate requires each entry to produce an XML with `tests>0`, `failures=0`, `errors=0`,
+`skipped=0`.
+
+No instrumentation whitelist change: none of the new classes is an instrumentation test.
+
+## 10.8 Evidence: what is CI, what is JUnit, what is a local driver
+
+| Claim | Kind of evidence |
+|---|---|
+| CI build, regression, Claude P suites, conformance, APK/signature | **CI** — §10.9 |
+| The four new/expanded test classes executed | **CI** — §10.9 |
+| Waiter races fixed; boundary atomic | local executed driver + a pre/post discrimination run; **not** CI |
+| Registry exactness, duplicate refusal, concurrency | local executed driver; **not** CI |
+| Status-to-part mapping | local executed driver; **not** CI |
+| Binding re-open semantics | local executed driver; **not** CI |
+| Provider-level binding ordering | **static audit of source and call sites only** |
+| `:ai` main tree compiles | local compile with bytecode emitted, excluding the pre-existing `ToolResultReplayPlan.kt` android-util artifact |
+| `:app` compiles at all | **CI only** — this machine has no Android SDK |
+
+The local runs use a stub `org.junit` and a small reflective runner. The test bodies and assertions
+genuinely execute; the runner is not the real one. Where §10.9 reports the same classes again, the
+CI figures are the ones to trust.
+
+## 10.9 CI — **the run failed, and the failure is not in this batch's code**
+
+| | |
+|---|---|
+| Run ID | `36224200862` |
+| URL | https://github.com/maocomet/rikkahub-agent1/actions/runs/36224200862 |
+| Workflow | `build-debug-apk.yml`, `workflow_dispatch` |
+| SHA | `0c87d2e0e1908f23a4a3f6bac6d2e6d5203616db` |
+| Attempt | 1 (no rerun) |
+| Conclusion | **failure** |
+
+Steps that failed: **9** `Build debug APK`, and then **12** `Report executed regression test
+classes`, **14** `Report executed Claude P test classes`, **15** `Verify the conformance corpus
+gate`. Steps 12/14/15 are the known cascade: they read JUnit XML that only exists if the build and
+its tests ran, so a build failure fails them too. **Step 9 is the root cause.**
+
+### The root cause, exactly
+
+```
+e: app/src/main/java/me/rerere/rikkahub/data/ai/GenerationHandler.kt:3596:44
+   Unresolved reference 'claudePToolGenerationContext'.
+* What went wrong:
+Execution failed for task ':app:compileDebugKotlin'.
+```
+
+One error, and it is **not** from this batch. `GenerationHandler.kt` has not changed in this batch
+at all, and it is not in the C5–C8 diff.
+
+`claudePToolGenerationContext` is declared as a parameter of `generateText` (signature at line 623,
+the parameter at 689) and **used** at line 3596 — which is inside `generateInternal`, whose
+signature ends at line 2749 and which declares neither that parameter nor anything that carries it.
+`generateText` never threads it down, so the name is simply not in scope where it is read.
+
+**Provenance: `bb1b0ad0` (C2, the *previous* batch).** That commit added the parameter to
+`generateText` and the use inside `generateInternal` and did not connect the two. It has been a
+compile error in the pushed history ever since, because the previous batch neither pushed nor ran
+CI — this run is the **first time `:app` has been compiled** since that commit.
+
+### Why local verification did not catch it, and what that says about §10.8
+
+The local harness compiles `:ai` only. `GenerationHandler.kt` lives in `:app`, and this machine has
+no Android SDK, so the file was never compiled here — the previous report said so in as many words
+("`ChatService` and `GenerationHandler` cannot be compiled on this machine at all"). What that
+disclosure did not do is gate the change on the one thing that could have caught it. A parameter
+added in one function and read in another is precisely the class of error that only a real compile
+finds, and it was shipped on the strength of a type-check that could not see the file.
+
+**Consequence for §10.8:** none of the rows marked "CI" in that table are satisfied. No test of any
+kind executed in this run — the build failed before them — so the four test classes this batch adds
+and wires have not been executed in CI, and the REQUIRED gate is moot until `:app` compiles.
+The only CI-backed statement this batch can make is the negative one above.
+
+### What was done about it
+
+**Nothing, deliberately.** The instruction for a failed CI run is to stop immediately: no fix, no
+additional commit, no rerun, and no progress toward the production host. That is what happened.
+
+The consequence to be aware of: **`0c87d2e0` is pushed and is not buildable**, and it is not the
+only such commit — the break originates in `bb1b0ad0`, so every commit from there to the tip fails
+`:app:compileDebugKotlin`. A fix belongs in a reviewed change of its own, not appended to a run
+that already failed.
+
+### Note on the report commit itself
+
+The suggested commit 5 (this report) was **not** committed, because the same instruction says not
+to append commits to a failed run. This text therefore exists in the working tree, uncommitted, at
+`0c87d2e0` — the exact SHA the run tested.
