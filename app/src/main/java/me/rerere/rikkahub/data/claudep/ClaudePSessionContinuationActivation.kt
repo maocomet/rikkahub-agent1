@@ -21,9 +21,7 @@ package me.rerere.rikkahub.data.claudep
  * cancellation, a dropped connection, and a process that never comes back. One unhandled exit is
  * not a degraded feature; it is a conversation that cannot be continued again.
  *
- * ## What must be true before this flips
- *
- * Not a checklist of code that exists — a list of paths that have been **exercised**:
+ * ## What had to be true before this flipped
  *
  * 1. Immediate admission writes `START_IN_FLIGHT` in the command's authority transaction, and the
  *    barrier commit, the settlement attachment and the dispatch happen in that order.
@@ -35,21 +33,30 @@ package me.rerere.rikkahub.data.claudep
  *    per live connection and never starts a generation.
  * 6. **Stale reconciliation** supersedes a start no run in this process owns, and pauses rather
  *    than dispatching when it cannot.
+ * 7. Every other path that can dispatch a Claude P generation either holds a barrier or is refused
+ *    by name.
+ *
+ * Items 1–5 and 7 are delivered. Three shapes are refused rather than supported, and each is a
+ * recorded limitation rather than an unfinished path: the two emergency commands that bypass
+ * admission, a cancelled or failed turn's ordinary follow-up message, and final-answer recovery's
+ * second model call. All three are visible, named refusals — none of them falls back to `mode:
+ * "new"` and none of them can produce a hidden second session.
  *
  * ## Why this is a `val` and not a `const val`
  *
  * A `const val` is folded at compile time, which turns every guarded call site into a branch the
  * compiler can prove is dead and reports as such. This is read at run time so that the guard reads
- * as an ordinary decision — and so that the one test that asserts this is off fails loudly the day
- * someone flips it, rather than being optimised away.
+ * as an ordinary decision — and so that the test which pins its value cannot be optimised away.
  */
 object ClaudePSessionContinuationActivation {
 
     /**
-     * `false` until §"What must be true" of this file's documentation is satisfied for every path.
+     * Whether production acts on Claude P continuations.
      *
-     * Flipping this is the *last* step of M3-B and not the first: it is what makes the wiring above
-     * reachable from production.
+     * `true` as of M3-B's activation. Turning it **off** is now the deliberate act: while it is
+     * `false` no decision is produced, no barrier is written and every Claude P request reverts to
+     * the `mode: "new"` shape — which is a state the wire and the Server both still accept, so it
+     * remains a safe place to stand.
      */
-    val ENABLED: Boolean = false
+    val ENABLED: Boolean = true
 }

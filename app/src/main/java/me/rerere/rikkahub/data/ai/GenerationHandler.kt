@@ -1364,6 +1364,35 @@ class GenerationHandler(
                     )
 
                     if (recoveryDecision == FinalAnswerRecoveryDecision.Attempt) {
+                        // **Before any recovery dispatch.** A Claude P turn's primary call may hold
+                        // the branch's session, and this recovery is a *second* generation that
+                        // cannot carry that binding — so it would start a second, unbound session
+                        // and the branch would settle against an answer it did not produce. The
+                        // turn therefore ends here, in a bounded `INCOMPLETE_NO_VISIBLE_ANSWER` that
+                        // keeps whatever the primary produced and reports the reason by name.
+                        // Nothing below this branch runs: no second `generation.start`, no
+                        // `mode: "new"` fallback, and no write to the primary's continuation.
+                        me.rerere.rikkahub.data.claudep.ClaudePFinalAnswerRecovery.refusal(
+                            provider = provider,
+                            activationEnabled = me.rerere.rikkahub.data.claudep
+                                .ClaudePSessionContinuationActivation.ENABLED,
+                        )?.let { refusal ->
+                            generationDiagnostics.markRecovery(
+                                finalAnswerRecoveryAttempts,
+                                "NOT_SUPPORTED",
+                            )
+                            messages = messages.replaceLastMessage(
+                                messages.last().withFinalAnswerRecovery(
+                                    commandId = recoveryCommandKey,
+                                    reason = refusal,
+                                    status = FinalAnswerRecoveryStatus.FAILED,
+                                    attempt = finalAnswerRecoveryAttempts,
+                                    state = UIMessageState.INCOMPLETE_NO_VISIBLE_ANSWER,
+                                ),
+                            )
+                            emit(GenerationChunk.Messages(messages))
+                            break@generationLoop
+                        }
                         val recoveryReason = terminal.providerReason
                             ?: terminal.category.name.lowercase()
                         var recoveryComplete = false

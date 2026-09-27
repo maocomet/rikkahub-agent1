@@ -117,22 +117,22 @@ class ClaudePSessionContinuationAdmissionsTest {
     }
 
     /**
-     * **The activation switch is off, and this test is what makes turning it on deliberate.**
+     * **M3-B is active, and this test is what makes turning it off deliberate.**
      *
-     * It is not asserting that a constant is false for its own sake. While it holds, production
-     * Claude P sends `mode: "new"`: no barrier is written, no binding intent reaches the wire, and
-     * every dispatch behaves exactly as it did before M3-B. Flipping the switch without the code
-     * that settles a barrier on *every* exit — including a dropped connection and a process that
-     * never returns — strands a conversation in a state the gate reads as "a model may be running",
-     * which is not a degraded feature but a branch that can never be continued.
+     * It is not asserting a constant for its own sake. While it is `true`, production Claude P
+     * dispatches under `mode: "auto"` with a binding intent, writes a barrier in the transaction
+     * that admits the command, and settles a continuation record on the way out — which is only
+     * safe because every exit settles, including a dropped connection and a process that never
+     * returns. Flipping it back to `false` is a safe place to stand (the wire and the Server both
+     * still accept `mode: "new"`), but it is a deliberate act and not a fallback.
      *
      * So this test failing is the intended signal: it means the switch moved, and the list in
      * [ClaudePSessionContinuationActivation] has to have moved with it.
      */
     @Test
-    fun `production does not act on a Claude P continuation`() {
-        assertFalse(
-            "M3-B activation is not complete: see ClaudePSessionContinuationActivation",
+    fun `production acts on a Claude P continuation`() {
+        assertTrue(
+            "M3-B activation moved: see ClaudePSessionContinuationActivation",
             ClaudePSessionContinuationActivation.ENABLED,
         )
     }
