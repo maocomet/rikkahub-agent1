@@ -301,6 +301,15 @@ class StableSystemPromptCompositionTest {
             before.dispatchedSystemPrompt,
             after.dispatchedSystemPrompt,
         )
+
+        // ...and the equality above has to be earned. Two turns whose runtime values were identical
+        // would satisfy it trivially, so the values themselves are asserted to differ, and each
+        // turn to carry its own.
+        assertTrue(before.lastUserText.contains("Sep 27, 2026"))
+        assertTrue(after.lastUserText.contains("Sep 28, 2026"))
+        assertFalse(before.lastUserText.contains("Sep 28, 2026"))
+        assertFalse(after.lastUserText.contains("Sep 27, 2026"))
+        assertNotEquals(before.lastUserText, after.lastUserText)
     }
 
     @Test
