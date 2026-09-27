@@ -396,8 +396,8 @@ jobs:
         run: |
           set -uo pipefail
 
-          EXPECTED_CONFORMANCE_TESTS=14
-          EXPECTED_SPEC_REVISION=v1-r3
+          EXPECTED_CONFORMANCE_TESTS=18
+          EXPECTED_SPEC_REVISION=v1-r4
           SUITE_CLASS=me.rerere.ai.provider.claudep.ClaudePConformanceCorpusTest
           xml="ai/build/test-results/testDebugUnitTest/TEST-$SUITE_CLASS.xml"
 
