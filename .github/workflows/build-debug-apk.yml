@@ -229,6 +229,12 @@ jobs:
             --tests "me.rerere.rikkahub.data.claudep.ClaudePGenerationIdentityObserverTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionSettlementTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionTerminalSettlementSeamTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePFinalAnswerRecoveryTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionAdmissionWiringTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationAdmissionsTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationDispatchTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionDeferredBindTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionReplayTest" \
             --tests "me.rerere.rikkahub.data.authority.source.ConversationContentIntegrityProjectionTest" \
             --tests "me.rerere.rikkahub.data.authority.source.ConversationContinuationSourceRevisionTest" \
             --tests "me.rerere.rikkahub.data.capability.CapabilitySubjectResolverTest" \
@@ -301,6 +307,12 @@ jobs:
             "app:me.rerere.rikkahub.data.claudep.ClaudePGenerationIdentityObserverTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePSessionSettlementTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePSessionTerminalSettlementSeamTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePFinalAnswerRecoveryTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePSessionAdmissionWiringTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationAdmissionsTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationDispatchTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePSessionDeferredBindTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePSessionReplayTest"
             "app:me.rerere.rikkahub.data.authority.source.ConversationContentIntegrityProjectionTest"
             "app:me.rerere.rikkahub.data.authority.source.ConversationContinuationSourceRevisionTest"
             "app:me.rerere.rikkahub.data.capability.CapabilitySubjectResolverTest"
