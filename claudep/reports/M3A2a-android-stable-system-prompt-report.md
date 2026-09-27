@@ -125,7 +125,7 @@ Three properties follow, and each was a decision rather than a default:
 
 ## 5. Tests
 
-47 tests added, in four files.
+54 tests added, in four files.
 
 | Suite | What it pins |
 |---|---|
@@ -168,7 +168,7 @@ Run on this revision, with the local Android SDK from `local.properties`.
 
 - `./gradlew :ai:testDebugUnitTest :app:testDebugUnitTest`
   - `:ai` — **755 tests, 0 failed, 0 skipped.**
-  - `:app` — **4099 tests, 1 failed, 1 skipped.**
+  - `:app` — **4106 tests, 1 failed, 1 skipped.**
 - `git diff --check` — clean.
 - No new dependencies; no credential read at any point; no `push`, no CI, no deploy, no VPS, no model
   call. The server is untouched.
@@ -199,7 +199,39 @@ that path, and `git diff --name-only` shows no build-script, `BuildConfig`, guar
 `testReleaseUnitTest` does not exist in this project, so the same test could not be re-run under the
 unsuffixed variant to demonstrate the flip; the generated constant above is the evidence instead.
 
-## 7. Deliberate consequences for review
+## R1 — the case-insensitivity the legacy transformer had
+
+`PlaceholderTransformer` matched registered keys with `ignoreCase = true`, for **both** brace forms.
+`PromptReferencePolicy` matched them exactly, against the lowercase registry. That is not "stricter",
+and the difference is not symmetric:
+
+- `{{CUR_DATE}}` was refused as unclassified — loud, and wrong.
+- `{CUR_DATE}` matched nothing, was left in the text, and was left **identically** in the frozen
+  expectation. The system message the app froze and the one it dispatched still agreed, so the
+  dispatch check passed with a raw placeholder inside the system instruction. The failure mode was
+  silence, which is the one thing this module exists to remove.
+
+Both are fixed by canonicalising before every lookup:
+
+- both brace forms match case-insensitively for registered keys;
+- the marker, the recorded value and the refusal reason all name the **canonical lowercase** key, so
+  `{{CUR_DATE}}` and `{Cur_Date}` both become `<runtime_value_ref name="cur_date"/>` and share one
+  canonical value in the runtime block;
+- an unknown double-brace token is still refused, compared through the same canonicalisation;
+- an unknown single-brace token is still left as ordinary text, and user messages are still neither
+  interpreted nor refused.
+
+`PromptReferencePolicyTest` now asserts this over the **whole vocabulary** — every registered key ×
+{lowercase, uppercase, mixed} × {`{{ }}`, `{ }`} — because a hardcoded example list would have to be
+extended by whoever adds the next key, which is exactly when the hole would reopen. The composition
+suite adds a mixed-case assistant prompt taken end to end to a real `ClaudePGenerationStartBody`, and
+a scan that fails on any raw registered token in any case anywhere in the request.
+
+One thing the fix had to restore: `referencedKeys` had been silently reordered from the registry's
+order to the text's. The contract is a function of the key **set** — two templates using the same keys
+must report them identically — so it is sorted back into registry order.
+
+## 8. Deliberate consequences for review
 
 1. **A work space, or a non-default message template, fails closed on Claude P.** Both can write to
    the system message, neither can be shown to be stable from the provider's position. Relocating the
@@ -213,6 +245,6 @@ unsuffixed variant to demonstrate the flip; the generated constant above is the 
    the date. That is the point — the value is in the turn — but it does mean the two halves must be
    read together.
 
-## 8. Not in this batch
+## 9. Not in this batch
 
 M3-A2b: the server-side `ConfigFingerprintV2`. The server is untouched at `d2f2ea6`.
