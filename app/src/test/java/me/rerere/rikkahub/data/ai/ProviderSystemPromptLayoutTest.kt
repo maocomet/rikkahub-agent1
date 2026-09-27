@@ -221,6 +221,72 @@ class ProviderSystemPromptLayoutTest {
         assertEquals(rendered(), rendered())
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Additional volatile context, appended after the transformers have run
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    fun `additional volatile context joins the anchored turn and never the system message`() {
+        val base = ProviderSystemPromptLayout.create(
+            stableSystem = "stable instructions",
+            volatileSystem = "memory for this turn",
+            conversationMessages = listOf(UIMessage.user("question")),
+            useAnchoredVolatileContext = true,
+        )
+        val extra = "<runtime_values>\n  <runtime_value name=\"cur_date\">Sep 27, 2026</runtime_value>\n</runtime_values>"
+        val extended = base.withAdditionalVolatileContext(extra)
+
+        // The system message is the thing being held stable, so a method whose whole purpose is to
+        // add volatile text must not be able to reach it.
+        assertEquals(
+            base.initialMessages.map { it.role to it.parts },
+            extended.initialMessages.map { it.role to it.parts },
+        )
+
+        val baseUser = base.applyVolatileContext(base.initialMessages).last().toText()
+        val extendedUser = extended.applyVolatileContext(extended.initialMessages).last().toText()
+        assertTrue(extendedUser.contains("memory for this turn"))
+        assertTrue(extendedUser.contains("<runtime_value name=\"cur_date\">Sep 27, 2026</runtime_value>"))
+        assertFalse(baseUser.contains("runtime_value"))
+    }
+
+    @Test
+    fun `blank additional context leaves the layout exactly as it was`() {
+        val base = ProviderSystemPromptLayout.create(
+            stableSystem = "stable instructions",
+            volatileSystem = "memory for this turn",
+            conversationMessages = listOf(UIMessage.user("question")),
+            useAnchoredVolatileContext = true,
+        )
+
+        val same = base.withAdditionalVolatileContext("")
+
+        assertEquals(
+            base.applyVolatileContext(base.initialMessages).map { it.role to it.toText() },
+            same.applyVolatileContext(same.initialMessages).map { it.role to it.toText() },
+        )
+    }
+
+    @Test
+    fun `additional context does not change the combined-system layout other providers use`() {
+        // The non-anchored path still puts runtime context in the system message. Nothing here
+        // changes that: the append only ever adds to whichever volatile channel the layout already
+        // has.
+        val base = ProviderSystemPromptLayout.create(
+            stableSystem = "stable instructions",
+            volatileSystem = "",
+            conversationMessages = listOf(UIMessage.user("question")),
+            useAnchoredVolatileContext = false,
+        )
+
+        val rendered = base
+            .withAdditionalVolatileContext("runtime context")
+            .applyVolatileContext(base.withAdditionalVolatileContext("runtime context").initialMessages)
+
+        assertEquals(MessageRole.SYSTEM, rendered.first().role)
+        assertTrue(rendered.first().toText().contains("runtime context"))
+    }
+
     @Test
     fun `volatile data cannot close or reopen the runtime context envelope`() {
         val hostile = """

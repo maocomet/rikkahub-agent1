@@ -3,6 +3,9 @@ package me.rerere.rikkahub.data.ai.transformers
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.prompt.RuntimeContextOrigin
+import me.rerere.rikkahub.data.ai.prompt.RuntimeContextPlacement
+import me.rerere.rikkahub.data.ai.prompt.StableSystemPromptSession
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.InjectionPosition
 import me.rerere.rikkahub.data.model.PromptInjection
@@ -1332,5 +1335,124 @@ class PromptInjectionTransformerTest {
         val lastUserIndex = result.indexOfLast { it.role == MessageRole.USER && getMessageText(it) == "Thanks!" }
         assertEquals(lastUserIndex - 1, injectedIndex)
     }
+    // endregion
+
+    // region Stable system prompt (Claude P)
+
+    /**
+     * A provider that needs a byte-stable system instruction cannot have a message-triggered
+     * injection written into it: the trigger depends on the conversation, so the system message
+     * would move exactly when an entry fires or stops firing.
+     *
+     * The first two tests below are a pair on purpose. One pins that the *existing* behaviour is
+     * untouched when no session is present; the other pins what changes when one is. Testing only
+     * the new path would not catch the change leaking into every other provider.
+     */
+    @Test
+    fun `without a stable-system session the injection still rewrites the system message`() {
+        val injection = createModeInjection(
+            position = InjectionPosition.AFTER_SYSTEM_PROMPT,
+            content = "injected guidance"
+        )
+        val messages = listOf(
+            UIMessage.system("stable instructions"),
+            UIMessage.user("a question"),
+        )
+
+        val result = transformMessages(
+            messages = messages,
+            assistant = createAssistant(modeInjectionIds = setOf(injection.id)),
+            modeInjections = listOf(injection),
+            lorebooks = emptyList()
+        )
+
+        assertEquals("stable instructions\ninjected guidance", getMessageText(result[0]))
+        assertEquals(MessageRole.SYSTEM, result[0].role)
+    }
+
+    @Test
+    fun `a stable-system session relocates the injection and leaves the system message alone`() {
+        val injection = createModeInjection(
+            position = InjectionPosition.AFTER_SYSTEM_PROMPT,
+            content = "injected guidance"
+        )
+        val messages = listOf(
+            UIMessage.system("<runtime_value_ref name=\"cur_date\"/>"),
+            UIMessage.user("a question"),
+        )
+        val session = StableSystemPromptSession()
+
+        val result = transformMessages(
+            messages = messages,
+            assistant = createAssistant(modeInjectionIds = setOf(injection.id)),
+            modeInjections = listOf(injection),
+            lorebooks = emptyList(),
+            stableSystemPromptSession = session,
+        )
+
+        assertEquals(2, result.size)
+        assertEquals(
+            "<runtime_value_ref name=\"cur_date\"/>",
+            getMessageText(result[0]),
+        )
+
+        // Relocated, not dropped, and with the metadata that records where it was destined for and
+        // what produced it — the answer a reviewer needs when asking what moved.
+        val section = session.sections().single()
+        assertEquals(RuntimeContextPlacement.AFTER_SYSTEM_PROMPT, section.placement)
+        assertEquals(RuntimeContextOrigin.MODE_INJECTION, section.origin)
+        assertEquals("injected guidance", section.content)
+        assertTrue(session.render().contains("injected guidance"))
+        assertTrue(session.render().contains("placement=\"after_system_prompt\""))
+    }
+
+    @Test
+    fun `a lorebook entry relocated by a session is still tagged as a lorebook`() {
+        val entry = createRegexInjection(
+            position = InjectionPosition.BEFORE_SYSTEM_PROMPT,
+            content = "The city is called Aldermere.",
+            keywords = listOf("Aldermere"),
+        )
+        val lorebook = createLorebook(entries = listOf(entry))
+        val session = StableSystemPromptSession()
+
+        transformMessages(
+            messages = listOf(
+                UIMessage.system("stable instructions"),
+                UIMessage.user("Tell me about Aldermere."),
+            ),
+            assistant = createAssistant(lorebookIds = setOf(lorebook.id)),
+            modeInjections = emptyList(),
+            lorebooks = listOf(lorebook),
+            stableSystemPromptSession = session,
+        )
+
+        val section = session.sections().single()
+        assertEquals(RuntimeContextPlacement.BEFORE_SYSTEM_PROMPT, section.placement)
+        assertEquals(RuntimeContextOrigin.LOREBOOK, section.origin)
+    }
+
+    @Test
+    fun `a session does not create a system message that was not there`() {
+        val injection = createModeInjection(
+            position = InjectionPosition.AFTER_SYSTEM_PROMPT,
+            content = "injected guidance"
+        )
+        val session = StableSystemPromptSession()
+
+        val result = transformMessages(
+            messages = listOf(UIMessage.user("a question")),
+            assistant = createAssistant(modeInjectionIds = setOf(injection.id)),
+            modeInjections = listOf(injection),
+            lorebooks = emptyList(),
+            stableSystemPromptSession = session,
+        )
+
+        // The ordinary path would insert one. A stable-system provider must not have a system
+        // message appear that its frozen expectation never described.
+        assertTrue(result.none { it.role == MessageRole.SYSTEM })
+        assertEquals(1, session.sections().size)
+    }
+
     // endregion
 }
