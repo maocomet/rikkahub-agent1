@@ -1806,7 +1806,25 @@ class ChatService(
         }
     }
 
+    /**
+     * Runs one command, and drops its run-local continuation decision when the run is over.
+     *
+     * The decision is only meaningful while a run is executing: the durable half of it — the
+     * barrier, its revision, its state — lives in the message graph. Forgetting it here is
+     * therefore not a cleanup of state anything still reads; it is what keeps this map bounded by
+     * the commands actually running rather than by every Claude P command the process ever
+     * admitted.
+     */
     private suspend fun executeRuntimeCommand(
+        envelope: CommandEnvelope<out ChatCommand>,
+        control: GenerationRunControl,
+    ): RunOutcome = try {
+        executeRuntimeCommandBody(envelope, control)
+    } finally {
+        claudePSessionAdmissions.forget(envelope.id)
+    }
+
+    private suspend fun executeRuntimeCommandBody(
         envelope: CommandEnvelope<out ChatCommand>,
         control: GenerationRunControl,
     ): RunOutcome {
@@ -3051,6 +3069,241 @@ class ChatService(
         )
     }
 
+    /**
+     * Which Claude P continuation each admitted command owes, for as long as that command runs.
+     *
+     * Process-local, and deliberately so: every *durable* fact about a continuation is in the
+     * message graph, written by the admission transaction. This carries only the decision the run
+     * that is executing was admitted under — see [me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationAdmissions].
+     */
+    private val claudePSessionAdmissions =
+        me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationAdmissions()
+
+    /**
+     * Whether this conversation's own assistant dispatches its model through the Claude P provider.
+     *
+     * Read from the conversation's assistant rather than from a global pointer, and resolved
+     * through the same `findModelById` / `findProvider` pair the generation path uses — a second
+     * way of answering "which provider is this" is how a conversation comes to be treated as a
+     * continuation on one path and as an ordinary generation on another.
+     */
+    private suspend fun dispatchesThroughClaudeP(conversation: Conversation): Boolean {
+        // The one activation point. Everything downstream of this — the barrier, the settlement,
+        // the binding request — is unreachable while it is `false`, so a Claude P dispatch keeps
+        // exactly the `mode: "new"` shape it had before M3-B and no durable record is written.
+        if (!me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationActivation.ENABLED) {
+            return false
+        }
+        val settings = settingsStore.settingsFlow.first()
+        val assistant = settings.getAssistantById(conversation.assistantId) ?: return false
+        val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId) ?: return false
+        return model.findProvider(settings.providers) is
+            me.rerere.ai.provider.ProviderSetting.ClaudeP
+    }
+
+    /**
+     * The role of the message a regenerate targets, read from the committed graph, or `null`.
+     *
+     * Only the two regenerate commands have a target, and both spell it on the same field of the
+     * inner command — reading them separately is how the two forms would come to classify
+     * differently for the same target.
+     */
+    private fun regenerationTargetRole(
+        conversation: Conversation,
+        command: ChatCommand,
+    ): MessageRole? {
+        val targetId = when (command) {
+            is RegenerateCommand -> command.targetMessageId
+            is InterruptRegenerateCommand -> command.regeneration.targetMessageId
+            else -> return null
+        }
+        return conversation.currentMessages.firstOrNull { it.id == targetId }?.role
+    }
+
+    /**
+     * The Claude P decision [envelope] is admitted under, or `null` when this conversation is not a
+     * Claude P one.
+     *
+     * ## The order, and why it is this order
+     *
+     * 1. **Reconcile a stranded start first.** A branch left with an unproven `START_IN_FLIGHT` by a
+     *    process that died can never be planned: the planner reads the start as "a model may be
+     *    running" and refuses every later command on it. The reconciliation supersedes it in its own
+     *    transaction and stops *this* operation, so the user's next attempt is a fresh admission
+     *    against a graph this build can read. Nothing is dispatched here, by construction.
+     * 2. **Then plan.** The decision is computed from the graph the admission transaction is about
+     *    to commit, never from a later reading of it.
+     * 3. **A refusal refuses the admission.** The gate's refusals all mean "no request may be sent
+     *    for this command"; admitting the command anyway would write a durable row that can only be
+     *    failed later, and the user would see the message appear before it was rejected.
+     */
+    private suspend fun claudePAdmissionDecision(
+        envelope: CommandEnvelope<out ChatCommand>,
+        conversation: Conversation,
+        admittedConversation: Conversation,
+    ): me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision? {
+        if (!dispatchesThroughClaudeP(conversation)) return null
+
+        // A command admitted more than once is the same admission. Re-deriving the decision would
+        // read a graph that already carries the barrier this command wrote, and refuse the command
+        // it already admitted.
+        claudePSessionAdmissions.find(envelope.id)?.let { return it }
+
+        val targetRole = regenerationTargetRole(conversation, envelope.command)
+        recoverStrandedStart(conversation, envelope.command, targetRole, envelope.conversationId)
+
+        val decision = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.admission(
+            conversation = admittedConversation,
+            command = envelope.command,
+            targetRole = targetRole,
+        )
+        if (decision is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Refused) {
+            throw me.rerere.rikkahub.data.claudep.ClaudePSessionAdmissionStop(
+                pauseQueue = false,
+                message = "claude_p_continuation_refused:${decision.reason}",
+            )
+        }
+        return claudePSessionAdmissions.record(envelope.id, decision)
+    }
+
+    /**
+     * Supersedes a start this branch holds that **no run in this process owns**, or returns.
+     *
+     * ## Why the live-run question is asked here
+     *
+     * A persisted `START_IN_FLIGHT` says a generation was admitted and has not reached a terminal.
+     * Whether it is *still running* is not a fact about the graph — the graph cannot tell a running
+     * generation from a process that died mid-turn — so it is answered by the runtime, which is the
+     * only thing that knows. When a run really is live the refusal stands untouched: it is correct,
+     * and superseding a running generation's barrier would erase the record that stops a second one
+     * from starting.
+     *
+     * ## Why a failure pauses rather than retries
+     *
+     * A start that cannot be located or superseded means the graph is not one this build wrote.
+     * Dispatching onto it is what the barrier exists to prevent, so the queue stops visibly.
+     */
+    private suspend fun recoverStrandedStart(
+        conversation: Conversation,
+        command: ChatCommand,
+        targetRole: MessageRole?,
+        conversationId: Uuid,
+    ) {
+        val stranded = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+            .staleInFlight(conversation, command, targetRole) ?: return
+        if (runtimes[conversationId]?.isRunLive == true) return
+
+        val settlement = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+            .supersedeStale(conversation, stranded)
+        val recovered = when (settlement) {
+            is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.Commit ->
+                settlement.conversation
+            is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.Refused ->
+                throw me.rerere.rikkahub.data.claudep.ClaudePSessionAdmissionStop
+                    .reconciliationFailed(settlement.reason.name)
+            me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.NothingToWrite ->
+                throw me.rerere.rikkahub.data.claudep.ClaudePSessionAdmissionStop
+                    .reconciliationFailed("nothing_to_write")
+        }
+        val update = conversationRepo.updateConversation(recovered)
+        if (update !is me.rerere.rikkahub.data.repository.ConversationUpdateResult.Updated) {
+            throw me.rerere.rikkahub.data.claudep.ClaudePSessionAdmissionStop
+                .reconciliationFailed("conversation_not_updated")
+        }
+        throw me.rerere.rikkahub.data.claudep.ClaudePSessionAdmissionStop.reconciled()
+    }
+
+    /**
+     * Attaches the run's continuation settlement, immediately before the model is asked anything.
+     *
+     * ## Why this moment
+     *
+     * The barrier is already durable: it was written in the same transaction that admitted the
+     * command, which committed long before this line. What is not yet durable is *who settles it* —
+     * and a run that dispatched without that attachment would end through the plain
+     * `finishFallback`, leaving `START_IN_FLIGHT` on a branch whose generation is over. That is the
+     * one state the gate reads as "a model may be running", so it is the one state this ordering
+     * exists to prevent.
+     *
+     * Throwing here is deliberate and is the fail-closed answer: the caller dispatches after this
+     * returns, so an attachment that could not be made means no request leaves the process.
+     */
+    private fun attachContinuationSettlement(
+        runControl: GenerationRunControl?,
+        decision: me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision,
+    ) {
+        val settlement = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+            .settlementFor(decision) ?: return
+        requireNotNull(runControl) { "claude_p_continuation_requires_a_run_control" }
+        runControl.attachTerminalGraphSettlement(settlement)
+    }
+
+    /**
+     * The binding request this run carries into its generation, or `null` when it carries none.
+     *
+     * An `immediate` request names the branch the Server must resume; a `deferred` one names no
+     * branch at all, because the branch is the variant this generation is about to create. Both
+     * come from the decision the admission produced and are never rebuilt here.
+     */
+    private fun continuationRequestFor(
+        runControl: GenerationRunControl?,
+    ): me.rerere.ai.provider.claudep.ClaudePSessionBindingRequest? =
+        when (val decision = claudePSessionAdmissions.find(runControl?.runId)) {
+            is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Immediate ->
+                decision.request
+
+            is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Deferred ->
+                decision.request
+
+            else -> null
+        }
+
+    /**
+     * [conversation] with this run's continuation terminal written for [terminalState], or `null`
+     * when the run owes a terminal the graph cannot carry.
+     *
+     * ## Why this is applied to the conversation the authority commits
+     *
+     * The record and the command row have to agree about whether the turn ended, and the only way
+     * to make that structural is for both to be written by one transaction — so the terminal is
+     * applied to the very conversation handed to `RuntimeRunAuthority.finish`, not to a copy
+     * persisted beside it.
+     *
+     * ## Why a deferral is not settled here
+     *
+     * A `deferred` run's branch does not exist until its variant is committed, and what it owes
+     * then is a `BIND_PENDING` and the `session.bind` that follows — never a generation terminal.
+     * Writing one here would credit the branch with an outcome the bind has not produced.
+     *
+     * A `null` return is a refusal and must fail the save: a completed turn whose branch cannot be
+     * settled would leave `START_IN_FLIGHT` behind and close the branch forever.
+     */
+    private fun continuationSettled(
+        conversation: Conversation,
+        runControl: GenerationRunControl?,
+        terminalState: me.rerere.rikkahub.service.chat.DurableCommandState,
+    ): Conversation? {
+        val decision = claudePSessionAdmissions.find(runControl?.runId) ?: return conversation
+        if (decision is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Deferred) {
+            return conversation
+        }
+        val terminal = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+            .terminalFor(terminalState) ?: return conversation
+        return when (
+            val settlement = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+                .settle(conversation, decision, terminal)
+        ) {
+            is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.Commit ->
+                settlement.conversation
+
+            me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.NothingToWrite ->
+                conversation
+
+            is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.Refused ->
+                null
+        }
+    }
+
     private val runtimeAdmissionGraphProvider =
         me.rerere.rikkahub.service.chat.RuntimeCommandAdmissionGraphProvider {
             envelope, authoritySubjectId ->
@@ -3078,8 +3331,23 @@ class ChatService(
                     conversation
                 }
             }
+            // The barrier is written here, into the conversation the admission transaction is
+            // about to persist — so the command row and the `START_IN_FLIGHT` record commit
+            // together or not at all. `null` means the barrier could not be placed where the
+            // resolver reads it, and admitting the command anyway would dispatch a generation
+            // whose branch this build cannot account for.
+            val decision = claudePAdmissionDecision(envelope, conversation, admittedConversation)
+            val gatedConversation = if (decision == null) {
+                admittedConversation
+            } else {
+                me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.barricade(
+                    conversation = admittedConversation,
+                    decision = decision,
+                    anchorMessageId = anchorId.toString(),
+                ) ?: throw IllegalStateException("claude_p_continuation_barrier_not_writable")
+            }
             me.rerere.rikkahub.service.chat.RuntimeCommandAdmissionGraph(
-                conversation = admittedConversation,
+                conversation = gatedConversation,
                 scope = me.rerere.rikkahub.data.authority.source.ConversationSourceScopeResolver
                     .forCommand(lineage.assistantIdSnapshot.toString(), authoritySubjectId),
                 branchAnchorMessageId = anchorId,
@@ -3567,6 +3835,34 @@ class ChatService(
                 }
             }
             agentTiming?.mark(AgentTimingEventKind.TOOL_SURFACE_STARTED)
+            // The continuation decision this run was admitted under, if any. Its settlement is
+            // attached here — after the barrier has been durable for as long as this run has
+            // existed, and immediately before the request that could start a session. Nothing
+            // above this line reaches the network, so "attached before dispatch" is a property of
+            // the order rather than of a check.
+            val continuationDecision = claudePSessionAdmissions.find(runControl?.runId)
+            if (me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationActivation.ENABLED &&
+                resolvedProvider is me.rerere.ai.provider.ProviderSetting.ClaudeP
+            ) {
+                // Every Claude P model dispatch must carry the decision its *admission* produced.
+                // A dispatch without one is a generation the gate never saw, and one such path
+                // exists: the emergency commands (`InterruptCommand` and
+                // `InterruptRegenerateCommand`) both start a model generation and both bypass
+                // `persistDurable`, so neither writes a barrier. Dispatching those with no binding
+                // request would send `mode: "new"` for a branch that may already hold a session —
+                // starting a second one, silently, which is exactly the re-identification this
+                // whole layer exists to prevent. Failing here costs a visible error; the
+                // alternative costs a session nobody can tell was duplicated.
+                require(
+                    continuationDecision is
+                        me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Immediate ||
+                        continuationDecision is
+                        me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Deferred,
+                ) { "claude_p_continuation_decision_missing" }
+            }
+            if (continuationDecision != null) {
+                attachContinuationSettlement(runControl, continuationDecision)
+            }
             generationHandler.generateText(
                 settings = settings,
                 model = model,
@@ -3592,6 +3888,12 @@ class ChatService(
                         // refusal rather than a silently substituted origin.
                         callOrigin = callOrigin,
                     ),
+                // The branch binding this dispatch carries, resolved by the admission that wrote
+                // the barrier. `null` is not "the app tried and failed" here: it is the answer for
+                // every conversation that does not dispatch through Claude P, and for a Claude P
+                // command whose admission refused to produce a decision — in which case no
+                // generation is running under it in the first place.
+                claudePSessionBindingRequest = continuationRequestFor(runControl),
                 // Read once per call so the surface that wrote the addendum (Telegram bot,
                 // anything else) gets its runtime context into the system prompt without
                 // having to plumb a parameter all the way through sendMessage. Returns null
@@ -4320,8 +4622,19 @@ class ChatService(
                         if (authority != null && !waitingAuthorityCommitted) {
                             val assistantMessage = final.currentMessages
                                 .lastOrNull { message -> message.role == MessageRole.ASSISTANT }
+                            // A model or protocol failure closes the branch rather than leaving it
+                            // unproven: the turn did not complete, and `FAILED_CLOSED` is the
+                            // absorbing state that stops the next turn from resuming a session the
+                            // Server may have half-applied.
+                            val settledFinal = requireNotNull(
+                                continuationSettled(
+                                    conversation = final,
+                                    runControl = runControl,
+                                    terminalState = me.rerere.rikkahub.service.chat.DurableCommandState.FAILED,
+                                ),
+                            ) { "claude_p_continuation_settlement_refused" }
                             authority.finish(
-                                conversation = final,
+                                conversation = settledFinal,
                                 terminalState = me.rerere.rikkahub.service.chat.DurableCommandState.FAILED,
                                 kind = me.rerere.rikkahub.service.chat.RuntimeAuthorityTerminalKind
                                     .GENERATION_FINAL_SAVED,
@@ -4331,8 +4644,8 @@ class ChatService(
                                 sourceInvalidationMode = persistenceSourceInvalidationMode,
                                 occurredAtMs = persistenceSourceInvalidationNowMs,
                             )
-                            updateConversation(conversationId, final)
-                            conversationRepo.refreshSearchProjection(final)
+                            updateConversation(conversationId, settledFinal)
+                            conversationRepo.refreshSearchProjection(settledFinal)
                         } else if (!waitingAuthorityCommitted) {
                             saveConversation(
                                 conversationId = conversationId,
@@ -4367,9 +4680,19 @@ class ChatService(
                         val assistantMessage = finalConversation.currentMessages
                             .lastOrNull { message -> message.role == MessageRole.ASSISTANT }
                             ?: error("final_assistant_message_missing")
+                        // The continuation terminal rides in the same transaction as the command's
+                        // terminal: a turn that completed proves the branch's binding, and the two
+                        // facts commit together or not at all.
+                        val settledConversation = requireNotNull(
+                            continuationSettled(
+                                conversation = finalConversation,
+                                runControl = runControl,
+                                terminalState = me.rerere.rikkahub.service.chat.DurableCommandState.COMPLETED,
+                            ),
+                        ) { "claude_p_continuation_settlement_refused" }
                         try {
                             authority.finish(
-                                conversation = finalConversation,
+                                conversation = settledConversation,
                                 terminalState = me.rerere.rikkahub.service.chat.DurableCommandState.COMPLETED,
                                 kind = me.rerere.rikkahub.service.chat.RuntimeAuthorityTerminalKind
                                     .GENERATION_FINAL_SAVED,
@@ -4378,8 +4701,8 @@ class ChatService(
                                 sourceInvalidationMode = persistenceSourceInvalidationMode,
                                 occurredAtMs = persistenceSourceInvalidationNowMs,
                             )
-                            updateConversation(conversationId, finalConversation)
-                            conversationRepo.refreshSearchProjection(finalConversation)
+                            updateConversation(conversationId, settledConversation)
+                            conversationRepo.refreshSearchProjection(settledConversation)
                         } catch (saveError: Throwable) {
                             if (!authority.isTerminalCommitted()) {
                                 runCatching { authority.finishAfterFinalSaveFailure() }

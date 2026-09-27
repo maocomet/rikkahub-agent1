@@ -271,6 +271,27 @@ class ConversationRuntime(
         }
     }
 
+    /**
+     * Whether a command is executing in this runtime **right now**.
+     *
+     * ## Why this is the answer to "is the branch's model still running"
+     *
+     * A persisted `START_IN_FLIGHT` says a generation was admitted and has not reached a terminal.
+     * Whether that generation is *still running* is not a fact about the graph — it is a fact about
+     * this process, and this runtime is where it lives: one runtime per conversation, one
+     * [activeRun] at a time, cleared when the run's job completes.
+     *
+     * ## Why the granularity is the conversation and not the branch
+     *
+     * A runtime serves one conversation and runs at most one command at a time, so "a run is live"
+     * is already the finest distinction the *runtime* can draw. It is also the one concurrency is
+     * actually enforced at. A caller that reconciles only when this is `false` therefore errs
+     * towards leaving a branch alone, which is the fail-closed direction: a stranded start that is
+     * not reconciled keeps its refusal, while a start that is wrongly reconciled would dispatch a
+     * second generation for a branch that may already have one.
+     */
+    val isRunLive: Boolean get() = activeRun != null
+
     /** Work that requires this Runtime instance to stay paired with its ConversationSession. */
     val hasRetainedWork: Boolean
         get() = activeRun != null || pendingNormalIndex.size > 0 || acceptedCommands.isNotEmpty() ||
@@ -551,6 +572,19 @@ class ConversationRuntime(
                         admitted.result
                     },
                     onFailure = {
+                        // A Claude P admission that stopped because a stranded start could not be
+                        // reconciled leaves the graph claiming a model may be running on a branch
+                        // no run owns. Continuing would dispatch onto that state, so the runtime
+                        // pauses visibly instead of retrying into it. A stop that *reconciled* the
+                        // branch carries `pauseQueue = false`: it repaired the graph and refused
+                        // this one command, which is a recovered state and not a broken one.
+                        if (it is me.rerere.rikkahub.data.claudep.ClaudePSessionAdmissionStop &&
+                            it.pauseQueue
+                        ) {
+                            queuePaused = true
+                            _runtimeState.value = RuntimeState.Paused
+                            refreshQueueStatus()
+                        }
                         DurableSubmitResult.InvalidPayload(it.message ?: "Authority admission failed")
                     },
                 )

@@ -10,6 +10,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.service.chat.ChatCommand
+import me.rerere.rikkahub.service.chat.GenerationTerminalGraphSettlement
 import me.rerere.rikkahub.service.chat.ResumeAfterApprovalCommand
 
 /**
@@ -940,6 +941,167 @@ object ClaudePSessionContinuationGate {
         null -> Settlement.NothingToWrite
         is Obligation.Immediate -> settleImmediate(conversation, obligation, terminal)
         is Obligation.Deferred -> Settlement.Refused(Reason.DEFERRED_SETTLES_THROUGH_BIND)
+    }
+
+    /**
+     * The conversation the admission transaction must commit, with this run's barrier attached, or
+     * `null` when the barrier cannot be written where it belongs.
+     *
+     * ## Why the caller gets a conversation rather than a record
+     *
+     * The record is only half of the write. *Which message carries it* is the other half, and it is
+     * a fact about the graph rather than about the run: for a send the message is the one the
+     * admission transaction is creating, for a regenerate it is the anchor the command already
+     * names. Both are [anchorMessageId], and the caller that owns the transaction is the only party
+     * that knows it has appended the first one.
+     *
+     * `null` is a refusal and not a no-op, because the two cases must not be the same answer:
+     *
+     * - a [Decision.Immediate] whose `admissionRecord` is `null` owes **no** write — the barrier is
+     *   already durable and this run continues the generation it belongs to — and returns the
+     *   conversation unchanged;
+     * - a decision that names a record the graph cannot accept returns `null`, which must stop the
+     *   admission rather than admit a command whose barrier was never written.
+     *
+     * The anchor must be the **selected** variant of its node. An unselected variant is a message
+     * the user is not looking at, so a record written there would sit on a branch that does not
+     * exist — and the resolver, which reads only selected variants, would never see it.
+     */
+    fun barricade(
+        conversation: Conversation,
+        decision: Decision,
+        anchorMessageId: String,
+    ): Conversation? {
+        val immediate = decision as? Decision.Immediate ?: return conversation
+        val record = immediate.admissionRecord ?: return conversation
+        val onSelectedPath = conversation.messageNodes.any { node ->
+            node.messages.getOrNull(node.selectIndex)?.id?.toString() == anchorMessageId
+        }
+        if (!onSelectedPath) return null
+        return attach(conversation, anchorMessageId, record)
+    }
+
+    /**
+     * The run-local obligation to settle when [decision]'s run ends **without a result assistant
+     * message**, or `null` when the run owes no graph write.
+     *
+     * ## Why this is built from the decision and not from the outcome
+     *
+     * It is attached when the barrier is — long before anything is known about how the run will
+     * end — so it cannot capture an outcome. It is handed the authority's [DurableCommandState]
+     * when it is finally called, and maps it through [terminalFor] exactly once, in the one place
+     * that mapping lives. That is what keeps a cancellation from being reported as a failure on one
+     * path and an interruption on another.
+     *
+     * A `deferred` obligation produces no settlement at all, and that is not an omission: a
+     * deferred run owes nothing until it commits the variant that creates its branch, and the write
+     * it owes then is the `BIND_PENDING` of [deferredPending], not a generation terminal. A run
+     * that ends without producing that variant has no branch to settle, so `null` — which routes
+     * the run to the unchanged `finishFallback` — is the honest answer.
+     */
+    fun settlementFor(decision: Decision): GenerationTerminalGraphSettlement? =
+        when (decision) {
+            is Decision.Immediate -> GenerationTerminalGraphSettlement { conversation, state ->
+                val terminal = terminalFor(state)
+                    ?: return@GenerationTerminalGraphSettlement null
+                val settlement = settleImmediate(
+                    conversation = conversation,
+                    obligation = Obligation.Immediate(
+                        assistantId = decision.assistantId,
+                        branchId = decision.branchId,
+                        revision = decision.revision,
+                    ),
+                    terminal = terminal,
+                )
+                (settlement as? Settlement.Commit)?.conversation
+            }
+
+            is Decision.Deferred,
+            is Decision.Refused,
+            Decision.NotModelGeneration,
+                -> null
+        }
+
+    /**
+     * The unproven start this branch holds, when [command] is refused **because** of it, or `null`.
+     *
+     * ## Why the planner is asked first
+     *
+     * `START_IN_FLIGHT` means "a model may be running on this branch". That is exactly what
+     * [Reason.CONTINUATION_BLOCKED] reports, and this function refines *which* blocked state it was
+     * — so the refinement is anchored to the refusal rather than to a second reading of the graph
+     * that could disagree with the planner about whether a generation was permitted at all.
+     *
+     * ## Why the other blocked states are not returned
+     *
+     * An outstanding `BIND_PENDING`, a settled `INTERRUPTED` and an absorbing `FAILED_CLOSED` are
+     * all blocked states, and none of them is recoverable by reconciliation. `BIND_PENDING` waits
+     * for an answer that may still arrive, `INTERRUPTED` waits for a user-triggered replay of a
+     * bind rather than of a generation, and `FAILED_CLOSED` does not recover. Reporting any of them
+     * as a stranded start would rewrite a state that is still correct into one that is not.
+     */
+    fun staleInFlight(
+        conversation: Conversation,
+        command: ChatCommand,
+        targetRole: me.rerere.ai.core.MessageRole?,
+    ): Obligation.Immediate? {
+        val plan = ClaudePSessionBranchPlanner.plan(conversation, command, targetRole)
+        if (plan !is ClaudePSessionContinuationPlan.Refused) return null
+        if (plan.reason != ClaudePSessionContinuationPlan.Reason.CONTINUATION_BLOCKED) return null
+
+        val candidate = ClaudePSessionBranchPlanner.graphAfterCommand(conversation, command)
+        val branchId = when (val described = ClaudePSessionBranchPlanner.branchIdOf(candidate.messageNodes)) {
+            is ClaudePSessionBranchPlanner.Branch.Known -> described.id
+            else -> return null
+        }
+        val resolved = ClaudePSessionContinuationResolver.resolve(candidate, branchId)
+        if (resolved !is ClaudePSessionContinuationResolution.Resolved) return null
+        if (resolved.state != ClaudePSessionContinuationState.START_IN_FLIGHT) return null
+        return Obligation.Immediate(
+            assistantId = resolved.assistantId,
+            branchId = resolved.branchId,
+            revision = resolved.revision,
+        )
+    }
+
+    /**
+     * [conversation] with the stranded start [stale] describes superseded by [Terminal.UNPROVEN],
+     * **in the barrier's own slot**.
+     *
+     * ## Why this is not [settleImmediate]
+     *
+     * [settleImmediate] prefers the newest message the branch gained, which is right after a
+     * dispatch and wrong here: nothing was dispatched, so the newest message is the previous turn's
+     * answer, and a terminal written there would fold *before* the barrier it is meant to replace —
+     * a revision regression the transition table refuses.
+     *
+     * The barrier's own message is therefore located exactly and replaced. Because [attach] replaces
+     * rather than appends, the path afterwards shows a lone `INTERRUPTED` at the barrier's revision,
+     * which is what "the start never completed and nothing can be proven about it" looks like on
+     * disk. The revision is deliberately **not** advanced: the terminal supersedes the start in its
+     * slot, exactly as the rollback case of [settleImmediate] does.
+     *
+     * A refusal is not a no-op: the caller must stop and pause, because a branch whose barrier
+     * cannot be located is a graph this build cannot reason about, and dispatching on it is what the
+     * whole barrier exists to prevent.
+     */
+    fun supersedeStale(
+        conversation: Conversation,
+        stale: Obligation.Immediate,
+    ): Settlement {
+        val barrier = barrierMessageIds(conversation, stale)
+        if (barrier.size != 1) {
+            return Settlement.Refused(Reason.BARRIER_NOT_UNIQUELY_LOCATED)
+        }
+        val record = immediateTerminal(
+            assistantId = stale.assistantId,
+            branchId = stale.branchId,
+            boundRevision = stale.revision,
+            terminal = Terminal.UNPROVEN,
+        )
+        val settled = attach(conversation, barrier.single(), record)
+            ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
+        return validated(settled, stale, record)
     }
 
     /**
