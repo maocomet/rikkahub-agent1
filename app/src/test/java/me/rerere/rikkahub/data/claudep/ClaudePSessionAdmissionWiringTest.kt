@@ -456,6 +456,90 @@ class ClaudePSessionAdmissionWiringTest {
         )
     }
 
+    // ---------------------------------------------------------------------------------------
+    // The consequence of a terminal, asserted rather than assumed
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * **A turn that is cancelled or fails closes the branch to the next ordinary message.**
+     *
+     * This is stated as a test because it is a product-level consequence that is easy to miss when
+     * reading the state machine one state at a time. A send appends its node at `selectIndex == 0`
+     * and therefore does **not** change the branch identity, so the next message a user types lands
+     * on the very branch the terminal just closed — and `INTERRUPTED` and `FAILED_CLOSED` both
+     * answer `allowsNewGeneration = false`.
+     *
+     * The design says so on purpose: a cancelled or failed turn leaves the Server potentially
+     * holding something this device cannot prove, and the permissive reading of "we could not find
+     * out" is precisely what buys a second Claude session for a branch that may already have one.
+     * Continuing past it is meant to be a *new* branch — a regenerate or a fork.
+     *
+     * It is recorded here as a finding, not as a defect this layer may fix on its own: changing it
+     * means changing what a terminal means, which is the state machine's decision and not a wiring
+     * one. It is also why `auto` cannot be turned on until the product owner has confirmed that a
+     * closed branch after a cancel is the intended behaviour.
+     */
+    @Test
+    fun `a cancelled or failed turn closes the branch to the next ordinary message`() {
+        for (terminal in listOf(
+            ClaudePSessionContinuationGate.Terminal.UNPROVEN,
+            ClaudePSessionContinuationGate.Terminal.FAILED,
+        )) {
+            val (base, branch) = stranded()
+            val settled = committed(
+                ClaudePSessionContinuationGate.settleImmediate(
+                    conversation = base,
+                    obligation = ClaudePSessionContinuationGate.Obligation.Immediate(
+                        assistantId = assistant,
+                        branchId = branch,
+                        revision = 1L,
+                    ),
+                    terminal = terminal,
+                ),
+            )
+
+            // The branch identity is unchanged by a send, which is why the next message lands here.
+            assertEquals(branch, branchId(settled.messageNodes))
+
+            val decision = ClaudePSessionContinuationGate.admission(settled, sendCommand(), targetRole = null)
+            assertTrue(
+                "$terminal should close the branch, got $decision",
+                decision is ClaudePSessionContinuationGate.Decision.Refused,
+            )
+            assertEquals(
+                ClaudePSessionContinuationGate.Reason.CONTINUATION_BLOCKED,
+                (decision as ClaudePSessionContinuationGate.Decision.Refused).reason,
+            )
+        }
+    }
+
+    /** A completed turn is the one terminal that does **not** close anything. */
+    @Test
+    fun `a completed turn leaves the branch continuable`() {
+        val (base, branch) = stranded()
+        val settled = committed(
+            ClaudePSessionContinuationGate.settleImmediate(
+                conversation = base,
+                obligation = ClaudePSessionContinuationGate.Obligation.Immediate(
+                    assistantId = assistant,
+                    branchId = branch,
+                    revision = 1L,
+                ),
+                terminal = ClaudePSessionContinuationGate.Terminal.SUCCEEDED,
+            ),
+        )
+        assertEquals(
+            State.BOUND,
+            (resolve(settled, branch) as ClaudePSessionContinuationResolution.Resolved).state,
+        )
+
+        val decision = ClaudePSessionContinuationGate.admission(settled, sendCommand(), targetRole = null)
+        assertTrue(
+            "a bound branch admits the next turn, got $decision",
+            decision is ClaudePSessionContinuationGate.Decision.Immediate,
+        )
+    }
+
     private fun <T : Any> present(value: T?): T {
         assertNotNull(value)
         return value!!

@@ -1847,6 +1847,15 @@ class ChatService(
             return RunOutcome.Rejected("durable_regeneration_recovery_unavailable")
         }
 
+        // A named refusal, beside the emergency-stop and second-user policy blocks above, and for
+        // the same reason: a command that may not run has to say so as a result rather than fail as
+        // an exception. This is where the Claude P continuation invariant is enforced — every model
+        // dispatch either carries the decision its admission produced, or is refused by name here.
+        claudePDispatchRefusal(envelope)?.let { refusal ->
+            Log.w(TAG, "Claude P continuation refused a dispatch: ${refusal.code}")
+            return RunOutcome.Rejected(refusal.code)
+        }
+
         val acceptedSystemAssistantTarget = if (
             envelope.origin == CommandOrigin.SYSTEM_ASSISTANT && command !is StopCommand
         ) {
@@ -3214,6 +3223,36 @@ class ChatService(
     }
 
     /**
+     * Why this command may not dispatch a Claude P generation, or `null` when it may.
+     *
+     * ## Why the check is here and not at the provider call
+     *
+     * This is the last point at which a refusal is still a **command result**: the caller returns
+     * `RunOutcome.Rejected(code)`, the runtime records it as the command's outcome, and the user
+     * sees a named reason with nothing dispatched. A check one layer down would have to fail as an
+     * exception on a path the user reached through ordinary use, which is exactly the shape the
+     * brief forbids.
+     *
+     * The rule itself — which command shapes dispatch a model, and what a decision permits — is
+     * [me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationDispatch]'s. Nothing is re-decided
+     * here: this only gathers the three inputs it asks for.
+     */
+    private suspend fun claudePDispatchRefusal(
+        envelope: CommandEnvelope<out ChatCommand>,
+    ): me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationDispatch.Refusal? {
+        if (!me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationActivation.ENABLED) {
+            return null
+        }
+        val conversation = conversationRepo.getConversationById(envelope.conversationId) ?: return null
+        if (!dispatchesThroughClaudeP(conversation)) return null
+        return me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationDispatch.refusalFor(
+            command = envelope.command,
+            targetRole = regenerationTargetRole(conversation, envelope.command),
+            decision = claudePSessionAdmissions.find(envelope.id),
+        )
+    }
+
+    /**
      * Attaches the run's continuation settlement, immediately before the model is asked anything.
      *
      * ## Why this moment
@@ -3844,21 +3883,26 @@ class ChatService(
             if (me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationActivation.ENABLED &&
                 resolvedProvider is me.rerere.ai.provider.ProviderSetting.ClaudeP
             ) {
-                // Every Claude P model dispatch must carry the decision its *admission* produced.
-                // A dispatch without one is a generation the gate never saw, and one such path
-                // exists: the emergency commands (`InterruptCommand` and
-                // `InterruptRegenerateCommand`) both start a model generation and both bypass
-                // `persistDurable`, so neither writes a barrier. Dispatching those with no binding
-                // request would send `mode: "new"` for a branch that may already hold a session —
-                // starting a second one, silently, which is exactly the re-identification this
-                // whole layer exists to prevent. Failing here costs a visible error; the
-                // alternative costs a session nobody can tell was duplicated.
-                require(
-                    continuationDecision is
-                        me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Immediate ||
-                        continuationDecision is
-                        me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Deferred,
-                ) { "claude_p_continuation_decision_missing" }
+                // **Backstop, not the mechanism.** `claudePDispatchRefusal` already refuses every
+                // Claude P model dispatch that carries no decision, so reaching here without one
+                // means a dispatch site was added that bypasses it. The failure is a named domain
+                // refusal with a code rather than an assertion, so whoever sees it has something to
+                // act on — and no request has left the process either way.
+                val refusal = when (continuationDecision) {
+                    null -> me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationDispatch
+                        .Refusal.ADMISSION_MISSING
+
+                    is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Immediate,
+                    is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Deferred,
+                        -> null
+
+                    else -> me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationDispatch
+                        .Refusal.NOT_A_GENERATION
+                }
+                if (refusal != null) {
+                    throw me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationDispatch
+                        .Refused(refusal)
+                }
             }
             if (continuationDecision != null) {
                 attachContinuationSettlement(runControl, continuationDecision)
