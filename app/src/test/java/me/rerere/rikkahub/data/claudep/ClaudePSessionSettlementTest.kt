@@ -16,6 +16,7 @@ import me.rerere.rikkahub.service.chat.ToolApprovalCommand
 import me.rerere.rikkahub.service.chat.ToolDecision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -235,10 +236,90 @@ class ClaudePSessionSettlementTest {
 
         val read = resolve(settled, branch) as ClaudePSessionContinuationResolution.Resolved
         assertEquals(State.FAILED_CLOSED, read.state)
-        assertEquals(2L, read.revision)
+        // The terminal keeps the barrier's own revision: the record is superseded in its slot, not
+        // written after it. A first turn therefore shows a lone `FAILED_CLOSED(1)`.
+        assertEquals(1L, read.revision)
         assertFalse(read.allowsNewGeneration)
         // One record, not two: the barrier was superseded, not shadowed.
         assertEquals(1, settled.messageNodes.size)
+    }
+
+    /**
+     * The case the table change exists for: a **later** turn on an already-bound branch, ending
+     * with nothing to write to. Its barrier sits after the previous turn's `BOUND`, so superseding
+     * is the only option — and with the compaction it is legal and contiguous, leaving
+     * `BOUND(n) -> FAILED_CLOSED(n+1)`.
+     */
+    @Test
+    fun `a bound branch closes when a later turn ends with no message`() {
+        val branch = branchId(emptyList())
+        val nodes = listOf(
+            node(2, listOf(message(2, continuation = record(State.BOUND, 2, branch)))),
+            node(3, listOf(message(3, continuation = record(State.START_IN_FLIGHT, 3, branch)))),
+        )
+
+        val settled = committed(
+            ClaudePSessionContinuationGate.settleImmediate(
+                conversation(nodes),
+                ClaudePSessionContinuationGate.Obligation.Immediate(assistant, branch, 3L),
+                ClaudePSessionContinuationGate.Terminal.FAILED,
+            ),
+        )
+
+        val read = resolve(settled, branch) as ClaudePSessionContinuationResolution.Resolved
+        assertEquals(State.FAILED_CLOSED, read.state)
+        // Contiguous with the bound record it follows: 2, then 3 — never a jump to 4.
+        assertEquals(3L, read.revision)
+        assertFalse(read.allowsNewGeneration)
+    }
+
+    /** The same for a cancellation or a dropped connection. */
+    @Test
+    fun `a bound branch is interrupted when a later turn ends with no message`() {
+        val branch = branchId(emptyList())
+        val nodes = listOf(
+            node(2, listOf(message(2, continuation = record(State.BOUND, 2, branch)))),
+            node(3, listOf(message(3, continuation = record(State.START_IN_FLIGHT, 3, branch)))),
+        )
+
+        val settled = committed(
+            ClaudePSessionContinuationGate.settleImmediate(
+                conversation(nodes),
+                ClaudePSessionContinuationGate.Obligation.Immediate(assistant, branch, 3L),
+                ClaudePSessionContinuationGate.Terminal.UNPROVEN,
+            ),
+        )
+
+        val read = resolve(settled, branch) as ClaudePSessionContinuationResolution.Resolved
+        assertEquals(State.INTERRUPTED, read.state)
+        assertEquals(3L, read.revision)
+        assertFalse(read.allowsNewGeneration)
+    }
+
+    /**
+     * The one thing an unproven outcome must never do. Whatever the graph looks like, a settled
+     * `INTERRUPTED` or `FAILED_CLOSED` branch does not read back as resumable — "we could not find
+     * out" is not "it is still bound".
+     */
+    @Test
+    fun `no terminal ever settles back to bound`() {
+        val (carried, branch) = barrierOnlyTurn()
+
+        for (terminal in listOf(
+            ClaudePSessionContinuationGate.Terminal.FAILED,
+            ClaudePSessionContinuationGate.Terminal.UNPROVEN,
+        )) {
+            val settled = committed(
+                ClaudePSessionContinuationGate.settleImmediate(
+                    carried,
+                    ClaudePSessionContinuationGate.Obligation.Immediate(assistant, branch, 1L),
+                    terminal,
+                ),
+            )
+            val read = resolve(settled, branch) as ClaudePSessionContinuationResolution.Resolved
+            assertNotEquals(State.BOUND, read.state)
+            assertFalse(read.allowsNewGeneration)
+        }
     }
 
     /**
@@ -332,18 +413,18 @@ class ClaudePSessionSettlementTest {
     }
 
     /**
-     * A supersede the transition table refuses is refused here too, and this is the reachable case:
-     * a *later* turn's barrier sits after an earlier turn's `BOUND`, and the table permits `BOUND`
-     * to be followed only by a start. Writing the terminal anyway would leave a record no reader
-     * can resolve, which is worse than leaving the branch blocked — blocked is visible.
+     * The table still has limits, and they are the ones that matter: an illegal *step* is refused
+     * here rather than written, because a record no reader can resolve is worse than none.
+     *
+     * `BOUND -> BIND_PENDING` is the live example — a bound branch does not acquire a bind it never
+     * asked for — and the same check is what would refuse a revision gap or a regression.
      */
     @Test
     fun `a supersede the transition table refuses is refused, not written`() {
         val branch = branchId(emptyList())
         val nodes = listOf(
-            // Turn one settled: a lone bound record.
-            node(2, listOf(message(2, continuation = record(State.BOUND, 2, branch)))),
-            // Turn two's barrier, with nothing after it.
+            // A branch that already failed closed, and a barrier after it.
+            node(2, listOf(message(2, continuation = record(State.FAILED_CLOSED, 2, branch, )))),
             node(3, listOf(message(3, continuation = record(State.START_IN_FLIGHT, 3, branch)))),
         )
 
@@ -358,6 +439,33 @@ class ClaudePSessionSettlementTest {
                 ClaudePSessionContinuationGate.Reason.SETTLEMENT_NOT_READABLE,
             ),
             settlement,
+        )
+    }
+
+    /**
+     * A general revision gap is still a gap. The compaction does not relax the contiguity rule — it
+     * only lets a terminal occupy the slot its own barrier vacated, which keeps the chain
+     * contiguous rather than skipping a step.
+     */
+    @Test
+    fun `a supersede that would leave a revision gap is refused`() {
+        val branch = branchId(emptyList())
+        val nodes = listOf(
+            node(2, listOf(message(2, continuation = record(State.BOUND, 1, branch)))),
+            // Revision 5 after revision 1: the barrier is real, but the chain it belongs to has a
+            // hole in it, so the terminal would land on a path no writer produces.
+            node(3, listOf(message(3, continuation = record(State.START_IN_FLIGHT, 5, branch)))),
+        )
+
+        assertEquals(
+            ClaudePSessionContinuationGate.Settlement.Refused(
+                ClaudePSessionContinuationGate.Reason.SETTLEMENT_NOT_READABLE,
+            ),
+            ClaudePSessionContinuationGate.settleImmediate(
+                conversation(nodes),
+                ClaudePSessionContinuationGate.Obligation.Immediate(assistant, branch, 5L),
+                ClaudePSessionContinuationGate.Terminal.FAILED,
+            ),
         )
     }
 

@@ -324,6 +324,7 @@ object ClaudePSessionContinuationTransitions {
      * | [BIND_PENDING] | [FAILED_CLOSED] | it answered `conflict`/`candidate_unavailable`/`refused`, or was malformed |
      * | [BIND_PENDING] | [INTERRUPTED] | the connection dropped before any answer arrived |
      * | [BOUND] | [START_IN_FLIGHT] | the next user turn on the same branch |
+     * | [BOUND] | [FAILED_CLOSED] / [INTERRUPTED] | that turn ended with no message to write to, superseding its own barrier |
      * | [INTERRUPTED] | [BIND_PENDING] | a bind replay, carrying the same generation id |
      *
      * Everything else is illegal. Two of those refusals carry most of the design:
@@ -373,10 +374,24 @@ object ClaudePSessionContinuationTransitions {
         ClaudePSessionContinuationState.BOUND -> when (next) {
             ClaudePSessionContinuationState.START_IN_FLIGHT -> next
 
-            ClaudePSessionContinuationState.BOUND,
-            ClaudePSessionContinuationState.BIND_PENDING,
+            // A later turn on a bound branch can end without producing anything: the generation
+            // failed, the user cancelled, or the connection dropped before an assistant message
+            // existed. The barrier for that turn is then the last record on the path with nowhere
+            // after it to write a terminal, so the terminal **supersedes it in the same slot** —
+            // and the observable path is `BOUND(n) -> FAILED_CLOSED(n+1)`, contiguous because the
+            // barrier's revision was already n+1.
+            //
+            // These are the only two additions, and the line they do not cross matters: a bound
+            // branch is never returned to `BOUND` by an unproven outcome. Treating "we could not
+            // find out" as "it is still bound" is the permissive reading this whole layer exists to
+            // refuse — it would resume a branch whose last turn may have left the Server holding
+            // something else.
             ClaudePSessionContinuationState.FAILED_CLOSED,
             ClaudePSessionContinuationState.INTERRUPTED,
+                -> next
+
+            ClaudePSessionContinuationState.BOUND,
+            ClaudePSessionContinuationState.BIND_PENDING,
                 -> null
         }
 

@@ -242,6 +242,37 @@ class ClaudePSessionContinuationTest {
     }
 
     /**
+     * A later turn on a bound branch can end with no message to write a terminal to — the
+     * generation failed after dispatch, the user cancelled, the connection dropped. Its barrier is
+     * then the last record with nowhere after it, so the terminal supersedes it **in its own
+     * slot**, and the observable path is contiguous: the barrier's revision was already `n + 1`.
+     */
+    @Test
+    fun `a bound branch closes when a later turn ends with nothing to write to`() {
+        assertEquals(closed, resolved(record(bound, 2), record(closed, 3)).state)
+        assertEquals(interrupted, resolved(record(bound, 2), record(interrupted, 3)).state)
+    }
+
+    /**
+     * The two additions, and the line they must not cross. A bound branch is **never** returned to
+     * `BOUND` by an outcome that is not a completed turn, and it never acquires a pending bind it
+     * did not ask for: "we could not find out" is not "it is still bound".
+     */
+    @Test
+    fun `a bound branch never returns to bound or to a pending bind`() {
+        assertEquals(Conflict.ILLEGAL_TRANSITION, conflicted(record(bound, 2), record(bound, 3)))
+        assertEquals(
+            Conflict.ILLEGAL_TRANSITION,
+            // A pending bind is only a well-shaped record when it carries the generation id a
+            // replay would re-send; without one it is refused earlier, for a different reason.
+            conflicted(record(bound, 2), record(pending, 3, generationId = "gen-1")),
+        )
+        // And nothing recovers out of a closed or interrupted branch either.
+        assertEquals(Conflict.ILLEGAL_TRANSITION, conflicted(record(closed, 2), record(bound, 3)))
+        assertEquals(Conflict.ILLEGAL_TRANSITION, conflicted(record(interrupted, 2), record(bound, 3)))
+    }
+
+    /**
      * Every writer advances the revision by exactly one per record, so a step with nothing on it
      * means a record was lost — a half-applied rollback, or a restore from a partial backup. The
      * fail-closed reading is to refuse the branch rather than to resume across the hole.

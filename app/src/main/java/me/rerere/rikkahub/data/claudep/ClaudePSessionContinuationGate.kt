@@ -789,25 +789,27 @@ object ClaudePSessionContinuationGate {
         obligation: Obligation.Immediate,
         terminal: Terminal,
     ): Settlement {
-        val record = immediateTerminal(
-            assistantId = obligation.assistantId,
-            branchId = obligation.branchId,
-            boundRevision = obligation.revision + 1L,
-            terminal = terminal,
-        )
-
         // Where a terminal may lawfully go, in order of preference:
         //
         // 1. the newest message this branch gained — the assistant answer a completed turn
-        //    produced, or any message added after the barrier;
-        // 2. failing that, the barrier's own message, **superseded** — which is only legal when the
-        //    barrier is the last record on the path, and which the fold decides rather than this
-        //    function.
+        //    produced, or any message added after the barrier. The terminal takes the next revision,
+        //    so the path reads start then terminal.
+        // 2. failing that, the barrier's own message, **superseded in its own slot**. The terminal
+        //    keeps the barrier's revision rather than taking the next one, so the path reads as if
+        //    the start had never been there at all — which is what makes `BOUND(n) ->
+        //    FAILED_CLOSED(n+1)` contiguous, and what leaves a first turn showing a lone
+        //    `FAILED_CLOSED(1)` or `INTERRUPTED(1)`.
         //
         // A success has no second option. A turn that produced no answer did not succeed, and
         // writing `BOUND` for it would claim a binding that no model turn ever proved.
         val target = terminalTarget(conversation, obligation.assistantId, obligation.branchId)
         if (target != null) {
+            val record = immediateTerminal(
+                assistantId = obligation.assistantId,
+                branchId = obligation.branchId,
+                boundRevision = obligation.revision + 1L,
+                terminal = terminal,
+            )
             val settled = attach(conversation, target, record)
                 ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
             return validated(settled, obligation, record)
@@ -819,11 +821,17 @@ object ClaudePSessionContinuationGate {
 
         // The rollback case: dispatch happened, the barrier is durable, and the graph grew nothing
         // — no assistant message, or one that a rollback took with it. The exact barrier record is
-        // located rather than assumed, and superseded in place.
+        // located rather than assumed, and superseded in place, keeping its revision.
         val barrier = barrierMessageIds(conversation, obligation)
         if (barrier.size != 1) {
             return Settlement.Refused(Reason.BARRIER_NOT_UNIQUELY_LOCATED)
         }
+        val record = immediateTerminal(
+            assistantId = obligation.assistantId,
+            branchId = obligation.branchId,
+            boundRevision = obligation.revision,
+            terminal = terminal,
+        )
         val settled = attach(conversation, barrier.single(), record)
             ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
         return validated(settled, obligation, record)
