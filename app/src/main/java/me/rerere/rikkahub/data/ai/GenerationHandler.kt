@@ -723,6 +723,37 @@ class GenerationHandler(
          * never enters a request body, a prompt, a fingerprint or a log line.
          */
         claudePToolGenerationContext: me.rerere.ai.provider.claudep.ClaudePToolGenerationContext? = null,
+        /**
+         * The Claude P branch binding the app resolved **before** this dispatch, or `null` when the
+         * app resolved none.
+         *
+         * Supplied by the caller because the conversation graph is the only authority for which
+         * branch variant the user is looking at, and this handler is handed messages and a model —
+         * it cannot tell whether this generation continues a branch or is about to create one.
+         * Computing it here would be a second answer to a question that already has one.
+         *
+         * `null` is not "the app tried and failed": a caller that cannot resolve a branch must
+         * refuse the dispatch, because the alternative is a request that starts a fresh Claude
+         * session for a branch that may already have one. It reaches the provider on
+         * [me.rerere.ai.provider.TextGenerationParams], where it is `@Transient`, so it never
+         * enters a request body, a fingerprint or a log line.
+         */
+        claudePSessionBindingRequest: me.rerere.ai.provider.claudep.ClaudePSessionBindingRequest? = null,
+        /**
+         * Called **at most once** with the Server's generation id of this dispatch.
+         *
+         * A `deferred` generation creates the branch it belongs to, so the app can only bind that
+         * branch after it commits the new variant — and §6.1 requires the commit and the
+         * `BIND_PENDING` record to be one transaction, which means the app must already hold the id
+         * when that transaction runs. This callback is the only moment it can be handed over: the
+         * transaction happens after the stream ends, so the chunk stream is the last carrier.
+         *
+         * The id is read from the provider's own accepted-event stamping and never derived here —
+         * this handler does not know, and must not guess, what the Server called the generation. A
+         * second, different id is a second generation, and the caller fails closed rather than
+         * binding a branch to whichever one arrived last.
+         */
+        onClaudePGenerationAccepted: ((String) -> Unit)? = null,
         agentTiming: AgentTimingHandle? = null,
         isHeadless: Boolean = false,
         isSubAgent: Boolean = false,
@@ -1185,6 +1216,8 @@ class GenerationHandler(
                         // the six identities are the authority's values and re-deriving them here
                         // would be a second chance to disagree about which generation is running.
                         claudePToolGenerationContext = claudePToolGenerationContext,
+                        claudePSessionBindingRequest = claudePSessionBindingRequest,
+                        onClaudePGenerationAccepted = onClaudePGenerationAccepted,
                         contextMessages = continuationContextMessages,
                         continuationHistoryEpoch = continuationHistoryEpoch,
                         continuationHistoryEpochReason = continuationHistoryEpochReason,
@@ -1409,6 +1442,15 @@ class GenerationHandler(
                                             // gives recovery a tool surface would quietly inherit
                                             // the wrong generation. `null` fails closed instead.
                                             claudePToolGenerationContext = null,
+                                            // Explicitly `null` for the same reason, and with the
+                                            // same consequence: this dispatch is a *second* model
+                                            // generation, so it must not carry the branch binding
+                                            // the original dispatch was given. A recovery request
+                                            // sent as `auto`/`immediate` would claim to be the turn
+                                            // the barrier was written for. `null` keeps it the
+                                            // pre-M3 `new` shape it has always had.
+                                            claudePSessionBindingRequest = null,
+                                            onClaudePGenerationAccepted = null,
                                             contextMessages = recoveryBase.compactCurrentTurnForFinalAnswer(),
                                             continuationHistoryEpoch = continuationHistoryEpoch,
                                             continuationHistoryEpochReason = "final_answer_recovery",
@@ -2880,6 +2922,19 @@ class GenerationHandler(
          * fingerprint or a log line.
          */
         claudePToolGenerationContext: me.rerere.ai.provider.claudep.ClaudePToolGenerationContext? = null,
+        /**
+         * Threaded through from [generateText] rather than rebuilt here: the branch identity is the
+         * conversation graph's answer, and a second construction is a second chance to disagree
+         * about which branch this generation belongs to.
+         */
+        claudePSessionBindingRequest: me.rerere.ai.provider.claudep.ClaudePSessionBindingRequest? = null,
+        /**
+         * Threaded through from [generateText]. Invoked from the one place every provider chunk
+         * passes — the turn runner's `onChunk` — so it sees the id on a streamed attempt, a
+         * non-streamed one, a fallback and a retry alike, and cannot be bypassed by adding another
+         * call shape later.
+         */
+        onClaudePGenerationAccepted: ((String) -> Unit)? = null,
         toolDiscoveryMetrics: ToolDiscoveryMetrics? = null,
         usageBase: TokenUsage? = null,
         touchedMemoryIds: MutableSet<Int>,
@@ -3765,6 +3820,10 @@ class GenerationHandler(
             // Transient on the params, so it reaches the Claude P provider and nothing else: not
             // the encoded request, not the fingerprint, not the prompt.
             claudePToolGenerationContext = claudePToolGenerationContext,
+            // The branch this generation belongs to. Transient for the same reason as the context
+            // above, and `null` for every provider that is not Claude P and for every call path
+            // that resolved no branch — which is what keeps the pre-M3 `mode: "new"` shape.
+            claudePSessionBindingRequest = claudePSessionBindingRequest,
             // The other transient: the system instruction this request froze, for a provider that
             // must refuse to send anything else. `null` for every other provider, which is also
             // what a provider that has no system instruction to send expects to see.
@@ -3868,6 +3927,16 @@ class GenerationHandler(
             if (providerStarted) return
             providerStarted = true
             runControl?.markSteeringProviderStarted(steeringDeliveries)
+        }
+        // The rule itself — one id, handed over once, second different id refuses — lives in
+        // `ClaudePGenerationIdentityObserver` so it can be tested without running a model. This
+        // handler only decides that *this* is the funnel every chunk passes through.
+        val claudePGenerationIdentity =
+            me.rerere.rikkahub.data.claudep.ClaudePGenerationIdentityObserver { id ->
+                onClaudePGenerationAccepted?.invoke(id)
+            }
+        fun observeClaudePGenerationIdentity(chunk: me.rerere.ai.ui.MessageChunk) {
+            claudePGenerationIdentity.observe(chunk.claudePGenerationId)
         }
         aiLoggingManager.addLog(
             AILogging.Generation(
@@ -4033,6 +4102,7 @@ class GenerationHandler(
                     },
                     onChunk = { chunk ->
                         markProviderStarted()
+                        observeClaudePGenerationIdentity(chunk)
                         terminalTracker.observe(chunk)
                         messages = messages.handleMessageChunk(chunk = chunk, model = model)
                             .bindNewMemoryToolScopes(

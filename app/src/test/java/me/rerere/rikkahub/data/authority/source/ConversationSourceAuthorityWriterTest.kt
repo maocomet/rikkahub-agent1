@@ -389,7 +389,12 @@ class ConversationSourceAuthorityWriterTest {
     }
 }
 
-private class FakeConversationSourceAuthorityStore : ConversationSourceAuthorityStore {
+/**
+ * `internal` rather than file-private so the continuation-integrity suite can drive the real writer
+ * through it. A second copy of this fake would be a second answer to "what does the store do", and
+ * the two would drift the first time the interface moved.
+ */
+internal class FakeConversationSourceAuthorityStore : ConversationSourceAuthorityStore {
     private val conversations = linkedMapOf<String, ConversationSourceAuthorityHead>()
     private val messages = linkedMapOf<String, MessageSourceAuthorityHead>()
     var failNextMessageCas = false

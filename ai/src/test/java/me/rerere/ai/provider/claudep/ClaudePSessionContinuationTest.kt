@@ -241,6 +241,39 @@ class ClaudePSessionContinuationTest {
         )
     }
 
+    /**
+     * Every writer advances the revision by exactly one per record, so a step with nothing on it
+     * means a record was lost — a half-applied rollback, or a restore from a partial backup. The
+     * fail-closed reading is to refuse the branch rather than to resume across the hole.
+     */
+    @Test
+    fun `two consecutive records that skip a step are a conflict`() {
+        assertEquals(
+            Conflict.REVISION_GAP,
+            conflicted(record(start, 1), record(bound, 3)),
+        )
+    }
+
+    /**
+     * The first record is exempt, and deliberately: a rollback can legitimately leave a lone record
+     * at a revision above one, which is why `null -> any` is a legal first step. Only a gap *after*
+     * a folded record is evidence of a lost write.
+     */
+    @Test
+    fun `a lone record at a revision above one is not a gap`() {
+        assertEquals(bound, resolved(record(bound, 7)).state)
+    }
+
+    /** And contiguity is measured from that first record, not from revision one. */
+    @Test
+    fun `contiguity is measured from the first record, not from revision one`() {
+        assertEquals(start, resolved(record(bound, 7), record(start, 8)).state)
+        assertEquals(
+            Conflict.REVISION_GAP,
+            conflicted(record(bound, 7), record(start, 9)),
+        )
+    }
+
     /** The same step observed twice with the same content is one record persisted twice. */
     @Test
     fun `two identical records claiming one step collapse to one`() {

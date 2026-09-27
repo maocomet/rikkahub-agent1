@@ -955,6 +955,76 @@ class ClaudePSessionContinuationGateTest {
         assertNull(attempted)
     }
 
+    // ---------------------------------------------------------------------------------------
+    // The continuation's own integrity survives the content-integrity projection
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The continuation's checks are not derived from a content digest, and this is what proves it.
+     *
+     * `payloadIntegritySha256` now ignores the continuation record, so every assertion in this
+     * class would still pass if the resolver had been quietly reading the digest to decide whether
+     * a branch was sound. These three cases carry the **same content**, and therefore the same
+     * digest, and must still fail closed: a stale revision, a skipped step, and two records that
+     * cannot both be true.
+     */
+    @Test
+    fun `a malformed continuation chain fails closed even though the content digest is identical`() {
+        val branch = branchId(emptyList())
+        val stale = listOf(
+            node(1, listOf(message(1, continuation = record(State.BOUND, 3)))),
+            node(2, listOf(message(2, continuation = record(State.START_IN_FLIGHT, 2)))),
+        )
+        val skipped = listOf(
+            node(1, listOf(message(1, continuation = record(State.START_IN_FLIGHT, 1)))),
+            node(2, listOf(message(2, continuation = record(State.BOUND, 5)))),
+        )
+        // Same step, two different claims about it. Two *identical* records at one revision are the
+        // same observation persisted twice and fold to themselves by design, so a fixture that
+        // repeated one state would prove nothing.
+        val disagreeing = listOf(
+            node(1, listOf(message(1, continuation = record(State.START_IN_FLIGHT, 1)))),
+            node(2, listOf(message(2, continuation = record(State.BOUND, 1)))),
+        )
+
+        for ((label, nodes) in listOf(
+            "stale" to stale,
+            "skipped" to skipped,
+            "disagreeing" to disagreeing,
+        )) {
+            val resolution = ClaudePSessionContinuationResolver.resolve(conversation(nodes), branch)
+            assertTrue(
+                "$label must be a conflict, got $resolution",
+                resolution is ClaudePSessionContinuationResolution.Conflicted,
+            )
+            assertFalse("$label must permit nothing", resolution.allowsNewGeneration)
+
+            // And the gate must refuse it for that reason rather than for any content reason.
+            assertEquals(
+                ClaudePSessionContinuationGate.Reason.CONTINUATION_CONFLICTED,
+                refusalReason(nodes, sendCommand()),
+            )
+        }
+    }
+
+    /**
+     * The digest really is identical across the three cases above — otherwise this class would be
+     * proving nothing. Asserted against the same production function the authority layer uses.
+     */
+    @Test
+    fun `the conflicting chains above really do share one content digest`() {
+        val digests = listOf(
+            listOf(node(1, listOf(message(1, continuation = record(State.BOUND, 3))))),
+            listOf(node(1, listOf(message(1, continuation = record(State.START_IN_FLIGHT, 1))))),
+            listOf(node(1, listOf(message(1)))),
+        ).map { nodes ->
+            me.rerere.rikkahub.data.authority.source.ConversationSourceSnapshotFactory
+                .payloadIntegritySha256(nodes.single().messages.single())
+        }
+
+        assertEquals(1, digests.toSet().size)
+    }
+
     /** The record is redacted, so a log line can correlate two of them without disclosing either. */
     @Test
     fun `a continuation record does not print its identities`() {

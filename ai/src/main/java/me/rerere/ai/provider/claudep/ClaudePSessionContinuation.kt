@@ -212,6 +212,20 @@ object ClaudePSessionContinuationTransitions {
     enum class Conflict {
         /** A record claims an earlier step than one already folded. */
         REVISION_REGRESSION,
+        /**
+         * Two *consecutive* records skip a step between them.
+         *
+         * Every writer that produces this state advances the revision by exactly one per record —
+         * a start then a terminal, a pending then a bound, an interrupted then a pending then a
+         * bound — so a step with nothing on it means a record was lost. That is evidence the graph
+         * was not written by this state machine (a half-applied rollback, a restore from a partial
+         * backup), and the fail-closed reading of it is to refuse the branch rather than to resume
+         * across the hole.
+         *
+         * The **first** record is deliberately exempt and stays so: a rollback can legitimately
+         * leave a lone record at a revision above one, which is why `null -> any` is legal.
+         */
+        REVISION_GAP,
         /** Two records claim the same step and do not agree about it. */
         REVISION_DISAGREEMENT,
         /** The pair could not have happened in this order. */
@@ -262,6 +276,12 @@ object ClaudePSessionContinuationTransitions {
                     }
                     continue
                 }
+
+                // A step with nothing on it. Only checked once a record has been folded, because a
+                // lone record at a revision above one is a legal rollback outcome — see
+                // [Conflict.REVISION_GAP].
+                revision > 0L && record.revision != revision + 1L ->
+                    return conflict(Conflict.REVISION_GAP)
             }
 
             val folded = transition(state, next) ?: return conflict(Conflict.ILLEGAL_TRANSITION)
