@@ -101,11 +101,39 @@ interface RuntimeRunAuthority : RuntimeAuthorityResult {
 
     /**
      * Fences a claimed command that returned before a command-specific coordinator ran. This is
-     * intentionally result-less: generation paths must use [finish] with an exact assistant pair.
+     * intentionally result-less: generation paths must use [finish] with an exact assistant pair,
+     * or [finishGenerationWithoutResult] when they have a graph obligation but no pair.
+     *
+     * Unchanged by the generation sibling below, and deliberately so: the control and dispatch
+     * paths that use it have no graph obligation, and giving this method a conversation would make
+     * every one of them capable of writing a graph none of them owns.
      */
     suspend fun finishFallback(
         terminalState: DurableCommandState,
         errorCode: String?,
+    )
+
+    /**
+     * Ends a run that **dispatched a model generation**, produced **no result assistant message**,
+     * and owes a graph settlement.
+     *
+     * The sibling of [finishFallback], and the only one of the two that may touch the graph:
+     *
+     * - `resultAssistantMessageId` is `null`, because there is no result to name;
+     * - [settlement] is read **inside** the command's authority transaction, applied to the
+     *   conversation read there, and persisted by the same transaction that terminalises the
+     *   command — so the graph and the command cannot disagree about whether the turn ended;
+     * - a `null` return from the settlement, a missing or ambiguous target, or any failure while
+     *   applying it **fails the command** rather than completing it. A run that cannot record what
+     *   it owes must not be durable as finished.
+     *
+     * `null` settlement means the run attached none, and is equivalent to [finishFallback]: the
+     * non-Claude-P paths attach nothing and keep their behaviour byte for byte.
+     */
+    suspend fun finishGenerationWithoutResult(
+        terminalState: DurableCommandState,
+        errorCode: String?,
+        settlement: GenerationTerminalGraphSettlement?,
     )
 }
 

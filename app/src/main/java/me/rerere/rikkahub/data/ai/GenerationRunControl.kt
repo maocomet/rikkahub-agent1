@@ -52,6 +52,38 @@ class GenerationRunControl(
     suspend fun runtimeCommandAuthority(): me.rerere.rikkahub.service.chat.RuntimeRunAuthority? =
         commandAuthority.current()
 
+    /**
+     * The graph settlement this run owes when it ends without a result assistant message.
+     *
+     * Run-local, never serialized, and attached at most once — by the admission that wrote the
+     * barrier, immediately after that transaction committed. A generation that attached nothing
+     * owes nothing and ends through the plain `finishFallback`.
+     */
+    private val terminalGraphSettlement = AtomicReference<
+        me.rerere.rikkahub.service.chat.GenerationTerminalGraphSettlement?
+        >(null)
+
+    /**
+     * Attaches the run's settlement. Called exactly once, and a second call is a wiring defect
+     * rather than something to absorb: two settlements for one run would mean two barriers were
+     * written, and silently keeping the first would settle the wrong one.
+     */
+    fun attachTerminalGraphSettlement(
+        settlement: me.rerere.rikkahub.service.chat.GenerationTerminalGraphSettlement,
+    ) {
+        check(terminalGraphSettlement.compareAndSet(null, settlement)) {
+            "generation_terminal_settlement_already_attached"
+        }
+    }
+
+    /**
+     * Takes the settlement, once. A second take returns `null`, which ends the run through
+     * `finishFallback` — and is harmless either way, because the authority's own terminal guard
+     * makes a repeated finish a no-op that writes no second revision.
+     */
+    fun consumeTerminalGraphSettlement(): me.rerere.rikkahub.service.chat.GenerationTerminalGraphSettlement? =
+        terminalGraphSettlement.getAndSet(null)
+
     internal suspend fun attachRuntimeCommandAuthority(
         authority: me.rerere.rikkahub.service.chat.RuntimeRunAuthority,
     ) = commandAuthority.attach(authority)

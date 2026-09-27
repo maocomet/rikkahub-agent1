@@ -2089,9 +2089,16 @@ class ConversationRuntime(
                     runAuthority != null &&
                     !runAuthority.isTerminalCommitted()
                 ) {
-                    runAuthority.finishFallback(
+                    // A generation that owes a graph write settles it in the same transaction that
+                    // terminalises the command; one that owes nothing — every control command, and
+                    // every non-Claude-P generation — passes `null` and takes the unchanged
+                    // `finishFallback` path inside the sibling. There is deliberately no branch
+                    // here: which of the two happens is the run's own attachment to decide, so a
+                    // generation path added later cannot forget to route itself.
+                    runAuthority.finishGenerationWithoutResult(
                         terminalState = finalOutcome.toDurableState(),
                         errorCode = finalOutcome.toDurableErrorCode(),
+                        settlement = run.control.consumeTerminalGraphSettlement(),
                     )
                 }
                 val authority = run.control.authorityResult()

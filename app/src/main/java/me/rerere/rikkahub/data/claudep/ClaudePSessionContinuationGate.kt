@@ -617,6 +617,32 @@ object ClaudePSessionContinuationGate {
     // Terminal settle
     // -----------------------------------------------------------------------------------------
 
+    /**
+     * The terminal a durable command state describes, or `null` when it describes no end at all.
+     *
+     * ## Why the authority's vocabulary maps here
+     *
+     * The settlement attached to a run is written when the barrier is, long before the outcome
+     * exists, so it is handed the authority's own terminal state and has to translate. That
+     * translation lives here — one function, one table — rather than inside the closure that
+     * happens to be attached, because a per-attachment copy is how the same cancellation would come
+     * to mean `FAILED_CLOSED` on one path and `INTERRUPTED` on another.
+     *
+     * The interesting row is `COMPLETED`: a run that reached this seam reporting completion while
+     * producing no result assistant message maps to [Terminal.SUCCEEDED], and [settleImmediate]
+     * then **refuses** it if the graph holds nothing that completion could have produced. That is
+     * deliberate — the mapping states what the authority said, and the gate decides whether the
+     * graph agrees. Folding the two together would either invent a `BOUND` or fail a real turn.
+     */
+    fun terminalFor(terminalState: me.rerere.rikkahub.service.chat.DurableCommandState): Terminal? =
+        when (terminalState) {
+            me.rerere.rikkahub.service.chat.DurableCommandState.COMPLETED -> Terminal.SUCCEEDED
+            me.rerere.rikkahub.service.chat.DurableCommandState.CANCELLED -> Terminal.UNPROVEN
+            me.rerere.rikkahub.service.chat.DurableCommandState.FAILED -> Terminal.FAILED
+            // PENDING, RUNNING and WAITING_APPROVAL are not ends, so there is nothing to settle.
+            else -> null
+        }
+
     /** What ended a generation, as the app can prove it. A closed set. */
     enum class Terminal {
         /** The model finished and the turn is over. */

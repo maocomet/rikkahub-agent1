@@ -228,6 +228,7 @@ jobs:
             --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGateTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePGenerationIdentityObserverTest" \
             --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionSettlementTest" \
+            --tests "me.rerere.rikkahub.data.claudep.ClaudePSessionTerminalSettlementSeamTest" \
             --tests "me.rerere.rikkahub.data.authority.source.ConversationContentIntegrityProjectionTest" \
             --tests "me.rerere.rikkahub.data.authority.source.ConversationContinuationSourceRevisionTest" \
             --tests "me.rerere.rikkahub.data.capability.CapabilitySubjectResolverTest" \
@@ -299,6 +300,7 @@ jobs:
             "app:me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGateTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePGenerationIdentityObserverTest"
             "app:me.rerere.rikkahub.data.claudep.ClaudePSessionSettlementTest"
+            "app:me.rerere.rikkahub.data.claudep.ClaudePSessionTerminalSettlementSeamTest"
             "app:me.rerere.rikkahub.data.authority.source.ConversationContentIntegrityProjectionTest"
             "app:me.rerere.rikkahub.data.authority.source.ConversationContinuationSourceRevisionTest"
             "app:me.rerere.rikkahub.data.capability.CapabilitySubjectResolverTest"

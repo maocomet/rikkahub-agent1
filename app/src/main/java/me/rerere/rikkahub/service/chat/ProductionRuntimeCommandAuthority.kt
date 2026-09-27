@@ -218,6 +218,32 @@ private class ProductionRuntimeRunAuthority(
         sourceInvalidationMode: me.rerere.rikkahub.data.repository.ConversationSourceInvalidationMode,
         occurredAtMs: Long,
     ) {
+        finishWithMutation(
+            graphMutation = graphMutation(conversation, occurredAtMs, sourceInvalidationMode),
+            terminalState = terminalState,
+            kind = kind,
+            resultAssistantMessageId = resultAssistantMessageId,
+            errorCode = errorCode,
+            executionIds = executionIds,
+        )
+    }
+
+    /**
+     * The shared body of every result-less-or-result-bearing terminal that persists a graph.
+     *
+     * [graphMutation] is a parameter rather than a conversation so that the caller decides *when*
+     * the conversation is read. [finish] captured it before the transaction; the generation
+     * sibling below reads it inside, because a settlement has to be applied to whatever the
+     * transaction is actually about to persist rather than to a snapshot taken beside it.
+     */
+    private suspend fun finishWithMutation(
+        graphMutation: ConversationGraphAuthorityMutation,
+        terminalState: DurableCommandState,
+        kind: RuntimeAuthorityTerminalKind,
+        resultAssistantMessageId: Uuid?,
+        errorCode: String?,
+        executionIds: Collection<String>,
+    ) {
         mutationMutex.withLock {
             if (terminalCommitted.get()) return@withLock
             val completionKind = when (kind) {
@@ -245,11 +271,7 @@ private class ProductionRuntimeRunAuthority(
                             errorCode = errorCode,
                             terminalizeWaitingLineage = envelope.command is ResumeAfterApprovalCommand,
                         ),
-                        graphMutation = graphMutation(
-                            conversation,
-                            occurredAtMs,
-                            sourceInvalidationMode,
-                        ),
+                        graphMutation = graphMutation,
                         resultMutation = FinalResultAuthorityMutation { assistant ->
                             if (executionIds.isNotEmpty()) {
                                 val exact = requireNotNull(assistant) {
@@ -272,6 +294,53 @@ private class ProductionRuntimeRunAuthority(
             terminalized.set(commit.command.terminalizedCommandIds.map(Uuid::parse))
             terminalCommitted.set(true)
         }
+    }
+
+    /**
+     * Ends a dispatched generation that produced no result assistant message, writing whatever the
+     * run owes into the graph **in the same transaction** that terminalises the command.
+     *
+     * The conversation is read inside the transaction and handed to [settlement], so the record is
+     * applied to what is actually about to be persisted. A settlement that refuses — a missing or
+     * ambiguous target, a graph that cannot carry the record — throws, which rolls the transaction
+     * back and leaves both the command and the graph untouched. A run that cannot record what it
+     * owes must not be durable as finished.
+     *
+     * With no settlement the run owes nothing and this is [finishFallback], which is the path every
+     * non-Claude-P generation takes.
+     */
+    override suspend fun finishGenerationWithoutResult(
+        terminalState: DurableCommandState,
+        errorCode: String?,
+        settlement: GenerationTerminalGraphSettlement?,
+    ) {
+        if (settlement == null) {
+            finishFallback(terminalState, errorCode)
+            return
+        }
+        finishWithMutation(
+            graphMutation = ConversationGraphAuthorityMutation {
+                val current = requireNotNull(conversations.getConversationById(envelope.conversationId)) {
+                    "runtime_authority_conversation_missing"
+                }
+                val settled = requireNotNull(settlement.settle(current, terminalState)) {
+                    "generation_terminal_settlement_refused"
+                }
+                conversations.persistAuthorityGraphInCurrentTransaction(
+                    conversation = settled,
+                    scope = scope,
+                    insert = null,
+                    sourceInvalidationMode =
+                        me.rerere.rikkahub.data.repository.ConversationSourceInvalidationMode.APPLY,
+                    sourceInvalidationNowMs = System.currentTimeMillis(),
+                )
+            },
+            terminalState = terminalState,
+            kind = terminalKindOf(terminalState, errorCode),
+            resultAssistantMessageId = null,
+            errorCode = errorCode,
+            executionIds = emptyList(),
+        )
     }
 
     override suspend fun finishAfterFinalSaveFailure(errorCode: String) {
@@ -297,15 +366,7 @@ private class ProductionRuntimeRunAuthority(
         terminalState: DurableCommandState,
         errorCode: String?,
     ) {
-        val kind = when (terminalState) {
-            DurableCommandState.COMPLETED -> RuntimeAuthorityTerminalKind.CONTROL_ONLY
-            DurableCommandState.CANCELLED -> if (errorCode == "SUPERSEDED_REGENERATE") {
-                RuntimeAuthorityTerminalKind.SUPERSEDED_REGENERATE
-            } else {
-                RuntimeAuthorityTerminalKind.CENSORED_CANCELLED
-            }
-            else -> RuntimeAuthorityTerminalKind.FAILED_OTHER
-        }
+        val kind = terminalKindOf(terminalState, errorCode)
         finish(
             conversation = requireNotNull(conversations.getConversationById(envelope.conversationId)) {
                 "runtime_authority_conversation_missing"
@@ -315,6 +376,26 @@ private class ProductionRuntimeRunAuthority(
             resultAssistantMessageId = null,
             errorCode = errorCode,
         )
+    }
+
+    /**
+     * The terminal kind a durable state and error code describe, in one place.
+     *
+     * Shared by [finishFallback] and [finishGenerationWithoutResult] so the two cannot come to
+     * disagree about what a cancellation is called — which would show up as two different
+     * completion kinds for the same event depending on whether the run owed a graph write.
+     */
+    private fun terminalKindOf(
+        terminalState: DurableCommandState,
+        errorCode: String?,
+    ): RuntimeAuthorityTerminalKind = when (terminalState) {
+        DurableCommandState.COMPLETED -> RuntimeAuthorityTerminalKind.CONTROL_ONLY
+        DurableCommandState.CANCELLED -> if (errorCode == "SUPERSEDED_REGENERATE") {
+            RuntimeAuthorityTerminalKind.SUPERSEDED_REGENERATE
+        } else {
+            RuntimeAuthorityTerminalKind.CENSORED_CANCELLED
+        }
+        else -> RuntimeAuthorityTerminalKind.FAILED_OTHER
     }
 
     override fun isWaitingCommitted(): Boolean = waitingCommitted.get()
