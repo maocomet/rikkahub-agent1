@@ -119,9 +119,28 @@ New and changed classes in this batch:
 | `ClaudePSessionContinuationPlanTest` | `app` | 12 | pass |
 | `ClaudePSessionBranchPlannerTest` (pre-existing, regression) | `app` | 23 | pass |
 
-**`app` module — 53 classes across the four classes named above, 0 failures, 0 skipped** when run
-as targeted filters. See §8 for whether the *full* `:app:testDebugUnitTest` suite completed in
-this session; that is stated there as it actually happened rather than assumed.
+**`app` module — 53 tests across the four classes named above, 0 failures, 0 skipped** when run as
+targeted filters.
+
+**Full `:app:testDebugUnitTest` — 683 classes, 4136 tests, 1 skipped, 1 failure.** The failure is
+`HardlineSelfPreservationTest.default hardline policy protects the installed application id`, and
+it is **pre-existing and unrelated to this batch**, established rather than assumed:
+
+- The batch touches none of `HardlineCommandGuard`, `SelfPreservationPolicy`,
+  `HardlineSelfPreservationTest` or any `build.gradle*` — `git diff --name-only b2acc21d..HEAD`
+  matches nothing in that set.
+- The assertion compares the *default* guard policy against the literal package
+  `me.rerere.rikkahub`, while the guard's default is
+  `SelfPreservationPolicy.forApplication(BuildConfig.APPLICATION_ID)`. The `debug` build type
+  carries `applicationIdSuffix = ".agenttest"` (present at `b2acc21d`, unchanged), so in a debug
+  unit-test run the protected package is `me.rerere.rikkahub.agenttest` and uninstalling
+  `me.rerere.rikkahub` is correctly not blocked. The test asserts a release-variant fact from a
+  debug-variant build.
+- It is absent from every CI allowlist in `.github/workflows/`, so it has never gated — which is
+  why a failure of this kind survives on the branch.
+
+It is left as found. Fixing it is a real change to a security-adjacent test and belongs in its
+own reviewed batch, not in this one.
 
 ## 5. Room / transaction tests
 
@@ -199,7 +218,7 @@ finished work that the next batch consumes unchanged; §7 items 1–4 are the re
 | `:app` compile | `./gradlew :app:compileDebugKotlin` | pass |
 | `:ai` tests | `./gradlew :ai:testDebugUnitTest --offline` | 73 classes, 0 failures, 0 skipped |
 | `:app` targeted tests | `./gradlew :app:testDebugUnitTest --tests <4 classes>` | 53 tests, 0 failures, 0 skipped |
-| `:app` full suite | `./gradlew :app:testDebugUnitTest` | see below |
+| `:app` full suite | `./gradlew :app:testDebugUnitTest` | 683 classes, 4136 tests, 1 skipped, 1 pre-existing failure (§4) |
 | Whitespace | `git diff --check b2acc21d..HEAD` | clean |
 | Dependency / Room schema diff | `git diff --name-only b2acc21d..HEAD` filtered | no match — nothing changed |
 | Working tree | `git status --porcelain` | only the pre-existing untracked `web-ui/bun.lock` |
@@ -218,17 +237,6 @@ No workflow was **run**, no push was made, and no job was triggered — the trig
 does not exist. Editing the allowlist is what makes the tests this batch wrote actually gate
 anything; leaving them out would have made "the tests pass" a claim about a suite that never ran
 them.
-
-**Full `:app:testDebugUnitTest`.** Started in this session as the broadest available regression
-check on the two files this batch touched indirectly (`Provider.kt`, `ui/Message.kt`). It had not
-completed when this report was written — the job is long, and the `:ai` changes force a full
-`:app` recompilation before the first test runs. Its result is therefore **not** part of the
-evidence above. What the batch rests on is the `:ai` suite, which ran to completion, and the
-targeted `:app` classes, which also ran to completion.
-
-If the full suite later reports a failure, the first thing to check is whether it also fails at
-`b2acc21d`: nothing in this batch changes a code path any pre-existing `:app` test exercises, and
-the `:app` compile is known good.
 
 ### Not done
 
