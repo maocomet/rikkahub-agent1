@@ -125,13 +125,13 @@ Three properties follow, and each was a decision rather than a default:
 
 ## 5. Tests
 
-54 tests added, in four files.
+64 test methods added: 57 across the five files below, and 7 in the two existing suites.
 
 | Suite | What it pins |
 |---|---|
-| `PromptReferencePolicyTest` (16) | the marker shape; the classification of every key the default assistant uses; the single-brace form; refusal of an unclassified key; refusal of a value that would introduce a token; the exception carries the key and never the sentence around it; canonical resolution; escaping |
+| `PromptReferencePolicyTest` (22) | the marker shape; the classification of every key the default assistant uses; the single-brace form; refusal of an unclassified key; refusal of a value that would introduce a token; the exception carries the key and never the sentence around it; canonical resolution; escaping |
 | `StableSystemPromptSessionTest` (12) | the exact rendered bytes; canonical order independent of recording order; one value per name; blank sections dropped; hostile values and section bodies cannot forge a boundary; **two sessions cannot see each other**; a fresh session is empty |
-| `StableSystemPromptCompositionTest` (11) | default assistant config → the real `SystemPromptBuilder`, `ProviderSystemPromptLayout`, `PromptInjectionTransformer`, `neutralizeStableSystemMessage`, `StableSystemPromptSession`, and out to a **real `ClaudePGenerationStartBody`** |
+| `StableSystemPromptCompositionTest` (12) | default assistant config → the real `SystemPromptBuilder`, `ProviderSystemPromptLayout`, `PromptInjectionTransformer`, `neutralizeStableSystemMessage`, `StableSystemPromptSession`, and out to a **real `ClaudePGenerationStartBody`** |
 | `ClaudePProviderStableSystemPromptTest` (8) | the wire boundary |
 | `StableSystemPromptDefaultPathTest` (3) | the default-path preconditions |
 | extensions to `ProviderSystemPromptLayoutTest` (3) and `PromptInjectionTransformerTest` (4) | the new behaviour, paired with the unchanged one |
