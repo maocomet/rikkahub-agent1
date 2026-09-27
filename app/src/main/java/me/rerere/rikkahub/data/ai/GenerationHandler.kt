@@ -53,6 +53,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.StableSystemPromptProvider
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
@@ -73,10 +74,12 @@ import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessageState
 import me.rerere.ai.ui.handleMessageChunk
 import me.rerere.ai.ui.limitContext
+import me.rerere.rikkahub.data.ai.prompt.PromptReferencePolicy
+import me.rerere.rikkahub.data.ai.prompt.StableSystemPromptSession
+import me.rerere.rikkahub.data.ai.prompts.DEFAULT_FINAL_ANSWER_REMINDER_PROMPT
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.MessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
-import me.rerere.rikkahub.data.ai.prompts.DEFAULT_FINAL_ANSWER_REMINDER_PROMPT
 import me.rerere.rikkahub.data.execution.ApprovalContinuationMode
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.diagnostics.RecentGenerationDiagnostics
@@ -2704,6 +2707,40 @@ class GenerationHandler(
         .flowOn(Dispatchers.IO)
     }
 
+    /**
+     * The system instruction this request freezes, for a provider that needs a byte-stable one.
+     *
+     * ## What it is computed from, and what it is deliberately not
+     *
+     * It is computed from the **layout** — the app's own stable projection — and mirrored through
+     * the same neutraliser the transformers use, in the same shape the provider applies when it
+     * collects the system message (all system text parts, joined). It is never read back out of the
+     * messages that are about to be dispatched: a value taken from the outgoing messages would agree
+     * with itself no matter what the layout did, and the comparison it feeds would be a formality
+     * rather than a check.
+     *
+     * Frozen here, before the transformer pass, because the whole point is to catch anything that
+     * writes to the system message *after* the authorised layout produced it.
+     *
+     * @return the frozen instruction, or `null` when the layout has no system message at all — which
+     *   is not the same as an empty one, and which the provider treats as "nothing to drift".
+     */
+    private fun freezeStableSystemPrompt(
+        layout: ProviderSystemPromptLayout,
+        assistant: Assistant,
+    ): String? {
+        val systemTexts = layout.initialMessages
+            .filter { it.role == MessageRole.SYSTEM }
+            .flatMap { message -> message.parts.filterIsInstance<UIMessagePart.Text>() }
+            .map { part -> part.text }
+            .filter { text -> text.isNotEmpty() }
+        val text = systemTexts.takeIf { it.isNotEmpty() }?.joinToString("\n\n") ?: return null
+
+        return PromptReferencePolicy.neutralizeAppControlledTemplate(text) { key ->
+            PromptReferencePolicy.stableValueOf(key, assistant.name)
+        }.text
+    }
+
     private suspend fun resolveSecondUserProviderBinding(
         configuredProvider: ProviderSetting,
         capabilitySubject: CapabilitySubject?,
@@ -2891,7 +2928,15 @@ class GenerationHandler(
         // appears at the JSON tail. Anchor per-request context to the current user turn instead,
         // preserving the long history prefix across tasks and the exact prefix inside tool loops.
         // Responses/native providers keep the established combined system layout.
-        val useAnchoredVolatileContext = provider is ProviderSetting.OpenAI && !provider.useResponseApi
+        //
+        // A provider that declares [StableSystemPromptProvider] is anchored too, for a stronger
+        // reason than prefix reuse: its system instruction is part of the identity a remote session
+        // is continued under, so anything per-turn written into it does not merely cost a cache hit,
+        // it makes the session uncontinuable. Anchoring is the same mechanism answering a harder
+        // requirement.
+        val stableSystemPromptProvider = providerImpl as? StableSystemPromptProvider
+        val useAnchoredVolatileContext = stableSystemPromptProvider != null ||
+            (provider is ProviderSetting.OpenAI && !provider.useResponseApi)
         val contextPreparer = GenerationProviderContextPreparer()
         val requestedMaxTokens = if (requestPurpose == GenerationRequestPurpose.FINAL_ANSWER_RECOVERY) {
             FINAL_ANSWER_MAX_TOKENS
@@ -3269,6 +3314,22 @@ class GenerationHandler(
                 reserveRuntimeContextEnvelope = true,
             )
         }
+        // ## The stable system instruction, frozen before anything can rewrite it
+        //
+        // Everything below this line is the *unstable* half of the request. The value frozen here
+        // is the whole of what the provider is allowed to send as its system instruction, and it is
+        // computed from the layout — never read back out of the messages that are about to be sent,
+        // because a value compared against itself would prove nothing about the layout that produced
+        // it.
+        //
+        // One session per request, created here and reachable only through this request's
+        // transformer context. Two generations in flight hold two sessions and cannot see each
+        // other's values or relocated sections.
+        val stableSystemPromptSession =
+            if (stableSystemPromptProvider == null) null else StableSystemPromptSession()
+        val stableSystemPromptExpectation = stableSystemPromptSession?.let {
+            freezeStableSystemPrompt(systemPromptLayout, assistant)
+        }
         val providerIdentityMessages = prepareSecondUserProviderMessages(systemPromptLayout.initialMessages)
         val providerEphemeralMessages = if (
             secretEgressBinding != null &&
@@ -3333,10 +3394,15 @@ class GenerationHandler(
                 conversationLorebookIds = conversationLorebookIds,
                 processingStatus = processingStatus,
                 workspaceCwd = workspaceCwd,
+                stableSystemPromptSession = stableSystemPromptSession,
             )
         }
-        val finalContextCandidateMessages =
-            systemPromptLayout.applyVolatileContext(transformedMessages)
+        // Relocated system-position injections are only known now that the transformers have run,
+        // so they join the runtime context here rather than at layout creation. The system message
+        // itself is untouched by this — see `withAdditionalVolatileContext`.
+        val finalContextCandidateMessages = systemPromptLayout
+            .withAdditionalVolatileContext(stableSystemPromptSession?.render().orEmpty())
+            .applyVolatileContext(transformedMessages)
         val baselineContextPreparation = try {
             agentTiming.timedAgentStage(
                 AgentTimingEventKind.CONTEXT_GATE_FINAL_STARTED,
@@ -3402,7 +3468,9 @@ class GenerationHandler(
                 check(identityMessages == providerIdentityMessages) {
                     "Learned Recall changed the stable transformer input"
                 }
-                val finalInput = layout.applyVolatileContext(transformedMessages)
+                val finalInput = layout
+                    .withAdditionalVolatileContext(stableSystemPromptSession?.render().orEmpty())
+                    .applyVolatileContext(transformedMessages)
                 val final = contextPreparer.prepareOrdinaryChat(
                     messages = finalInput,
                     configuredContextWindowTokens = model.userContextWindowTokens,
@@ -3697,6 +3765,10 @@ class GenerationHandler(
             // Transient on the params, so it reaches the Claude P provider and nothing else: not
             // the encoded request, not the fingerprint, not the prompt.
             claudePToolGenerationContext = claudePToolGenerationContext,
+            // The other transient: the system instruction this request froze, for a provider that
+            // must refuse to send anything else. `null` for every other provider, which is also
+            // what a provider that has no system instruction to send expects to see.
+            stableSystemPromptExpectation = stableSystemPromptExpectation,
             providerCacheIdentity = providerCacheIdentity,
             reasoningLevel = if (requestPurpose == GenerationRequestPurpose.FINAL_ANSWER_RECOVERY) {
                 ReasoningLevel.OFF

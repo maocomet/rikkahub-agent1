@@ -78,6 +78,34 @@ interface FencedTextGenerationProvider {
     val cancellationFenceAbi: String
 }
 
+/**
+ * A provider whose system instruction must be **byte-stable across the turns of one session**.
+ *
+ * ## Why this is a provider-owned property rather than a caller convention
+ *
+ * A remote transport that persists a session and continues it later can only do so safely if it
+ * can prove the session was produced under the configuration it is about to continue under. The
+ * system instruction is part of that configuration, so a provider that wants durable continuation
+ * must be able to state it as a value that does not drift turn to turn.
+ *
+ * That is a property of the *transport*, not of the chat UI: a provider that reads one system
+ * instruction per request and stores it against a remote session has the requirement, and a
+ * provider that re-sends the whole conversation every time does not. So it is expressed as a
+ * marker here, and the app narrows its prompt layout only for providers that carry it.
+ *
+ * ## What an implementor must do
+ *
+ * Compare the frozen expectation carried on [TextGenerationParams.stableSystemPromptExpectation]
+ * against the system text it is about to send, and **refuse to dispatch** when they differ. The
+ * expectation is frozen by the app from its stable layout before any transformer runs; it is never
+ * re-derived from the messages being sent, which would make the comparison self-proving.
+ *
+ * A provider that advertises this marker and does not enforce the comparison would silently accept
+ * a drifting system instruction — which is exactly the failure the app-side layout change exists to
+ * remove, so the check belongs at the wire.
+ */
+interface StableSystemPromptProvider
+
 /** Content-free proof observed at the last provider-owned boundary before any request bytes. */
 interface BackgroundDispatchAttestation {
     fun opaqueDigestSha256(): String
@@ -500,6 +528,25 @@ data class TextGenerationParams(
      */
     @Transient
     val claudePToolGenerationContext: ClaudePToolGenerationContext? = null,
+    /**
+     * The system instruction the app **froze** for this request, for a
+     * [StableSystemPromptProvider] to compare against what it is about to send.
+     *
+     * Transient, and in-process only: it is a layout artifact, not request content, and a transport
+     * that serialized it would be sending the same string twice.
+     *
+     * It is deliberately **not** derived from `messages`. A value read back from the messages being
+     * sent would agree with itself no matter what the app's layout did, so the comparison would
+     * prove nothing. The app freezes this from its stable layout *before* any transformer runs, and
+     * a provider that finds a difference must refuse to dispatch rather than send a system
+     * instruction the session's configuration no longer describes.
+     *
+     * `null` means the app did not supply one. A `StableSystemPromptProvider` treats that as a
+     * refusal whenever it has a system instruction to send, because "no expectation" is not
+     * evidence for stability.
+     */
+    @Transient
+    val stableSystemPromptExpectation: String? = null,
     val customHeaders: List<CustomHeader> = emptyList(),
     val customBody: List<CustomBody> = emptyList(),
 ) {

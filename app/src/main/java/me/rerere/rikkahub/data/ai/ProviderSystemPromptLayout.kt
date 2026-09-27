@@ -61,6 +61,32 @@ internal class ProviderSystemPromptLayout private constructor(
         }
     }
 
+    /**
+     * A copy whose volatile context additionally carries [extra].
+     *
+     * Exists because the two halves of the runtime context become known at different moments: the
+     * memory / recent-chat / addendum half is assembled when the layout is created, while relocated
+     * system-position injections are only known once the transformers have run. Appending after the
+     * fact is what lets both reach the turn without either being routed through the system message.
+     *
+     * **[initialMessages] is deliberately not touched.** The system message is the thing being held
+     * stable, so a method whose whole purpose is to add volatile text must not be able to change it.
+     * That is enforced here rather than left for a reviewer to check.
+     *
+     * Blank input returns the receiver unchanged, so a request with nothing to relocate does not
+     * acquire a suffix that a request without one would not have.
+     */
+    fun withAdditionalVolatileContext(extra: String): ProviderSystemPromptLayout {
+        if (extra.isBlank()) return this
+        val merged = listOfNotNull(volatileContext?.takeIf(String::isNotBlank), extra)
+            .joinToString("\n\n")
+        return ProviderSystemPromptLayout(
+            initialMessages = initialMessages,
+            volatileContext = merged,
+            useAnchoredVolatileContext = useAnchoredVolatileContext,
+        )
+    }
+
     companion object {
         fun create(
             stableSystem: String,

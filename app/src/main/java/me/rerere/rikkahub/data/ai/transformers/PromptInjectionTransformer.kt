@@ -3,6 +3,10 @@ package me.rerere.rikkahub.data.ai.transformers
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.prompt.RuntimeContextOrigin
+import me.rerere.rikkahub.data.ai.prompt.RuntimeContextPlacement
+import me.rerere.rikkahub.data.ai.prompt.RuntimeContextSection
+import me.rerere.rikkahub.data.ai.prompt.StableSystemPromptSession
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.InjectionPosition
 import me.rerere.rikkahub.data.model.PromptInjection
@@ -28,6 +32,7 @@ object PromptInjectionTransformer : InputMessageTransformer {
             lorebooks = ctx.settings.lorebooks,
             conversationModeInjectionIds = ctx.conversationModeInjectionIds,
             conversationLorebookIds = ctx.conversationLorebookIds,
+            stableSystemPromptSession = ctx.stableSystemPromptSession,
         )
     }
 }
@@ -42,6 +47,14 @@ internal fun transformMessages(
     lorebooks: List<Lorebook>,
     conversationModeInjectionIds: Set<Uuid> = emptySet(),
     conversationLorebookIds: Set<Uuid> = emptySet(),
+    /**
+     * When present, the provider needs a byte-stable system instruction, so a system-position
+     * injection is recorded here instead of being written into the system message.
+     *
+     * `null` — every provider except Claude P — keeps the previous behaviour exactly, including
+     * creating a system message when one does not exist yet.
+     */
+    stableSystemPromptSession: StableSystemPromptSession? = null,
 ): List<UIMessage> {
     // 收集所有需要注入的内容
     val injections = collectInjections(
@@ -63,7 +76,7 @@ internal fun transformMessages(
         .groupBy { it.position }
 
     // 应用注入
-    return applyInjections(messages, byPosition)
+    return applyInjections(messages, byPosition, stableSystemPromptSession)
 }
 
 /**
@@ -120,12 +133,43 @@ internal fun collectInjections(
  */
 internal fun applyInjections(
     messages: List<UIMessage>,
-    byPosition: Map<InjectionPosition, List<PromptInjection>>
+    byPosition: Map<InjectionPosition, List<PromptInjection>>,
+    stableSystemPromptSession: StableSystemPromptSession? = null,
 ): List<UIMessage> {
     val result = messages.toMutableList()
 
     // 找到系统消息的索引（通常是第一条）
     val systemIndex = result.indexOfFirst { it.role == MessageRole.SYSTEM }
+
+    // ## The system-position injections, and the one case where they are not written at all
+    //
+    // A provider that needs a byte-stable system instruction cannot have a *message-triggered*
+    // injection written into it: the trigger depends on the current conversation, so the system
+    // message would change exactly when a lorebook entry fires or stops firing, and the session
+    // would stop being continuable for a reason nothing in the request explains.
+    //
+    // So the content is relocated rather than dropped. It goes to the session, which renders it
+    // into this turn's runtime context — the model still receives it, one message layer down,
+    // which is a deliberate change to where it sits and not a claim of equivalence.
+    //
+    // One section per injection, not one merged block: the placement and the origin are the whole
+    // record of what moved, and merging them would throw away the answer to "which entry was this".
+    if (stableSystemPromptSession != null) {
+        byPosition[InjectionPosition.BEFORE_SYSTEM_PROMPT].orEmpty().forEach { injection ->
+            stableSystemPromptSession.recordSection(
+                injection.relocatedTo(RuntimeContextPlacement.BEFORE_SYSTEM_PROMPT),
+            )
+        }
+        byPosition[InjectionPosition.AFTER_SYSTEM_PROMPT].orEmpty().forEach { injection ->
+            stableSystemPromptSession.recordSection(
+                injection.relocatedTo(RuntimeContextPlacement.AFTER_SYSTEM_PROMPT),
+            )
+        }
+        // The system message itself is left exactly as it was — not extended, and not created when
+        // it is absent, because creating one would be this transformer writing to the very message
+        // the caller needs to stay stable.
+        return applyNonSystemPositions(result, byPosition)
+    }
 
     // 处理 BEFORE_SYSTEM_PROMPT 和 AFTER_SYSTEM_PROMPT
     if (systemIndex >= 0) {
@@ -188,6 +232,23 @@ internal fun applyInjections(
         }
     }
 
+    return applyNonSystemPositions(result, byPosition)
+}
+
+/**
+ * The positions that are not the system prompt: `TOP_OF_CHAT`, `BOTTOM_OF_CHAT` and `AT_DEPTH`.
+ *
+ * Extracted so the relocating path above and the ordinary path share one implementation. These
+ * positions add *messages* rather than rewriting the system instruction, so a provider that needs a
+ * stable system prompt keeps them exactly as they were — the thing being stabilised is the system
+ * message, and nothing here touches it.
+ */
+private fun applyNonSystemPositions(
+    messages: List<UIMessage>,
+    byPosition: Map<InjectionPosition, List<PromptInjection>>,
+): List<UIMessage> {
+    val result = messages.toMutableList()
+
     // 处理 TOP_OF_CHAT：在第一条用户消息之前插入
     val topInjections = byPosition[InjectionPosition.TOP_OF_CHAT]
     if (!topInjections.isNullOrEmpty()) {
@@ -232,6 +293,17 @@ internal fun applyInjections(
 
     return result
 }
+
+/** Turns one system-position injection into the runtime-context section that replaces it. */
+private fun PromptInjection.relocatedTo(placement: RuntimeContextPlacement): RuntimeContextSection =
+    RuntimeContextSection(
+        placement = placement,
+        origin = when (this) {
+            is PromptInjection.ModeInjection -> RuntimeContextOrigin.MODE_INJECTION
+            is PromptInjection.RegexInjection -> RuntimeContextOrigin.LOREBOOK
+        },
+        content = content,
+    )
 
 /**
  * 将同一 role 的注入合并成消息列表

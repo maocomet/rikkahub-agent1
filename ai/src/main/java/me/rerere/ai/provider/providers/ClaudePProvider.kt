@@ -18,6 +18,7 @@ import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Provider
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.StableSystemPromptProvider
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.claudep.ClaudePCancelReason
 import me.rerere.ai.provider.claudep.ClaudePCatalogResultBody
@@ -128,7 +129,7 @@ class ClaudePProvider(
      * can arrive.
      */
     private val toolHost: ClaudePToolBridgeHost = ClaudePToolBridgeHost.NONE,
-) : Provider<ProviderSetting.ClaudeP> {
+) : Provider<ProviderSetting.ClaudeP>, StableSystemPromptProvider {
 
     /**
      * The per-generation tool adapters, and the only place one exists.
@@ -177,6 +178,9 @@ class ClaudePProvider(
         val turn = messages.lastUserTurn()
             ?: throw ClaudePUnsupportedInputException(ClaudePUnsupportedInput.EMPTY_TURN)
         val systemPrompt = messages.systemPromptOrNull()
+        // The last refusal before anything is built, and the one that makes this provider's
+        // `StableSystemPromptProvider` claim true rather than aspirational — see the method.
+        requireStableSystemPrompt(systemPrompt, params.stableSystemPromptExpectation)
         val requestId = requestIdFactory()
 
         // The catalog is frozen before dispatch, because it has to travel *in* `generation.start`.
@@ -451,6 +455,51 @@ class ClaudePProvider(
             inputModalities = listOf(Modality.TEXT),
             outputModalities = listOf(Modality.TEXT),
             abilities = abilities,
+        )
+    }
+
+    /**
+     * Refuses to send a system instruction the app did not freeze as stable.
+     *
+     * ## Why this exists at all
+     *
+     * A Claude P session is continued later by a remote transport that can only do so safely if the
+     * system instruction it continues under is the one the session was produced under. That makes
+     * the instruction part of the session's identity, and an instruction that drifts turn to turn
+     * makes continuation impossible — not "less cache-efficient", impossible.
+     *
+     * The app therefore computes its stable layout, freezes the result **before** any transformer
+     * runs, and hands that value over on [TextGenerationParams.stableSystemPromptExpectation]. This
+     * is the comparison, and it is deliberately made against a value that did not come from
+     * `messages`: an expectation read back out of the messages being sent would agree with itself
+     * no matter what the layout did, and would prove nothing.
+     *
+     * ## What a mismatch means
+     *
+     * It means something wrote to the system message that the app's stable layout does not account
+     * for — a work-space prompt for an assistant that has one, a non-default message template, a
+     * transformer added later. None of those can be shown to be stable from here, and guessing is
+     * the one option this project refuses: a wrong guess leaks a drifting instruction into a session
+     * identity, and the failure surfaces much later as a conversation that silently will not
+     * continue. So the turn is refused, before the body is built, before any dispatch, and the
+     * reason is a closed enum value rather than the content.
+     *
+     * ## The three outcomes
+     *
+     * | actual | expected | result |
+     * |---|---|---|
+     * | `null` | `null` | proceed — a request with no system instruction has nothing to drift |
+     * | anything | `null` | refuse — "no expectation" is not evidence of stability |
+     * | differs | present | refuse |
+     */
+    private fun requireStableSystemPrompt(actual: String?, expected: String?) {
+        if (actual == expected) return
+        throw ClaudePUnsupportedInputException(
+            if (expected == null) {
+                ClaudePUnsupportedInput.MISSING_SYSTEM_PROMPT_EXPECTATION
+            } else {
+                ClaudePUnsupportedInput.UNSTABLE_SYSTEM_PROMPT
+            },
         )
     }
 
@@ -1114,6 +1163,24 @@ enum class ClaudePUnsupportedInput {
     IMAGE_GENERATION,
     MISSING_MODEL,
     EMPTY_TURN,
+
+    /**
+     * The app froze no system-prompt expectation, but there is a system instruction to send.
+     *
+     * Distinct from [UNSTABLE_SYSTEM_PROMPT] because the two have different causes: this one means
+     * the layout never ran for this request (or ran for a provider that does not need one), which is
+     * a wiring fault, while the other means the layout ran and something afterwards disagreed with it.
+     */
+    MISSING_SYSTEM_PROMPT_EXPECTATION,
+
+    /**
+     * The system instruction being sent is not the one the app froze.
+     *
+     * Something wrote to the system message after the stable layout was frozen and the app has no
+     * proof that what it wrote is stable. See `requireStableSystemPrompt` for why refusing beats
+     * guessing.
+     */
+    UNSTABLE_SYSTEM_PROMPT,
 }
 
 /** Thrown before any dispatch. Carries a bounded enum, never the rejected content. */

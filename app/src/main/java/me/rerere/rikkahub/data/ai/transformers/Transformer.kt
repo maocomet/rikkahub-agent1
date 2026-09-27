@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
+import me.rerere.rikkahub.data.ai.prompt.StableSystemPromptSession
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.model.Assistant
 import kotlin.uuid.Uuid
@@ -17,6 +18,16 @@ class TransformerContext(
     val conversationLorebookIds: Set<Uuid> = emptySet(),
     val processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
     val workspaceCwd: String? = null,
+    /**
+     * Present only for a provider that needs a byte-stable system instruction.
+     *
+     * A transformer that would otherwise *write* to the system message — a substituted value, an
+     * injection destined for one end of it — records what it would have written here instead, and
+     * the caller renders it into the turn's runtime context. `null` means the provider has no such
+     * requirement, and every transformer must then behave **exactly** as it did before this field
+     * existed: that is what keeps the change from reaching any other provider.
+     */
+    val stableSystemPromptSession: StableSystemPromptSession? = null,
 )
 
 interface MessageTransformer {
@@ -71,6 +82,7 @@ suspend fun List<UIMessage>.transforms(
     conversationLorebookIds: Set<Uuid> = emptySet(),
     processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
     workspaceCwd: String? = null,
+    stableSystemPromptSession: StableSystemPromptSession? = null,
 ): List<UIMessage> {
     val ctx = TransformerContext(
         context = context,
@@ -81,6 +93,7 @@ suspend fun List<UIMessage>.transforms(
         conversationLorebookIds = conversationLorebookIds,
         processingStatus = processingStatus,
         workspaceCwd = workspaceCwd,
+        stableSystemPromptSession = stableSystemPromptSession,
     )
     return transformers.fold(this) { acc, transformer ->
         transformer.transform(ctx, acc)
