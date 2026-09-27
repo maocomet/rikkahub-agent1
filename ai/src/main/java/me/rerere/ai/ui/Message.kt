@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonObject
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.claudep.ClaudePSessionContinuation
 import me.rerere.ai.util.json
 import kotlin.time.Clock
 import kotlin.time.Instant
@@ -54,7 +55,34 @@ data class UIMessage(
     val modelId: Uuid? = null,
     val usage: TokenUsage? = null,
     val translation: String? = null,
-    val state: UIMessageState = UIMessageState.COMPLETED
+    val state: UIMessageState = UIMessageState.COMPLETED,
+    /**
+     * The Claude P continuation state this message recorded for one branch, or `null`.
+     *
+     * ### Why it is here, and why it is not `@Transient`
+     *
+     * A Claude P branch has to be resumed under a session the Server bound to *this* message
+     * graph, and whether that binding exists is a durable fact. The authority for the graph is
+     * these rows, so the fact has to be durable in exactly the same place: it is written inside
+     * the same Room transaction that commits the graph, and a graph rollback takes it with it.
+     * A `@Transient` field — the obvious way to keep provider bookkeeping out of the message
+     * model — would be erased by the first process restart, which is precisely the event the
+     * state exists to survive.
+     *
+     * Nothing here is provider-visible. [ClaudePSessionContinuation] carries no session id, no
+     * config hash and no credential, and the app never lets this field reach a prompt, a
+     * `generation.start` body, a request fingerprint or a log line: it is read by the
+     * continuation resolver and written by the continuation barrier, and nowhere else.
+     *
+     * ### Why it is nullable with a `null` default
+     *
+     * Almost every message in almost every conversation has no Claude P continuation — every
+     * message of every other provider, and every Claude P message that predates this field.
+     * `null` means "this message recorded nothing", which is the same answer for all of them and
+     * is the correct one: the resolver treats an absent record as a branch with no history, and
+     * never as a branch that was bound.
+     */
+    val claudePSessionContinuation: ClaudePSessionContinuation? = null,
 ) {
     private fun appendChunk(chunk: MessageChunk): UIMessage {
         val choice = chunk.choices.getOrNull(0)

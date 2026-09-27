@@ -2,6 +2,8 @@ package me.rerere.rikkahub.data.claudep
 
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.claudep.ClaudePSessionBranchId
+import me.rerere.ai.provider.claudep.ClaudePSessionContinuationResolution
+import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.service.chat.CancelCurrentToolCommand
 import me.rerere.rikkahub.service.chat.CancelQueuedCommand
@@ -215,6 +217,112 @@ object ClaudePSessionBranchPlanner {
         is CancelSteeringCommand -> Mode.NOT_MODEL_GENERATION
         is UpdateQueuedMessageCommand -> Mode.NOT_MODEL_GENERATION
         is PromoteQueuedMessageToSteeringCommand -> Mode.NOT_MODEL_GENERATION
+    }
+
+    /**
+     * The production entry point: what to send, and what to write, for [command] on
+     * [conversation].
+     *
+     * This is the seam the dispatch path reads **before** it builds a request fingerprint,
+     * because everything it returns travels in the request and §7 requires every carried field to
+     * enter the fingerprint. Computing it later would let a request be fingerprinted as one shape
+     * and sent as another.
+     *
+     * ## Where each field comes from
+     *
+     * - **The branch identity** is computed from the committed graph by [branchIdOf]. It is never
+     *   read from the command, the envelope, or any remembered value: the graph is the only thing
+     *   that knows which variant the user is looking at.
+     * - **The assistant** is the conversation's own, never a caller's argument. A caller able to
+     *   name an assistant the graph does not agree with could bind a branch to the wrong one.
+     * - **Nothing else.** No session id, no config hash, no credential — the wire forbids them in
+     *   both directions and the Server computes what it needs itself.
+     *
+     * ## The gate, for a branch that already exists
+     *
+     * An immediate plan is only produced when the branch's continuation resolution allows a new
+     * generation — which is to say when the branch has no record at all, or when its binding is
+     * already proven. Every other state refuses: a branch whose model may be running right now,
+     * or whose bind is unconfirmed, must not quietly acquire a second generation, and a branch
+     * that failed closed stays closed.
+     *
+     * A **deferred** plan is not gated on the current branch, and that is not a gap. The
+     * generation it describes creates a *different* branch — the new variant — and the current
+     * branch's state is not a claim about it. The concurrency question this looks like ("may
+     * another generation run?") belongs to command authority, which is where it is answered.
+     *
+     * @param targetRole the role of the message a `RegenerateCommand` targets, read from the
+     *   committed graph; `null` when the target is unresolved. See [classify].
+     */
+    fun plan(
+        conversation: Conversation,
+        command: ChatCommand,
+        targetRole: MessageRole?,
+    ): ClaudePSessionContinuationPlan {
+        val assistantId = conversation.assistantId.toString()
+        return when (classify(command, targetRole)) {
+            Mode.NOT_MODEL_GENERATION ->
+                ClaudePSessionContinuationPlan.NotModelGeneration(assistantId)
+
+            Mode.NEW_DEFERRED_BIND -> ClaudePSessionContinuationPlan.Deferred(assistantId)
+
+            Mode.KNOWN_BEFORE_DISPATCH -> {
+                val branch = when (val described = branchIdOf(conversation.messageNodes)) {
+                    is Branch.Known -> described.id
+                    is Branch.Rejected -> return ClaudePSessionContinuationPlan.Refused(
+                        assistantId,
+                        ClaudePSessionContinuationPlan.Reason.BRANCH_NOT_DESCRIBABLE,
+                    )
+
+                    is Branch.Malformed -> return ClaudePSessionContinuationPlan.Refused(
+                        assistantId,
+                        ClaudePSessionContinuationPlan.Reason.BRANCH_MALFORMED,
+                    )
+                }
+
+                when (
+                    val resolution = ClaudePSessionContinuationResolver.resolve(
+                        conversation = conversation,
+                        branchId = branch,
+                    )
+                ) {
+                    is ClaudePSessionContinuationResolution.Refused ->
+                        ClaudePSessionContinuationPlan.Refused(
+                            assistantId,
+                            ClaudePSessionContinuationPlan.Reason.CONTINUATION_REFUSED,
+                        )
+
+                    is ClaudePSessionContinuationResolution.Conflicted ->
+                        ClaudePSessionContinuationPlan.Refused(
+                            assistantId,
+                            ClaudePSessionContinuationPlan.Reason.CONTINUATION_CONFLICTED,
+                        )
+
+                    else -> if (!resolution.allowsNewGeneration) {
+                        // START_IN_FLIGHT, BIND_PENDING, INTERRUPTED or FAILED_CLOSED: the branch
+                        // is running, unproven, or closed. Refusing is the whole point — the
+                        // alternative is a second generation for a branch that may already have
+                        // one.
+                        ClaudePSessionContinuationPlan.Refused(
+                            assistantId,
+                            ClaudePSessionContinuationPlan.Reason.CONTINUATION_BLOCKED,
+                        )
+                    } else {
+                        // Non-null exactly when the gate above allowed it: the two states that
+                        // permit a new generation are the two `nextRevision` answers, and a
+                        // refusal or conflict never reaches here.
+                        val revision = requireNotNull(
+                            ClaudePSessionContinuationWrite.nextRevision(resolution),
+                        ) { "A permitted generation must have a next revision" }
+                        ClaudePSessionContinuationPlan.Immediate(
+                            assistantId = assistantId,
+                            branchId = branch,
+                            revision = revision,
+                        )
+                    }
+                }
+            }
+        }
     }
 
     /** A send creates no variant, so its branch is always already committed. */
