@@ -54,6 +54,36 @@ interface ClaudePGatewayClient {
     suspend fun receipt(generationId: String): ClaudePReceiptBody
 
     /**
+     * `session.bind` — the second phase of a `deferred` generation (§6.1).
+     *
+     * Turns the Server's uncommitted candidate into a resumable binding. It is sent at most once
+     * per active connection and only after the branch variant it names is committed, because a
+     * candidate that became resumable before its graph existed would be a binding to a branch
+     * the user cannot see.
+     *
+     * ### What it must never do
+     *
+     * Produce a CLI child, a model request, or a heartbeat. A bind is bookkeeping: it attaches an
+     * already-finished generation to the branch it produced. It also never rewrites the original
+     * request, and there is no bind-query API — the only recovery is re-sending the same bind,
+     * which the Server recognises by identity and answers `already_bound`.
+     *
+     * ### Failure is an answer, not an exception
+     *
+     * Every outcome §6.1 defines is returned as a value, including `conflict` and `refused`,
+     * because they are *settled* answers that must be recorded as such. Only a transport failure
+     * throws — and the caller must treat that as "the outcome is unknown", never as "the bind
+     * did not happen", since the Server may well have applied it before the socket died.
+     */
+    suspend fun bindSession(
+        generationId: String,
+        body: ClaudePSessionBindBody,
+    ): ClaudePSessionBindResultBody
+
+    /** Number of `session.bind` RPCs issued. Lets a test prove a replay sent exactly one. */
+    val bindSessionCallCount: Int
+
+    /**
      * `tool.result` — Android's answer to one `tool.invoke`.
      *
      * Fire-and-forget, and deliberately so. The Server applies the outcome to the call it is
@@ -321,6 +351,11 @@ object UnpairedClaudePGatewayClient : ClaudePGatewayClient {
     override suspend fun receipt(generationId: String): ClaudePReceiptBody =
         throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
 
+    override suspend fun bindSession(
+        generationId: String,
+        body: ClaudePSessionBindBody,
+    ): ClaudePSessionBindResultBody = throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
     override suspend fun sendToolResult(generationId: String, body: ClaudePToolResultBody) =
         throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
 
@@ -334,4 +369,5 @@ object UnpairedClaudePGatewayClient : ClaudePGatewayClient {
     override val remoteDispatchCount: Int = 0
     override val cancelCallCount: Int = 0
     override val toolResultCallCount: Int = 0
+    override val bindSessionCallCount: Int = 0
 }

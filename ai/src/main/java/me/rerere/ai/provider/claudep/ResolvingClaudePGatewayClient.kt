@@ -62,10 +62,16 @@ class ResolvingClaudePGatewayClient(
     override suspend fun resume(generationId: String, lastEventSeq: Long): ClaudePResumeResult =
         delegate().resume(generationId, lastEventSeq)
 
+    override suspend fun bindSession(
+        generationId: String,
+        body: ClaudePSessionBindBody,
+    ): ClaudePSessionBindResultBody = delegate().bindSession(generationId, body)
+
     // Counters are read synchronously by tests and diagnostics, so they report the fallback's zeros
     // while unpaired. That is the honest answer: nothing was dispatched.
     override val startGenerationCallCount: Int get() = fallback.startGenerationCallCount
     override val remoteDispatchCount: Int get() = fallback.remoteDispatchCount
     override val cancelCallCount: Int get() = fallback.cancelCallCount
     override val toolResultCallCount: Int get() = fallback.toolResultCallCount
+    override val bindSessionCallCount: Int get() = fallback.bindSessionCallCount
 }

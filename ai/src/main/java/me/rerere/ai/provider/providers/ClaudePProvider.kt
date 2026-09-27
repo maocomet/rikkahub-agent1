@@ -56,6 +56,11 @@ import me.rerere.ai.provider.claudep.ClaudePProtocol
 import me.rerere.ai.provider.claudep.ClaudePRequestFingerprint
 import me.rerere.ai.provider.claudep.ClaudePResumeKind
 import me.rerere.ai.provider.claudep.ClaudePResumeResult
+import me.rerere.ai.provider.claudep.ClaudePSessionBindOutcome
+import me.rerere.ai.provider.claudep.ClaudePSessionBindingIntent
+import me.rerere.ai.provider.claudep.ClaudePSessionBindingRequest
+import me.rerere.ai.provider.claudep.ClaudePSessionMode
+import me.rerere.ai.provider.claudep.bindSessionOnce
 import me.rerere.ai.provider.claudep.ClaudePServerEvent
 import me.rerere.ai.provider.claudep.ClaudePServerHelloBody
 import me.rerere.ai.provider.claudep.ClaudePStopReason
@@ -196,11 +201,17 @@ class ClaudePProvider(
         val preparation = toolHost.prepare(params.tools, params.claudePToolGenerationContext)
         val toolSnapshot = if (preparation.catalog.isEmpty) null else preparation.snapshot
 
+        // Resolved **once**, before the fingerprint, and used for both the fingerprint and the
+        // body. §7 requires every field a request carries to enter its fingerprint, so a shape
+        // computed twice could be fingerprinted as one thing and sent as another — and the
+        // Server would then deduplicate two genuinely different requests under one key.
+        val shape = resolveRequestShape(params.claudePSessionBindingRequest)
+
         val fingerprint = ClaudePRequestFingerprint.compute(
             deviceId = deviceId,
             remoteThreadId = remoteThreadId,
-            remoteBranchId = remoteBranchId,
-            mode = MODE_NEW,
+            remoteBranchId = shape.remoteBranchId,
+            mode = shape.mode,
             modelAlias = modelAlias,
             systemPrompt = systemPrompt,
             turn = turn,
@@ -208,17 +219,23 @@ class ClaudePProvider(
             // identity: two requests that offer Claude different tools are not the same request,
             // and idempotency keyed without it would replay the first one's answer.
             toolSnapshot = toolSnapshot?.toString(),
+            // Appended only when present, so a legacy request keeps the v1-r3 byte stream and
+            // its frozen digest — which is what the conformance corpus pins.
+            assistantId = shape.assistantId,
+            bindingIntent = shape.bindingIntent,
         )
         val body = ClaudePGenerationStartBody(
             remoteThreadId = remoteThreadId,
-            remoteBranchId = remoteBranchId,
-            mode = MODE_NEW,
+            remoteBranchId = shape.remoteBranchId,
+            mode = shape.mode,
             modelAlias = modelAlias,
             systemPrompt = systemPrompt,
             turn = turn,
             rebuildHistory = null,
             toolSnapshot = toolSnapshot,
             limits = ClaudePGenerationLimits(maxOutputTokens = params.maxTokens),
+            bindingIntent = shape.bindingIntent,
+            assistantId = shape.assistantId,
         )
 
         // A provider stream owns exactly one remote dispatch. Collecting it a second time must
@@ -252,7 +269,23 @@ class ClaudePProvider(
                         generationId = handle.generationId,
                         onTerminal = attempt::markTerminal,
                         onToolFrame = { event -> toolFrames?.on(event) { emit(it) } },
-                        emit = { emit(it) },
+                        // The generation id rides on the chunks of a *deferred* generation and
+                        // nowhere else. The app needs it to write the `BIND_PENDING` record
+                        // inside the transaction that commits the new branch variant — and that
+                        // transaction happens after this stream ends, so the id has to reach the
+                        // app before then. Nothing else consumes it: it is transient, so it
+                        // cannot reach a request body or a stored message, and a legacy
+                        // generation does not carry it at all, which keeps every non-M3 path
+                        // byte-for-byte what it was.
+                        emit = { chunk ->
+                            emit(
+                                if (shape.deferred) {
+                                    chunk.copy(claudePGenerationId = handle.generationId)
+                                } else {
+                                    chunk
+                                },
+                            )
+                        },
                     )
                 } finally {
                     // Closed after the stream ends, whatever ended it: a terminal, a cancellation,
@@ -279,6 +312,52 @@ class ClaudePProvider(
                 throw cancelled
             }
         }
+    }
+
+    /**
+     * `session.bind` for one finished `deferred` generation (§6.1).
+     *
+     * The app calls this **after** it has committed the new branch variant and its
+     * `BIND_PENDING` record, because the candidate must not become resumable before the graph it
+     * describes exists — and because [branchId] is the digest of that committed graph, which
+     * could not be computed any earlier.
+     *
+     * ## What this deliberately is not
+     *
+     * It is not a model call, not a generation, and not a retry of one. `generation.start` is
+     * never reached from here, so a replay cannot buy a second CLI child or a second answer. The
+     * only thing a second call does is re-send the same frame, which §6.1 makes idempotent.
+     *
+     * It is also not a loop. There is no polling, no timer and no background retry: the caller
+     * decides when to re-send, and the two occasions it may are an explicit user action and a
+     * reconnect boundary. A bind that re-sent itself would be a busy loop against a Server that
+     * is under no obligation to answer.
+     *
+     * Every input is required to be usable rather than defaulted, because a bind built from a
+     * placeholder would be a bind for a branch that does not exist — and the Server's answer to
+     * that is `conflict`, which would close a branch that was in fact fine.
+     */
+    suspend fun bindSession(
+        generationId: String,
+        branchId: String,
+        assistantId: String,
+    ): ClaudePSessionBindOutcome {
+        require(generationId.isNotBlank()) { "A bind must name the generation it binds" }
+        require(assistantId.isNotBlank()) { "A bind must name the assistant it binds" }
+        require(branchId.matches(BRANCH_ID)) { "A bind must carry a canonical branch id" }
+
+        // A bind travels on the same authenticated connection as everything else, so it goes
+        // through the same handshake. Doing it here rather than assuming the caller already did
+        // is what keeps a reconnect — the one occasion a replay is allowed — from re-sending a
+        // bind onto a socket that has not re-introduced itself.
+        ensureHandshake(requireDeviceId())
+
+        return gateway.bindSessionOnce(
+            generationId = generationId,
+            remoteThreadId = remoteThreadId,
+            branchId = branchId,
+            assistantId = assistantId,
+        )
     }
 
     /**
@@ -430,6 +509,62 @@ class ClaudePProvider(
     // -----------------------------------------------------------------------------------------
     // Internals
     // -----------------------------------------------------------------------------------------
+
+    /**
+     * The three request fields that depend on whether the app resolved a branch.
+     *
+     * ## Why all three come from one function
+     *
+     * `mode`, `remote_branch_id` and `binding_intent` are only legal in the four combinations
+     * §5.4's table lists. Deriving them separately — the mode here, the branch there — is how a
+     * request ends up `auto` with no branch, or `deferred` with one, both of which the Server
+     * refuses and neither of which the fingerprint would have caught. One function, one decision.
+     *
+     * ## The legacy shape
+     *
+     * A generation with no binding request is the CP1-A request: `mode: "new"`, the constructor's
+     * opaque branch value, and **no** tail fields at all. The absence is load-bearing rather than
+     * incidental — §12.12 appends `assistant_id` and `binding_intent` only when present, so a
+     * request that carries neither produces the exact byte stream v1-r3 produced. That is what
+     * keeps the frozen fingerprints in `claudep/conformance/` valid.
+     */
+    private fun resolveRequestShape(binding: ClaudePSessionBindingRequest?): RequestShape =
+        when (binding?.intent) {
+            null -> RequestShape(
+                mode = MODE_NEW,
+                remoteBranchId = remoteBranchId,
+                assistantId = null,
+                bindingIntent = null,
+            )
+
+            ClaudePSessionBindingIntent.IMMEDIATE -> RequestShape(
+                mode = ClaudePSessionMode.AUTO,
+                remoteBranchId = binding.branchId,
+                assistantId = binding.assistantId,
+                bindingIntent = ClaudePSessionBindingIntent.IMMEDIATE.wireValue,
+            )
+
+            ClaudePSessionBindingIntent.DEFERRED -> RequestShape(
+                mode = ClaudePSessionMode.AUTO,
+                // Absent, not empty: §5.3 encodes "this branch does not exist yet" with the
+                // field's own presence flag and refuses `""` as a stand-in, because an empty
+                // string is a *present but empty* identity and the two would share a fingerprint.
+                remoteBranchId = null,
+                assistantId = binding.assistantId,
+                bindingIntent = ClaudePSessionBindingIntent.DEFERRED.wireValue,
+            )
+        }
+
+    private data class RequestShape(
+        val mode: String,
+        val remoteBranchId: String?,
+        val assistantId: String?,
+        val bindingIntent: String?,
+    ) {
+        /** True when this generation will create its branch and therefore owes a bind. */
+        val deferred: Boolean
+            get() = bindingIntent == ClaudePSessionBindingIntent.DEFERRED.wireValue
+    }
 
     /**
      * Maps a server catalog onto [Model]s.
@@ -622,8 +757,12 @@ class ClaudePProvider(
     }
 
     private companion object {
-        const val MODE_NEW = "new"
+        /** §5.1's legacy mode, kept as the shape a generation with no resolved branch sends. */
+        val MODE_NEW = ClaudePSessionMode.NEW
         const val FEATURE_REASONING_SUMMARY = "reasoning_summary"
+
+        /** The 64-lowercase-hex shape every branch identity has. */
+        val BRANCH_ID = Regex("^[0-9a-f]{64}$")
     }
 }
 
@@ -766,6 +905,12 @@ private fun ClaudePTerminalGate.route(event: ClaudePServerEvent): ClaudePFrameRo
     }
 
     // Handshake / catalog / acknowledgement events carry no user-visible content.
+    //
+    // `session.bind.result` belongs here for the same reason `receipt.result` does: it is the
+    // answer to an RPC the caller is already awaiting by `request_id`, so by the time a copy of
+    // it reaches a generation's stream there is nothing left for it to mean. Routing it as
+    // anything else would let a bind answer arrive twice — once as a return value, once as a
+    // stream event — and only one of those may be allowed to settle a branch.
     is ClaudePServerEvent.ServerHello,
     is ClaudePServerEvent.CatalogResult,
     is ClaudePServerEvent.GenerationAccepted,
@@ -773,6 +918,7 @@ private fun ClaudePTerminalGate.route(event: ClaudePServerEvent): ClaudePFrameRo
     is ClaudePServerEvent.MessageStarted,
     is ClaudePServerEvent.ReceiptResult,
     is ClaudePServerEvent.StreamResumeResult,
+    is ClaudePServerEvent.SessionBindResult,
     -> ClaudePFrameRouting.Ignore
 
     // The three frames the bridge must answer. Note that they are routed **past** the terminal

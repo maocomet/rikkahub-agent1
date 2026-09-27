@@ -23,6 +23,8 @@ import me.rerere.ai.provider.claudep.ClaudePGenerationHandle
 import me.rerere.ai.provider.claudep.ClaudePGenerationStartBody
 import me.rerere.ai.provider.claudep.ClaudePReceiptBody
 import me.rerere.ai.provider.claudep.ClaudePResumeResult
+import me.rerere.ai.provider.claudep.ClaudePSessionBindBody
+import me.rerere.ai.provider.claudep.ClaudePSessionBindResultBody
 import me.rerere.ai.provider.claudep.ClaudePServerHelloBody
 import me.rerere.ai.provider.claudep.BridgeToolExecution
 import me.rerere.ai.provider.claudep.ClaudePToolBridgeHost
@@ -298,10 +300,16 @@ class ClaudePProviderBindingOrderTest {
         override suspend fun resume(generationId: String, lastEventSeq: Long): ClaudePResumeResult =
             delegate.resume(generationId, lastEventSeq)
 
+        override suspend fun bindSession(
+            generationId: String,
+            body: ClaudePSessionBindBody,
+        ): ClaudePSessionBindResultBody = delegate.bindSession(generationId, body)
+
         override val startGenerationCallCount: Int get() = delegate.startGenerationCallCount
         override val remoteDispatchCount: Int get() = delegate.remoteDispatchCount
         override val cancelCallCount: Int get() = delegate.cancelCallCount
         override val toolResultCallCount: Int get() = delegate.toolResultCallCount
+        override val bindSessionCallCount: Int get() = delegate.bindSessionCallCount
 
         /** The fake names generations `gen-<n>-<alias>`; tests read it rather than assume `n`. */
         val lastGenerationId: String? get() = delegate.lastGenerationId

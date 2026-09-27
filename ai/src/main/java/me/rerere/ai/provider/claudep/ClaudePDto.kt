@@ -99,11 +99,25 @@ data class ClaudePGenerationLimits(
  * `generation.start`. Everything semantic about the request lives here, which is exactly why
  * `toString` redacts the prompt, the turn and the tool snapshot: this object is the most likely
  * thing in the codebase to be accidentally logged.
+ *
+ * ## Why [remoteBranchId] is nullable, and why that is not "an optional field"
+ *
+ * Under §5.3 the field carries three different meanings depending on the request's shape: a
+ * legacy opaque value, a 64-hex branch digest for `immediate`, and — for `deferred` — *absent*,
+ * because the branch does not exist yet. Absence is encoded by the field's own presence flag, and
+ * the protocol forbids `""` as a stand-in: an empty string is a *present but empty* branch
+ * identity, which is not a legal value, and folding the two together would give two different
+ * request shapes one shared fingerprint.
+ *
+ * The encoder is configured with `explicitNulls = false`, so `null` here produces a body with no
+ * `remote_branch_id` key at all rather than a JSON null. That is the whole mechanism, and it is
+ * why this is a `String?` with no default — a default would make "absent" writable by omission
+ * from a call site that meant to pass one.
  */
 @Serializable
 data class ClaudePGenerationStartBody(
     @SerialName("remote_thread_id") val remoteThreadId: String,
-    @SerialName("remote_branch_id") val remoteBranchId: String,
+    @SerialName("remote_branch_id") val remoteBranchId: String?,
     val mode: String,
     @SerialName("model_alias") val modelAlias: String,
     @SerialName("system_prompt") val systemPrompt: String? = null,
@@ -111,14 +125,75 @@ data class ClaudePGenerationStartBody(
     @SerialName("rebuild_history") val rebuildHistory: List<ClaudePTurn>? = null,
     @SerialName("tool_snapshot") val toolSnapshot: JsonElement? = null,
     val limits: ClaudePGenerationLimits? = null,
+    /**
+     * `immediate` or `deferred` (§5.2), and only ever alongside `mode: "auto"`.
+     *
+     * It is a separate field rather than a third `mode` value because they answer different
+     * questions: `mode` says whether the Worker may resolve a continuation at all, and
+     * `binding_intent` says whether the branch this generation belongs to is already committed.
+     * Folding them would make `resume` expressible, and `resume` is refused on the public wire.
+     */
+    @SerialName("binding_intent") val bindingIntent: String? = null,
+    /**
+     * The assistant this branch belongs to (§5.4 row 7). **Required** under `mode: "auto"`.
+     *
+     * It is on the wire because the Worker resolves `new`-versus-`resume` by looking up the
+     * binding for `(device, thread, branch, assistant)` — an `auto` request that did not name its
+     * assistant would be a request to resolve a continuation for a branch that might belong to
+     * any of them. §5.4 therefore refuses `auto` without it rather than guessing, and [init]
+     * refuses to build such a request at all.
+     */
+    @SerialName("assistant_id") val assistantId: String? = null,
 ) {
+    init {
+        // §5.4 rows 5-8, refused where the request is built rather than where it is sent: a shape
+        // the Server rejects costs the whole connection, not one request.
+        if (mode == ClaudePSessionMode.AUTO) {
+            require(!assistantId.isNullOrBlank()) {
+                "An auto request must name its assistant"
+            }
+        } else {
+            require(assistantId == null && bindingIntent == null) {
+                "Legacy and M3 request shapes must not be mixed"
+            }
+        }
+
+        if (bindingIntent != null) {
+            val legal = when (bindingIntent) {
+                ClaudePSessionBindingIntent.IMMEDIATE.wireValue -> remoteBranchId != null
+                ClaudePSessionBindingIntent.DEFERRED.wireValue -> remoteBranchId == null
+                else -> false
+            }
+            require(legal) {
+                "A binding intent must carry exactly the branch presence its shape requires"
+            }
+        }
+    }
+
     override fun toString(): String =
         "ClaudePGenerationStartBody(thread=${remoteThreadId.redactedRef()}, " +
             "branch=${remoteBranchId.redactedRef()}, mode=$mode, modelAlias=$modelAlias, " +
+            "bindingIntent=${bindingIntent ?: "-"}, " +
             "systemPrompt=<redacted:${systemPrompt?.length ?: 0} chars>, " +
             "turn=<redacted:${turn.parts.size} parts>, " +
             "rebuildHistory=<redacted:${rebuildHistory?.size ?: 0} turns>, " +
             "toolSnapshot=<redacted:${if (toolSnapshot == null) 0 else 1}>, limits=$limits)"
+}
+
+/**
+ * The two values `mode` may legally take on the public wire (§5.1).
+ *
+ * `resume`, `fork` and `rebuild` are deliberately **not** here. §5.1 refuses them, and the
+ * client could not honour them anyway: it cannot see a Claude session id, so it has no way to
+ * know which session to ask for. A client that could send `resume` would be a client asserting a
+ * continuation it cannot prove, which is what `auto` exists to avoid.
+ */
+object ClaudePSessionMode {
+    /** Legacy: no durable continuation. Reads and writes no session store. */
+    const val NEW = "new"
+
+    /** Resolved by the Worker, by an exact binding lookup — never by similarity. */
+    const val AUTO = "auto"
 }
 
 /** `generation.cancel`. Idempotent on the gateway side; the client still sends it at most once. */
@@ -421,6 +496,75 @@ data class ClaudePToolQueryBody(
     override fun toString(): String = "ClaudePToolQueryBody(toolCallId=${toolCallId.redactedRef()})"
 }
 
+/**
+ * The body of an outbound `session.bind` (§6.1).
+ *
+ * Four fields, and every one of them has to match the candidate the Server is holding. There is
+ * no "best effort" version of this frame: the Server compares field by field and answers
+ * `conflict` for anything that does not line up, because a bind that half-matches is a bind that
+ * would attach the session to a branch it did not run for.
+ *
+ * [remoteBranchId] is the digest of the **committed** graph — the one the new variant produced —
+ * and not the branch the generation started under. A `deferred` generation starts with no branch
+ * id at all; this is the first moment one exists.
+ */
+@Serializable
+data class ClaudePSessionBindBody(
+    @SerialName("generation_id") val generationId: String,
+    @SerialName("remote_thread_id") val remoteThreadId: String,
+    @SerialName("remote_branch_id") val remoteBranchId: String,
+    @SerialName("assistant_id") val assistantId: String,
+) {
+    override fun toString(): String =
+        "ClaudePSessionBindBody(generationId=${generationId.redactedRef()}, " +
+            "thread=${remoteThreadId.redactedRef()}, branch=${remoteBranchId.redactedRef()}, " +
+            "assistantId=${assistantId.redactedRef()})"
+}
+
+/**
+ * `session.bind.result.state` — the closed vocabulary of §6.1.
+ *
+ * [fromWire] returns `null` for anything else, and the caller must treat that as malformed
+ * rather than as a state: the Server owns this vocabulary, and a value this build does not know
+ * is not evidence that the bind succeeded. The permissive reading — "unrecognised, so assume
+ * bound" — would mark a branch resumable on the strength of a string nobody understood.
+ */
+enum class ClaudePSessionBindState(val wireValue: String) {
+    /** The candidate matched field for field and the binding was written atomically. */
+    BOUND("bound"),
+
+    /** The identical bind was already applied. No new write, and no CLI child. */
+    ALREADY_BOUND("already_bound"),
+
+    /** Same generation, different branch/assistant/device/config identity. Nothing was moved. */
+    CONFLICT("conflict"),
+
+    /** No such candidate, or it was lost with a Worker restart. The generation is not re-run. */
+    CANDIDATE_UNAVAILABLE("candidate_unavailable"),
+
+    /** The generation did not satisfy the preconditions to be bound at all. */
+    REFUSED("refused");
+
+    companion object {
+        fun fromWire(raw: String?): ClaudePSessionBindState? =
+            entries.firstOrNull { it.wireValue == raw?.trim() }
+    }
+}
+
+/** The body of a `session.bind.result`. */
+@Serializable
+data class ClaudePSessionBindResultBody(
+    @SerialName("generation_id") val generationId: String = "",
+    val state: String = "",
+) {
+    val safeState: ClaudePSessionBindState?
+        get() = ClaudePSessionBindState.fromWire(state)
+
+    override fun toString(): String =
+        "ClaudePSessionBindResultBody(generationId=${generationId.redactedRef()}, " +
+            "state=${safeState?.wireValue ?: "<unrecognised>"})"
+}
+
 // ---------------------------------------------------------------------------------------------
 // Typed server events
 // ---------------------------------------------------------------------------------------------
@@ -528,6 +672,12 @@ sealed interface ClaudePServerEvent {
     data class ToolQueryResult(
         override val envelope: ClaudePEnvelope,
         val body: ClaudePToolQueryResultBody,
+    ) : ClaudePServerEvent
+
+    /** The Server's answer to one `session.bind`. */
+    data class SessionBindResult(
+        override val envelope: ClaudePEnvelope,
+        val body: ClaudePSessionBindResultBody,
     ) : ClaudePServerEvent
 
     /** True only for the three terminals. Used by the provider to drive [ClaudePTerminalGate]. */
@@ -640,6 +790,11 @@ sealed interface ClaudePServerEvent {
                 )
 
                 ClaudePEventType.TOOL_QUERY_RESULT -> ToolQueryResult(
+                    envelope,
+                    ClaudePProtocol.json.decodeFromJsonElement(body),
+                )
+
+                ClaudePEventType.SESSION_BIND_RESULT -> SessionBindResult(
                     envelope,
                     ClaudePProtocol.json.decodeFromJsonElement(body),
                 )

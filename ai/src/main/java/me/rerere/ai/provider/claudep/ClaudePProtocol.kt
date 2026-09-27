@@ -110,6 +110,7 @@ object ClaudePProtocol {
         ClaudePEventType.TOOL_INVOKE,
         ClaudePEventType.TOOL_CANCEL,
         ClaudePEventType.TOOL_QUERY_RESULT,
+        ClaudePEventType.SESSION_BIND_RESULT,
     )
 
     /**
@@ -176,6 +177,20 @@ object ClaudePEventType {
     /** An exact lookup of one `tool_call_id`. Never a search, and never a way to list calls. */
     const val TOOL_QUERY = "tool.query"
 
+    /**
+     * The second phase of a `deferred` generation: the client submits the binding the Server is
+     * holding as an uncommitted candidate (§6.1).
+     *
+     * Sent **once** per deferred generation, and only after the new branch variant and its
+     * `BIND_PENDING` record are committed — the whole point is that the candidate must not
+     * become resumable before the graph it describes exists. It produces no CLI child, no model
+     * request and no heartbeat: a bind is bookkeeping, not work.
+     *
+     * Recovery is re-sending this same frame with the same identity. There is no bind-query API,
+     * no job queue and no polling.
+     */
+    const val SESSION_BIND = "session.bind"
+
     // server -> client
     const val SERVER_HELLO = "server.hello"
     const val CATALOG_RESULT = "catalog.result"
@@ -212,6 +227,12 @@ object ClaudePEventType {
      */
     const val TOOL_QUERY_RESULT = "tool.query.result"
 
+    /**
+     * The Server's answer to one [SESSION_BIND]. Carries a [ClaudePSessionBindState] and nothing
+     * else — no session id, no reason text, no hint about what a conflicting bind was.
+     */
+    const val SESSION_BIND_RESULT = "session.bind.result"
+
     /** Every type this build may send. Used to keep an outbound frame from being invented. */
     val CLIENT_TYPES: Set<String> = setOf(
         CLIENT_HELLO,
@@ -222,6 +243,7 @@ object ClaudePEventType {
         RECEIPT_QUERY,
         TOOL_RESULT,
         TOOL_QUERY,
+        SESSION_BIND,
     )
 }
 

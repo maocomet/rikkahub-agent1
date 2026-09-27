@@ -978,6 +978,24 @@ data class MessageChunk(
      */
     @Transient
     val pendingApprovalContinuation: String? = null,
+    /**
+     * The Server's generation id, on the chunks of a `deferred` Claude P generation.
+     *
+     * ## Why the id has to ride here
+     *
+     * A `deferred` generation creates the branch it belongs to, so the app can only bind that
+     * branch *after* it commits the new variant — and §6.1 requires the commit and the
+     * `BIND_PENDING` record to be one transaction, which means the app must already hold the
+     * generation id when that transaction runs. The transaction happens after this stream ends,
+     * so this is the last moment the id can be handed over. There is no request/response channel
+     * between the provider and the conversation layer for it to travel on instead.
+     *
+     * [Transient] for the same reason as the field above: it is correlation, not content, and it
+     * must never be persisted or serialized. A generation that carries no bind obligation does
+     * not stamp it at all.
+     */
+    @Transient
+    val claudePGenerationId: String? = null,
 ) {
     fun resolvedTerminal(): GenerationTerminal? {
         terminal?.let { return it }

@@ -7,6 +7,7 @@ import kotlinx.serialization.Transient
 import kotlinx.serialization.json.JsonElement
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
+import me.rerere.ai.provider.claudep.ClaudePSessionBindingRequest
 import me.rerere.ai.provider.claudep.ClaudePToolGenerationContext
 import me.rerere.ai.ui.ImageAspectRatio
 import me.rerere.ai.ui.ImageGenerationItem
@@ -528,6 +529,22 @@ data class TextGenerationParams(
      */
     @Transient
     val claudePToolGenerationContext: ClaudePToolGenerationContext? = null,
+    /**
+     * Which branch this Claude P generation belongs to, and whether it is about to create one.
+     *
+     * Transient for the same reason as the context above: the branch identity is the app's own,
+     * and it travels to the Server as the protocol's `remote_branch_id` — a request body that
+     * also carried this object would be sending the same fact twice, once under a name the wire
+     * does not define.
+     *
+     * `null` means the app did not resolve a branch for this generation, and the provider keeps
+     * the pre-M3 `mode: "new"` shape. That is the correct answer for every call path that has no
+     * conversation graph behind it — and it is **not** the answer to "the app tried and could
+     * not": a caller that cannot resolve a branch must refuse the dispatch rather than silently
+     * send a request that starts a fresh Claude session for a branch that may already have one.
+     */
+    @Transient
+    val claudePSessionBindingRequest: ClaudePSessionBindingRequest? = null,
     /**
      * The system instruction the app **froze** for this request, for a
      * [StableSystemPromptProvider] to compare against what it is about to send.

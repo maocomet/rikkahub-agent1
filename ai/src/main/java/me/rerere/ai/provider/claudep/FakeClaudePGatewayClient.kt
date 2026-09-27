@@ -129,6 +129,37 @@ class FakeClaudePGatewayClient(
     val toolResults: List<Pair<String, ClaudePToolResultBody>>
         get() = synchronized(lock) { sentToolResults.toList() }
 
+    private var bindSessionCalls = 0
+
+    override val bindSessionCallCount: Int
+        get() = synchronized(lock) { bindSessionCalls }
+
+    /** Every `generation.start` body received, in order. */
+    private val startedBodies = mutableListOf<ClaudePGenerationStartBody>()
+
+    val startBodies: List<ClaudePGenerationStartBody>
+        get() = synchronized(lock) { startedBodies.toList() }
+
+    /** The `session.bind` bodies written, in order, as (generation id, body). */
+    private val sentBinds = mutableListOf<Pair<String, ClaudePSessionBindBody>>()
+
+    val bindRequests: List<Pair<String, ClaudePSessionBindBody>>
+        get() = synchronized(lock) { sentBinds.toList() }
+
+    /**
+     * The answer a bind receives, scripted rather than computed.
+     *
+     * A test needs to drive every outcome §6.1 defines — including the ones a well-behaved Server
+     * reaches only under conditions this fake has no way to model, such as a Worker restart
+     * losing the candidate. The default is the answer a matching candidate produces.
+     */
+    var bindResult: (ClaudePSessionBindBody) -> ClaudePSessionBindResultBody = { body ->
+        ClaudePSessionBindResultBody(
+            generationId = body.generationId,
+            state = ClaudePSessionBindState.BOUND.wireValue,
+        )
+    }
+
     /** The `tool.query` frames written, in order, as (generation id, body). */
     private val sentToolQueries = mutableListOf<Pair<String, ClaudePToolQueryBody>>()
 
@@ -177,6 +208,7 @@ class FakeClaudePGatewayClient(
 
         synchronized(lock) {
             startGenerationCalls++
+            startedBodies += body
 
             // §7: same id + same fingerprint replays the original; same id + different
             // fingerprint is a hard conflict. Never create a second model request.
@@ -244,6 +276,27 @@ class FakeClaudePGatewayClient(
             )
 
         return synchronized(generation) { buildReceipt(generationId, generation) }
+    }
+
+    /**
+     * Records an outbound `session.bind` and answers it from [bindResult].
+     *
+     * Deliberately *not* gated on the generation's terminal state. §6.1's `refused` exists for a
+     * generation that did not satisfy the preconditions to be bound, and the Server — not this
+     * fake — is what decides that; a fake that refused on its own would hide the caller's
+     * handling of a refusal behind its own.
+     */
+    override suspend fun bindSession(
+        generationId: String,
+        body: ClaudePSessionBindBody,
+    ): ClaudePSessionBindResultBody {
+        requireHandshakeCompleted()
+        val answer = synchronized(lock) {
+            bindSessionCalls++
+            sentBinds += generationId to body
+            bindResult
+        }
+        return answer(body)
     }
 
     /**

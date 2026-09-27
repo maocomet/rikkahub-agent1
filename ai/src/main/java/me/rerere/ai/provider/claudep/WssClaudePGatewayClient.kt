@@ -102,6 +102,7 @@ class WssClaudePGatewayClient(
     private val remoteDispatches = AtomicInteger(0)
     private val cancelCalls = AtomicInteger(0)
     private val toolResultCalls = AtomicInteger(0)
+    private val bindCalls = AtomicInteger(0)
 
     private val idempotencyLock = Any()
     private val idempotency = LinkedHashMap<String, IdempotencyEntry>()
@@ -113,6 +114,7 @@ class WssClaudePGatewayClient(
     override val remoteDispatchCount: Int get() = remoteDispatches.get()
     override val cancelCallCount: Int get() = cancelCalls.get()
     override val toolResultCallCount: Int get() = toolResultCalls.get()
+    override val bindSessionCallCount: Int get() = bindCalls.get()
 
     /** The negotiated `server.hello`, once a handshake has completed. */
     val serverHello: ClaudePServerHelloBody? get() = negotiatedHello
@@ -406,6 +408,34 @@ class WssClaudePGatewayClient(
             ?: throw ClaudePGatewayException(ClaudePErrorCode.STREAM_INTERRUPTED)
         val event = (ClaudePProtocol.parseInbound(raw) as? ClaudePInbound.Event)?.event
         return (event as? ClaudePServerEvent.ReceiptResult)?.body
+            ?: throw ClaudePGatewayException(ClaudePErrorCode.PROTOCOL_MISMATCH)
+    }
+
+    /**
+     * `session.bind` — the second phase of a `deferred` generation (§6.1).
+     *
+     * The counter moves **when the caller asked**, not when a frame reached the socket, because
+     * its job is to prove a replay sent exactly one bind. A count that only advanced on success
+     * could not tell "sent once" apart from "sent twice and one failed".
+     *
+     * An unrecognised `state` string comes back with a `null` `safeState`, and the caller must
+     * read that as malformed rather than as a settled bind: the Server owns this vocabulary, and
+     * a value this build does not know is not evidence that anything was written.
+     */
+    override suspend fun bindSession(
+        generationId: String,
+        body: ClaudePSessionBindBody,
+    ): ClaudePSessionBindResultBody {
+        bindCalls.incrementAndGet()
+        val ready = ensureSession()
+        val raw = sendRpc(
+            ready = ready,
+            type = ClaudePEventType.SESSION_BIND,
+            generationId = generationId,
+            body = ClaudePProtocol.json.encodeToJsonElement(body).jsonObject,
+        ) ?: throw ClaudePGatewayException(ClaudePErrorCode.STREAM_INTERRUPTED)
+        val event = (ClaudePProtocol.parseInbound(raw) as? ClaudePInbound.Event)?.event
+        return (event as? ClaudePServerEvent.SessionBindResult)?.body
             ?: throw ClaudePGatewayException(ClaudePErrorCode.PROTOCOL_MISMATCH)
     }
 
