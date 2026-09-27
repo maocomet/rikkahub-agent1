@@ -67,6 +67,17 @@ class ResolvingClaudePGatewayClient(
         body: ClaudePSessionBindBody,
     ): ClaudePSessionBindResultBody = delegate().bindSession(generationId, body)
 
+    /**
+     * The **resolved** client's epoch, not the fallback's.
+     *
+     * The counters below report the fallback's zeros while unpaired, and that is the honest answer
+     * for them because nothing was dispatched. This is different: it is asked *before* a replay, and
+     * its whole job is to say whether there is a live connection to replay on. Reporting the
+     * fallback's `null` unconditionally would answer "no connection" for a device that has one — so
+     * the one accessor that is allowed to be asynchronous resolves, like every RPC above.
+     */
+    override suspend fun connectionEpoch(): ClaudePConnectionEpoch? = delegate().connectionEpoch()
+
     // Counters are read synchronously by tests and diagnostics, so they report the fallback's zeros
     // while unpaired. That is the honest answer: nothing was dispatched.
     override val startGenerationCallCount: Int get() = fallback.startGenerationCallCount

@@ -86,6 +86,8 @@ class FakeClaudePGatewayClient(
 
     private val lock = Any()
     private var handshakeCompleted = false
+    private var connectionEpochCounter = 0L
+    private var currentConnectionEpoch: ClaudePConnectionEpoch? = null
 
     private var helloCalls = 0
     private var startGenerationCalls = 0
@@ -179,7 +181,10 @@ class FakeClaudePGatewayClient(
         if (outcome is FakeHandshake.Reject) {
             throw ClaudePGatewayException(outcome.code)
         }
-        synchronized(lock) { handshakeCompleted = true }
+        synchronized(lock) {
+            handshakeCompleted = true
+            currentConnectionEpoch = ClaudePConnectionEpoch(++connectionEpochCounter)
+        }
         return ClaudePServerHelloBody(
             protocolVersion = serverProtocolVersion,
             gatewayBuild = "fake-gateway-1",
@@ -382,6 +387,17 @@ class FakeClaudePGatewayClient(
     // -----------------------------------------------------------------------------------------
     // Scripting
     // -----------------------------------------------------------------------------------------
+
+    /**
+     * Moves on every completed `client.hello`, and is `null` until one has.
+     *
+     * The fake has no socket, so "a new connection" is exactly "another successful handshake" —
+     * which is the same rule the real client applies, arrived at without a transport. A test that
+     * wants a second connection calls [hello] again and watches this move; a test that wants a
+     * replay to be *refused* simply does not.
+     */
+    override suspend fun connectionEpoch(): ClaudePConnectionEpoch? =
+        synchronized(lock) { currentConnectionEpoch }
 
     private fun requireHandshakeCompleted() {
         if (requireHandshake && !handshakeCompleted) {

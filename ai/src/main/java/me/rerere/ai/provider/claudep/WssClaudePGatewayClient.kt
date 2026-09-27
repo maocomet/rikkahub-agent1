@@ -94,6 +94,23 @@ class WssClaudePGatewayClient(
     @Volatile
     private var negotiatedHello: ClaudePServerHelloBody? = null
 
+    /**
+     * Source of [ClaudePConnectionEpoch]. Only ever incremented, and only after a handshake that
+     * completed — so a value is minted exactly once per carried connection and never reused.
+     */
+    private val epochCounter = java.util.concurrent.atomic.AtomicLong(0)
+
+    /**
+     * The token for the connection currently carried, or `null`.
+     *
+     * Guarded implicitly by [_connectionState]: [connectionEpoch] only reports it while the state is
+     * `READY`, so a token left behind by a socket that has since ended is not observable. It is
+     * cleared anyway, so that a stale value cannot be read back if the state machine ever grows a
+     * path that reports `READY` without a handshake.
+     */
+    @Volatile
+    private var connectionEpochToken: ClaudePConnectionEpoch? = null
+
     /** Server-advertised outbound frame cap, clamped by our own hard ceiling. */
     @Volatile
     private var outboundFrameLimit: Int = ClaudePTransportLimits.HARD_MAX_OUTBOUND_FRAME_BYTES
@@ -193,10 +210,18 @@ class WssClaudePGatewayClient(
 
         negotiatedHello = helloEvent.body
         outboundFrameLimit = clampFrameLimit(helloEvent.body.maxFrameBytes)
+        // A handshake that completed **is** a new connection, and this is the one place one
+        // completes. Minting here rather than at socket creation is what makes the epoch mean
+        // "carried", not "attempted": a socket that never finished its hello has no epoch, so a
+        // caller cannot mistake a half-open connection for the one its first attempt used.
+        connectionEpochToken = ClaudePConnectionEpoch(epochCounter.incrementAndGet())
         _connectionState.value = ClaudePConnectionState.READY
         _lastError.value = null
         return helloEvent.body
     }
+
+    override suspend fun connectionEpoch(): ClaudePConnectionEpoch? =
+        if (_connectionState.value == ClaudePConnectionState.READY) connectionEpochToken else null
 
     override suspend fun catalog(): ClaudePCatalogResultBody {
         val ready = ensureSession()
@@ -640,6 +665,7 @@ class WssClaudePGatewayClient(
         if (session !== ended) return
         session = null
         readerJob = null
+        connectionEpochToken = null
 
         if (_connectionState.value.isStableFailure) return
 
@@ -814,6 +840,7 @@ class WssClaudePGatewayClient(
         session = null
         readerJob = null
         negotiatedHello = null
+        connectionEpochToken = null
         router.failEverything(ClaudePErrorCode.STREAM_INTERRUPTED)
         active?.close(WS_CLOSE_NORMAL)
         _connectionState.value = ClaudePConnectionState.DISCONNECTED

@@ -96,12 +96,7 @@ object ClaudePSessionContinuationDispatch {
         targetRole: MessageRole?,
         decision: ClaudePSessionContinuationGate.Decision?,
     ): Refusal? {
-        // Asked of the planner rather than answered by a list of command types here: a second list
-        // is a second answer to "does this dispatch a model", and it would be the wrong one the
-        // first time a command's classification changed.
-        val dispatchesModel = ClaudePSessionBranchPlanner.classify(command, targetRole) !=
-            ClaudePSessionBranchPlanner.Mode.NOT_MODEL_GENERATION
-        if (!dispatchesModel) return null
+        if (!dispatchesModel(command, targetRole)) return null
 
         if (command is EmergencyCommand && decision == null) return Refusal.EMERGENCY_NOT_ADMITTED
 
@@ -117,6 +112,18 @@ object ClaudePSessionContinuationDispatch {
                 -> Refusal.NOT_A_GENERATION
         }
     }
+
+    /**
+     * Whether [command] starts a model generation at all.
+     *
+     * Asked of the planner rather than answered by a list of command types here: a second list is a
+     * second answer to the same question, and it would be the wrong one the first time a command's
+     * classification changed. Both callers of this file's rules — the dispatch gate and the replay
+     * hook — need the same answer, so it is written once.
+     */
+    fun dispatchesModel(command: ChatCommand, targetRole: MessageRole?): Boolean =
+        ClaudePSessionBranchPlanner.classify(command, targetRole) !=
+            ClaudePSessionBranchPlanner.Mode.NOT_MODEL_GENERATION
 
     /**
      * A Claude P model dispatch that reached the provider carrying no generation decision.

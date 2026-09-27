@@ -84,6 +84,21 @@ interface ClaudePGatewayClient {
     val bindSessionCallCount: Int
 
     /**
+     * The local identity of the connection currently carried, or `null` when there is none.
+     *
+     * Moved on every completed handshake and stable for as long as that socket is the one in use,
+     * so a caller can tell *this connection* from *the next one* without ever seeing the Server's
+     * own connection id — see [ClaudePConnectionEpoch], which explains why that distinction is the
+     * whole of what this exposes.
+     *
+     * `suspend`, because the production transport is a
+     * [ResolvingClaudePGatewayClient] that only knows which client it is delegating to at call
+     * time. `null` is the fail-closed answer: a caller that cannot name a connection must not act
+     * as though it could.
+     */
+    suspend fun connectionEpoch(): ClaudePConnectionEpoch? = null
+
+    /**
      * `tool.result` — Android's answer to one `tool.invoke`.
      *
      * Fire-and-forget, and deliberately so. The Server applies the outcome to the call it is

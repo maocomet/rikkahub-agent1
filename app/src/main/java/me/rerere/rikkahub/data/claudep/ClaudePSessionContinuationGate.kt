@@ -340,11 +340,25 @@ object ClaudePSessionContinuationGate {
             ?: return null
         if (resolution.state != ClaudePSessionContinuationState.INTERRUPTED) return null
         val generationId = resolution.generationId ?: return null
+        // The record this replay supersedes has to be located before it can be replaced, and it is
+        // located by *exact* match — so a path holding the same step twice resolves to nothing and
+        // the replay is refused rather than writing over one of two candidates.
+        val messageId = recordMessageIds(
+            conversation,
+            ClaudePSessionContinuation(
+                assistantId = resolution.assistantId,
+                branchId = resolution.branchId,
+                revision = resolution.revision,
+                state = ClaudePSessionContinuationState.INTERRUPTED,
+                generationId = generationId,
+            ),
+        ).singleOrNull() ?: return null
         return Replay(
             assistantId = resolution.assistantId,
             branchId = resolution.branchId,
             generationId = generationId,
             revision = resolution.revision,
+            messageId = messageId,
         )
     }
 
@@ -475,6 +489,15 @@ object ClaudePSessionContinuationGate {
         val generationId: String,
         /** The revision the interrupted record carried. */
         val revision: Long,
+        /**
+         * The message whose record this replay supersedes, located when the obligation was read.
+         *
+         * Carried rather than re-derived, for the same reason [DeferredPending.messageId] is: the
+         * two records a replay writes replace the one already in that slot, and the slot stops being
+         * findable by shape the moment the first write lands on it. A caller that recomputed it
+         * would write the settled state somewhere the interrupted one never was.
+         */
+        val messageId: String,
     ) {
         val pendingRevision: Long get() = revision + 1L
         val boundRevision: Long get() = revision + 2L
@@ -496,6 +519,29 @@ object ClaudePSessionContinuationGate {
 
         override fun toString(): String =
             "Replay(revision=$revision, generationId=${generationId.redactedGateRef()})"
+    }
+
+    /**
+     * The conversation a replay transaction must persist for [record], or a refusal.
+     *
+     * The replay writes **two** records into one slot — the `BIND_PENDING` that says the bind is
+     * owed, then whatever the answer proved — and both replace the interrupted record the obligation
+     * was read from. So both go through here: the target is [Replay.messageId] rather than a message
+     * re-derived from the graph, and the result is checked by the same arbiter every other write
+     * uses, so a step the transition table refuses is a refusal rather than a record no reader can
+     * resolve.
+     *
+     * A refusal must stop the caller: the first one means no bind was sent, and the second means the
+     * Server answered and this device cannot record what it said.
+     */
+    fun settleReplay(
+        conversation: Conversation,
+        replay: Replay,
+        record: ClaudePSessionContinuation,
+    ): Settlement {
+        val settled = attach(conversation, replay.messageId, record)
+            ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
+        return validated(settled, replay.branchId, record)
     }
 
     /**
@@ -944,19 +990,38 @@ object ClaudePSessionContinuationGate {
     fun barrierMessageIds(
         conversation: Conversation,
         obligation: Obligation.Immediate,
-    ): List<String> {
-        val expected = ClaudePSessionContinuation(
+    ): List<String> = recordMessageIds(
+        conversation,
+        ClaudePSessionContinuation(
             assistantId = obligation.assistantId,
             branchId = obligation.branchId,
             revision = obligation.revision,
             state = ClaudePSessionContinuationState.START_IN_FLIGHT,
             generationId = null,
-        )
-        return conversation.messageNodes
-            .mapNotNull { node -> node.messages.getOrNull(node.selectIndex) }
-            .filter { message -> message.claudePSessionContinuation == expected }
-            .map { message -> message.id.toString() }
-    }
+        ),
+    )
+
+    /**
+     * The message ids on the selected path carrying **exactly** [record], in path order.
+     *
+     * The general form of [barrierMessageIds], and the reason both exist as one expression: every
+     * write in this file replaces a record **in the slot that record already occupies**, so each
+     * writer has to locate that slot before it can supersede it. A per-writer locator would be a
+     * second answer to "which message is this record on", and the two would disagree the first time
+     * one of them was written for a slightly different record shape.
+     *
+     * Exactness is total — every field, including the *absence* of a generation id where the state
+     * forbids one — because a looser match lets a writer supersede a record from a different turn of
+     * the same branch, which carries the same assistant and branch by construction and differs only
+     * in the revision that says *which* turn it was.
+     */
+    fun recordMessageIds(
+        conversation: Conversation,
+        record: ClaudePSessionContinuation,
+    ): List<String> = conversation.messageNodes
+        .mapNotNull { node -> node.messages.getOrNull(node.selectIndex) }
+        .filter { message -> message.claudePSessionContinuation == record }
+        .map { message -> message.id.toString() }
 
     /**
      * Settles whatever obligation [decision] carries, or [Settlement.NothingToWrite] when it

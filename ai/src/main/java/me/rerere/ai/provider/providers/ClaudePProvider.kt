@@ -21,6 +21,7 @@ import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.StableSystemPromptProvider
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.claudep.ClaudePCancelReason
+import me.rerere.ai.provider.claudep.ClaudePConnectionEpoch
 import me.rerere.ai.provider.claudep.ClaudePCatalogResultBody
 import me.rerere.ai.provider.claudep.ClaudePToolBridgeHost
 import me.rerere.ai.provider.claudep.ClaudePToolCancelBody
@@ -359,6 +360,17 @@ class ClaudePProvider(
             assistantId = assistantId,
         )
     }
+
+    /**
+     * Which connection the next call would travel on, or `null` when there is none.
+     *
+     * The app's only way to ask. A replay is a recovery for a bind whose answer was lost with a
+     * connection, so "is this still the connection that attempt went out on?" has to be answerable
+     * before the frame is sent — and this provider is the only thing the app holds that can reach
+     * the transport. It creates no connection: a `null` here means the client is not carrying one,
+     * not that one should be opened.
+     */
+    suspend fun connectionEpoch(): ClaudePConnectionEpoch? = gateway.connectionEpoch()
 
     /**
      * Aggregates one generation into a single chunk.

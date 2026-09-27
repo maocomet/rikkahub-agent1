@@ -1338,6 +1338,14 @@ class ChatService(
                 return rejectedTrackedCommand(validation.reason)
             }
         }
+        // The one recovery §6.1 defines, attached to the thing the user actually did and running
+        // *before* admission — a branch awaiting a bind cannot be admitted at all, so this has to
+        // settle first or the recovery could never happen. It sends `session.bind` and nothing else:
+        // no `generation.start` is reachable from it, so a replay cannot buy a second model run.
+        claudePBindReplayRefusal(conversationId, command)?.let { reason ->
+            agentTimingSubmission?.handle?.finish(AgentTimingTraceStatus.FAILED)
+            return rejectedTrackedCommand(reason)
+        }
         val resolvedParentId = parentCommandId ?: when (command) {
             is ToolApprovalCommand -> {
                 val exactOwner = if (command.approvalId != null && command.executionId != null) {
@@ -3089,6 +3097,15 @@ class ChatService(
         me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationAdmissions()
 
     /**
+     * The `(generationId, connectionEpoch)` pairs a bind replay has already been attempted on.
+     *
+     * Process-local: the durable half of a bind obligation is the `INTERRUPTED` record carrying its
+     * generation id, and the connection the attempt went out on did not survive the process either.
+     */
+    private val claudePSessionBindReplays =
+        me.rerere.rikkahub.data.claudep.ClaudePSessionBindReplays()
+
+    /**
      * Whether this conversation's own assistant dispatches its model through the Claude P provider.
      *
      * Read from the conversation's assistant rather than from a global pointer, and resolved
@@ -3220,6 +3237,114 @@ class ChatService(
                 .reconciliationFailed("conversation_not_updated")
         }
         throw me.rerere.rikkahub.data.claudep.ClaudePSessionAdmissionStop.reconciled()
+    }
+
+    /**
+     * Performs the one bind replay this conversation owes, or returns why it may not.
+     *
+     * ## Why this runs at a user action, before admission
+     *
+     * §6.1's only recovery is re-sending the same bind, and the brief's rule is that it is attached
+     * to the next thing the user does — never to a timer, a poll or a background loop, which would
+     * be sending an RPC the Server is under no obligation to answer on a connection that may not be
+     * the one that dropped. Admission is too late: a branch awaiting a bind resolves to
+     * `INTERRUPTED`, which refuses a new generation by construction, so the user's own command could
+     * never be admitted until the bind is settled.
+     *
+     * ## What each outcome means for the user's command
+     *
+     * Only `NoReplayNeeded` and `Bound` let it proceed. Every other outcome means the branch is not
+     * proven, and the brief is explicit that the generation must then not start — so the command is
+     * rejected by name rather than dispatched against a branch whose state is unknown.
+     */
+    private suspend fun claudePBindReplayRefusal(
+        conversationId: Uuid,
+        command: ChatCommand,
+    ): String? {
+        if (!me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationActivation.ENABLED) {
+            return null
+        }
+        val conversation = conversationRepo.getConversationById(conversationId) ?: return null
+        if (!dispatchesThroughClaudeP(conversation)) return null
+        // Only a command that would dispatch a model is a user action a replay may ride on: running
+        // it for a queue edit or a stop would send a bind that nothing asked for.
+        val targetRole = regenerationTargetRole(conversation, command)
+        if (!me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationDispatch
+                .dispatchesModel(command, targetRole)
+        ) {
+            return null
+        }
+
+        val owed = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+            .replay(conversation) ?: return null
+
+        val settings = settingsStore.settingsFlow.first()
+        val assistant = settings.getAssistantById(conversation.assistantId) ?: return null
+        val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId)
+            ?: return null
+        val provider = model.findProvider(settings.providers) as?
+            me.rerere.ai.provider.ProviderSetting.ClaudeP ?: return null
+        val claudeP = providerManager.getProviderByType(provider) as?
+            me.rerere.ai.provider.providers.ClaudePProvider ?: return null
+
+        // One attempt per (generationId, connectionEpoch). A `null` epoch — no carried connection —
+        // refuses, because a caller that cannot name a connection cannot decide "once".
+        if (!claudePSessionBindReplays.claim(owed.generationId, claudeP.connectionEpoch())) {
+            return me.rerere.rikkahub.data.claudep.ClaudePSessionReplayRefusal.NOT_PERMITTED
+        }
+
+        return when (
+            val outcome = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+                .replayBeforeGeneration(
+                    conversation = conversation,
+                    writeRecord = { record ->
+                        writeReplayRecord(conversationId, owed, record)
+                    },
+                    bind = { generationId, branchId, assistantId ->
+                        claudeP.bindSession(generationId, branchId, assistantId)
+                    },
+                )
+        ) {
+            me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.ReplayOutcome
+                .NoReplayNeeded,
+            me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.ReplayOutcome.Bound,
+                -> null
+
+            is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.ReplayOutcome.Closed ->
+                me.rerere.rikkahub.data.claudep.ClaudePSessionReplayRefusal.CLOSED
+
+            is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.ReplayOutcome.Unproven -> {
+                Log.w(TAG, "claude_p replay unproven: ${outcome.reason}")
+                me.rerere.rikkahub.data.claudep.ClaudePSessionReplayRefusal.UNPROVEN
+            }
+        }
+    }
+
+    /**
+     * Persists one of a replay's two records, inside its own transaction, and says whether it
+     * committed.
+     *
+     * A `false` stops the replay — including *before* the bind is sent, which is the point: the
+     * graph authority commit is the permission to send, not a formality after it.
+     */
+    private suspend fun writeReplayRecord(
+        conversationId: Uuid,
+        replay: me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Replay,
+        record: me.rerere.ai.provider.claudep.ClaudePSessionContinuation,
+    ): Boolean {
+        val current = conversationRepo.getConversationById(conversationId) ?: return false
+        val settlement = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+            .settleReplay(current, replay, record)
+        if (settlement !is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.Commit) {
+            Log.w(TAG, "claude_p replay record refused: $settlement")
+            return false
+        }
+        val update = conversationRepo.updateConversation(settlement.conversation)
+        if (update !is me.rerere.rikkahub.data.repository.ConversationUpdateResult.Updated) {
+            return false
+        }
+        conversationRepo.refreshSearchProjection(settlement.conversation)
+        return true
     }
 
     /**
