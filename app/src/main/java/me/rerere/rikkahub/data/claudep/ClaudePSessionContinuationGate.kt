@@ -63,30 +63,6 @@ import me.rerere.rikkahub.service.chat.ResumeAfterApprovalCommand
  */
 object ClaudePSessionContinuationGate {
 
-    /**
-     * Whether the message that will carry the barrier is created by the admission transaction
-     * that is about to write it, or already exists in the committed graph.
-     *
-     * This is an *input* rather than something the gate infers, because only the admission path
-     * knows it: a `SendMessageCommand`'s anchor is a message the admission graph appends, while a
-     * regenerate's anchor is a user message that has been committed for a while. Inferring it from
-     * the command type would be a second copy of "what does this command do to the graph", and the
-     * two copies would disagree the first time a command changed.
-     */
-    enum class AnchorOrigin {
-        /**
-         * The barrier message is appended by this admission transaction, so its revision is
-         * produced by that same write and no recorded revision can be invalidated.
-         */
-        CREATED_BY_ADMISSION,
-
-        /**
-         * The barrier message is already committed and its revision is part of a durable identity
-         * (an approval lineage). Writing a record on it would invalidate that identity.
-         */
-        ALREADY_COMMITTED,
-    }
-
     /** What the dispatch path must do for one command. A closed set. */
     sealed interface Decision {
 
@@ -161,15 +137,6 @@ object ClaudePSessionContinuationGate {
 
         /** The continuation records on the selected path cannot all be true at once. */
         CONTINUATION_CONFLICTED,
-
-        /**
-         * The branch permits a generation, but its `START_IN_FLIGHT` record cannot be written by
-         * the admission transaction that must carry it, so the barrier would not be atomic.
-         *
-         * This is the fail-closed answer, never a licence to dispatch without one. See this
-         * object's doc for the two durable identities that make the write unsafe.
-         */
-        BARRIER_NOT_ATOMIC,
     }
 
     /**
@@ -184,7 +151,6 @@ object ClaudePSessionContinuationGate {
         conversation: Conversation,
         command: ChatCommand,
         targetRole: me.rerere.ai.core.MessageRole?,
-        anchorOrigin: AnchorOrigin,
     ): Decision {
         // A resume-after-approval is classified before the planner rather than by it, and that is a
         // correction rather than a shortcut. The planner asks the resolver whether the branch
@@ -206,27 +172,27 @@ object ClaudePSessionContinuationGate {
                 Decision.Refused(plan.assistantId, refusalOf(plan.reason))
 
             is ClaudePSessionContinuationPlan.Immediate ->
-                immediate(plan, anchorOrigin)
+                immediate(plan)
         }
     }
 
     /**
-     * The immediate path, which always owes a barrier — and refuses when it cannot be written.
+     * The immediate path, which always owes a barrier.
      *
-     * The record has to be attached to the message the admission transaction creates. Attaching it
-     * to an already-committed message would move that message's source revision, and two durable
-     * identities are built on those revisions: the approval lineage's recorded anchor revision, and
-     * the execution bindings' assistant-message revision. Either one moving turns a later
-     * transaction into a conflict, so the answer is [Reason.BARRIER_NOT_ATOMIC] rather than a
-     * dispatch whose barrier is not atomic with its admission.
+     * An earlier build refused the cases where the barrier had to be attached to an
+     * already-committed message, because writing a record moved that message's source revision and
+     * an approval lineage had recorded it. That premise is gone:
+     * `ConversationSourceSnapshotFactory.payloadIntegritySha256` now hashes a projection that
+     * clears `claudePSessionContinuation`, so a continuation-only write leaves the revision where
+     * it was — proved by `ConversationContinuationSourceRevisionTest`. The refusal was removed
+     * rather than left in place, because a refusal whose reason no longer exists refuses real work.
+     *
+     * What the caller must get right instead is *where* the record goes, and that is now a fact
+     * about the graph rather than about atomicity: appended with the message when the admission
+     * transaction creates it (`appendWithBarrier`), attached to it when the anchor already exists
+     * (`attach`).
      */
-    private fun immediate(
-        plan: ClaudePSessionContinuationPlan.Immediate,
-        anchorOrigin: AnchorOrigin,
-    ): Decision {
-        if (anchorOrigin != AnchorOrigin.CREATED_BY_ADMISSION) {
-            return Decision.Refused(plan.assistantId, Reason.BARRIER_NOT_ATOMIC)
-        }
+    private fun immediate(plan: ClaudePSessionContinuationPlan.Immediate): Decision {
         return Decision.Immediate(
             assistantId = plan.assistantId,
             branchId = plan.branchId,
@@ -678,6 +644,178 @@ object ClaudePSessionContinuationGate {
     // -----------------------------------------------------------------------------------------
     // Writing onto the graph
     // -----------------------------------------------------------------------------------------
+
+    /**
+     * The continuation obligation one admitted command carries for the whole of its run.
+     *
+     * ## Why this exists as a value rather than a decision at each exit
+     *
+     * A run can end in more than one place — a completed generation, a model failure, a user
+     * cancellation, a terminal-less fallback, a connection that dropped — and each of those sites
+     * used to be a separate opportunity to decide what the branch's durable state should become. A
+     * decision made per site is a decision that eventually differs per site, and the difference is
+     * always in the permissive direction: one path writes `FAILED_CLOSED` where another reads the
+     * absence of a record as "nothing happened here".
+     *
+     * So admission produces this once, the run carries it, and **every** exit calls
+     * [settleImmediate] (or the deferred pair) with it. There is one place that maps a terminal onto
+     * a durable state, and it is this object.
+     *
+     * [Decision.NotModelGeneration], [Decision.Refused] and a caller that resolved no branch all
+     * produce `null`: they have no branch to be responsible for, which is a different fact from
+     * "this branch is fine".
+     */
+    sealed interface Obligation {
+        /** The assistant the branch belongs to, so a caller can log without re-deriving it. */
+        val assistantId: String
+
+        /**
+         * A branch that already exists. When the run ends, its terminal must be written — a
+         * completed turn proves the binding, and anything else closes or interrupts it.
+         */
+        data class Immediate(
+            override val assistantId: String,
+            val branchId: String,
+            /** The revision of the `START_IN_FLIGHT` this run's barrier wrote. */
+            val revision: Long,
+        ) : Obligation
+
+        /**
+         * A branch this run will create. It has no admission-time barrier — §5.2 stores no start for
+         * a deferred path — so the obligation is the `BIND_PENDING` written in the transaction that
+         * commits the new variant, and the bind that follows it.
+         */
+        data class Deferred(override val assistantId: String) : Obligation
+
+        companion object {
+            /**
+             * The obligation a decision carries, or `null` when it carries none.
+             *
+             * `null` is not a licence to skip settling: it means this run is not responsible for a
+             * branch, which is true for a command that dispatched nothing and for one the gate
+             * already refused.
+             */
+            fun of(decision: Decision): Obligation? = when (decision) {
+                is Decision.Immediate ->
+                    Immediate(decision.assistantId, decision.branchId, decision.revision)
+
+                is Decision.Deferred -> Deferred(decision.assistantId)
+
+                is Decision.Refused, Decision.NotModelGeneration -> null
+            }
+        }
+    }
+
+    /** What a settlement leaves the caller to do. A closed set. */
+    sealed interface Settlement {
+        /**
+         * Persist this conversation inside the transaction that is already ending the command. It
+         * carries the record the terminal proved.
+         */
+        data class Commit(val conversation: Conversation) : Settlement
+
+        /**
+         * Nothing to write. Either this run owes no continuation, or the graph grew no message the
+         * record could legally attach to — which is a rollback, not a success, and is why the
+         * branch is left in whatever state the barrier put it in rather than being credited with a
+         * binding.
+         */
+        data object NothingToWrite : Settlement
+
+        /** No dispatch may follow; see [Reason]. */
+        data class Refused(val reason: Reason) : Settlement
+    }
+
+    /**
+     * The conversation the terminal transaction must persist for an immediate run.
+     *
+     * ## The one place a terminal becomes a durable state
+     *
+     * [Terminal] maps onto exactly three states and never onto "leave it alone". A completed turn
+     * proves the binding ([ClaudePSessionContinuationState.BOUND]); a model or protocol failure, and
+     * a bind that settled in the negative, close the branch
+     * ([ClaudePSessionContinuationState.FAILED_CLOSED], which is absorbing); a cancellation, a
+     * dropped connection or a run that ended with no terminal at all leaves it unproven
+     * ([ClaudePSessionContinuationState.INTERRUPTED]).
+     *
+     * A caller must not pass [Terminal.SUCCEEDED] for a run it did not see complete. The type cannot
+     * enforce that — only the caller knows — but every exit path in the app routes through here, so
+     * the question "was this a success?" is asked in three places instead of answered in six.
+     */
+    fun settleImmediate(
+        conversation: Conversation,
+        obligation: Obligation.Immediate,
+        terminal: Terminal,
+    ): Settlement {
+        val target = terminalTarget(conversation, obligation.assistantId, obligation.branchId)
+            ?: return Settlement.NothingToWrite
+        val settled = attach(
+            conversation = conversation,
+            messageId = target,
+            record = immediateTerminal(
+                assistantId = obligation.assistantId,
+                branchId = obligation.branchId,
+                boundRevision = obligation.revision + 1L,
+                terminal = terminal,
+            ),
+        ) ?: return Settlement.NothingToWrite
+        return Settlement.Commit(settled)
+    }
+
+    /**
+     * The `BIND_PENDING` write that must share the transaction committing a `deferred` variant.
+     *
+     * The branch identity is computed from [conversation] **as it will be committed** — the variant
+     * already in place and selected — because that digest is what the Server checks the bind
+     * against. Computing it from the graph as it stood before the commit would name a branch that
+     * does not exist, and the Server answers that with `conflict`, which closes a branch that was in
+     * fact fine.
+     *
+     * Returns `null` when the graph has no message to write to, which is a caller error rather than
+     * a refusal: a deferred commit always adds a variant, so a graph with nowhere to put the record
+     * is not the graph the caller meant.
+     */
+    fun deferredPending(
+        conversation: Conversation,
+        assistantId: String,
+        generationId: String,
+    ): DeferredPending? {
+        val branchId = when (val described = ClaudePSessionBranchPlanner.branchIdOf(conversation.messageNodes)) {
+            is ClaudePSessionBranchPlanner.Branch.Known -> described.id
+            else -> return null
+        }
+        val target = terminalTarget(conversation, assistantId, branchId) ?: return null
+        val revision = ClaudePSessionContinuationWrite
+            .nextRevision(ClaudePSessionContinuationResolver.resolve(conversation, branchId))
+            ?: 1L
+        val record = pendingRecord(
+            assistantId = assistantId,
+            branchId = branchId,
+            revision = revision,
+            generationId = generationId,
+        )
+        val written = attach(conversation, target, record) ?: return null
+        return DeferredPending(
+            conversation = written,
+            branchId = branchId,
+            revision = revision,
+            record = record,
+        )
+    }
+
+    /**
+     * A committed `BIND_PENDING` and everything the bind needs to re-send it.
+     *
+     * Returned as one value so the caller cannot take the conversation to commit and the identity
+     * to bind from two different computations — which is the shape of bug this whole layer is
+     * written against.
+     */
+    data class DeferredPending(
+        val conversation: Conversation,
+        val branchId: String,
+        val revision: Long,
+        val record: ClaudePSessionContinuation,
+    )
 
     /**
      * The message a terminal record for `(assistantId, branchId)` must be written to, or `null`

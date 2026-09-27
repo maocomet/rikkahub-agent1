@@ -72,6 +72,91 @@ class ClaudePSessionBranchPlannerTest {
         expectedBranchHeadMessageId = uid(1, 1),
     )
 
+    private fun conversation(nodes: List<MessageNode>) = me.rerere.rikkahub.data.model.Conversation(
+        id = uid(3, 1),
+        assistantId = uid(4, 1),
+        messageNodes = nodes,
+    )
+
+    /** Only a **user** target truncates; the role is what the rule turns on. */
+    private fun userMessage(n: Int) = UIMessage(
+        id = uid(1, n),
+        role = MessageRole.USER,
+        parts = listOf(UIMessagePart.Text("m$n")),
+    )
+
+    // ---------------------------------------------------------------------------------------
+    // The candidate graph
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * A user-target regenerate commits the graph *without* the nodes after its target, so that is
+     * the graph its identity has to describe. Reading the identity off the admitted graph gives the
+     * same answer only while every dropped node sits at `selectIndex == 0`.
+     */
+    @Test
+    fun `a user regenerate truncates the graph at its target`() {
+        val nodes = listOf(
+            node(1, listOf(userMessage(1))),
+            node(2, listOf(message(2), message(3)), selectIndex = 1),
+            node(3, listOf(message(4))),
+        )
+
+        val after = ClaudePSessionBranchPlanner.graphAfterCommand(
+            conversation(nodes),
+            regenerateCommand(),
+        )
+
+        assertEquals(listOf(uid(2, 1)), after.messageNodes.map { it.id })
+    }
+
+    /**
+     * An assistant-target regenerate **appends** a variant to the node it targets. Truncating there
+     * would delete the very node the new variant belongs to, so the graph is left alone — and that
+     * is safe, because that path is deferred and has no admission-time identity to get wrong.
+     */
+    @Test
+    fun `an assistant regenerate leaves the graph alone`() {
+        val nodes = listOf(
+            node(1, listOf(message(1))),
+            node(2, listOf(message(2), message(3)), selectIndex = 1),
+            node(3, listOf(message(4))),
+        )
+
+        val after = ClaudePSessionBranchPlanner.graphAfterCommand(
+            conversation(nodes),
+            regenerateCommand(),
+        )
+
+        assertEquals(nodes.map { it.id }, after.messageNodes.map { it.id })
+    }
+
+    /** A target already at the end of the graph has nothing to drop, so nothing is dropped. */
+    @Test
+    fun `a regenerate at the graph tip is a no-op`() {
+        val nodes = listOf(
+            node(1, listOf(message(1))),
+            node(2, listOf(message(2), message(3)), selectIndex = 1),
+        )
+
+        val after = ClaudePSessionBranchPlanner.graphAfterCommand(
+            conversation(nodes),
+            regenerateCommand(),
+        )
+
+        assertEquals(nodes.map { it.id }, after.messageNodes.map { it.id })
+    }
+
+    /** Commands that are not regenerates leave the graph as it is. */
+    @Test
+    fun `a send leaves the graph alone`() {
+        val nodes = listOf(node(1, listOf(message(1))), node(2, listOf(message(2))))
+
+        val after = ClaudePSessionBranchPlanner.graphAfterCommand(conversation(nodes), sendCommand())
+
+        assertEquals(nodes.map { it.id }, after.messageNodes.map { it.id })
+    }
+
     // ---------------------------------------------------------------------------------------
     // The selection vector
     // ---------------------------------------------------------------------------------------

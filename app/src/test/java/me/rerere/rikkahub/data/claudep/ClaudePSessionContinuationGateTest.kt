@@ -22,6 +22,7 @@ import me.rerere.rikkahub.service.chat.ToolDecision
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -55,6 +56,12 @@ class ClaudePSessionContinuationGateTest {
         id = uid(1, n),
         role = role,
         parts = listOf(UIMessagePart.Text("m$n")),
+        // Pinned, and that is not tidiness: `createdAt` defaults to the current time, so two
+        // messages built by two calls differ in content for a reason unrelated to what these tests
+        // are about — and `the conflicting chains above really do share one content digest` is
+        // about *whether content changed*. Left at the default it passes or fails depending on
+        // whether the calls land in the same millisecond.
+        createdAt = FIXED_CREATED_AT,
         claudePSessionContinuation = continuation,
     )
 
@@ -95,23 +102,18 @@ class ClaudePSessionContinuationGateTest {
         nodes: List<MessageNode>,
         command: me.rerere.rikkahub.service.chat.ChatCommand,
         targetRole: MessageRole? = null,
-        anchorOrigin: ClaudePSessionContinuationGate.AnchorOrigin =
-            ClaudePSessionContinuationGate.AnchorOrigin.CREATED_BY_ADMISSION,
     ) = ClaudePSessionContinuationGate.admission(
         conversation = conversation(nodes),
         command = command,
         targetRole = targetRole,
-        anchorOrigin = anchorOrigin,
     )
 
     private fun refusalReason(
         nodes: List<MessageNode>,
         command: me.rerere.rikkahub.service.chat.ChatCommand,
         targetRole: MessageRole? = null,
-        anchorOrigin: ClaudePSessionContinuationGate.AnchorOrigin =
-            ClaudePSessionContinuationGate.AnchorOrigin.CREATED_BY_ADMISSION,
     ): ClaudePSessionContinuationGate.Reason {
-        val decision = admission(nodes, command, targetRole, anchorOrigin)
+        val decision = admission(nodes, command, targetRole)
         assertTrue("expected a refusal, got $decision", decision is ClaudePSessionContinuationGate.Decision.Refused)
         return (decision as ClaudePSessionContinuationGate.Decision.Refused).reason
     }
@@ -173,32 +175,54 @@ class ClaudePSessionContinuationGateTest {
     }
 
     /**
-     * The planner says `immediate` for a user-target regenerate and the gate refuses it, and the
-     * gap between the two is the point of this test.
+     * The case the whole identity fix exists for: a user-target regenerate whose dropped suffix
+     * contains a node selecting a **non-default** variant.
      *
-     * A regenerate's branch anchor is a user message that has been committed for a while, so its
-     * source revision is already recorded — in the approval lineage of every command that descends
-     * from it. Writing the barrier onto that message would move the revision and make the next
-     * child command's admission fail with `COMMAND_BRANCH_ANCHOR_REVISION_CONFLICT`. The gate
-     * therefore refuses rather than dispatching a generation whose barrier is not atomic with its
-     * admission, which is the state the barrier exists to make impossible.
+     * The truncated graph's selection vector is not the full graph's, so the two have different
+     * digests — and the one that must travel on the wire is the truncated one, because that is the
+     * graph the generation is about to commit. This test asserts the decision's branch id against
+     * the identity of the graph `executeRegenerateInline` actually leaves behind, computed
+     * independently here, rather than against the planner's own function.
      */
     @Test
-    fun `a user regenerate refuses when the barrier cannot be atomic with its admission`() {
+    fun `a user regenerate binds the identity of the graph it is about to commit`() {
+        // Node 2 selects a non-default variant, and node 3 sits after the target, so truncation
+        // genuinely changes the selection vector.
         val nodes = listOf(
             node(1, listOf(message(1, MessageRole.USER))),
-            node(2, listOf(message(2))),
+            node(2, listOf(message(2), message(3)), selectIndex = 1),
+            node(3, listOf(message(4))),
+        )
+        val truncated = nodes.subList(0, 1)
+
+        val immediate = admission(nodes, regenerateCommand(), MessageRole.USER)
+            as ClaudePSessionContinuationGate.Decision.Immediate
+
+        assertEquals(branchId(truncated), immediate.branchId)
+        // And it is genuinely not the identity of the graph as admitted — otherwise this test would
+        // pass against a build that never truncated at all.
+        assertNotEquals(branchId(nodes), immediate.branchId)
+        assertEquals(branchId(truncated), immediate.request.branchId)
+        assertEquals(branchId(truncated), requireNotNull(immediate.admissionRecord).branchId)
+    }
+
+    /**
+     * The three identities that must agree — metadata, request and the committed graph — are the
+     * same value, and a graph whose suffix contributes nothing is the case where the old
+     * computation happened to be right.
+     */
+    @Test
+    fun `a user regenerate whose suffix selects nothing keeps the same identity`() {
+        val nodes = listOf(
+            node(1, listOf(message(1, MessageRole.USER))),
+            node(2, listOf(message(2), message(3))),
         )
 
-        assertEquals(
-            ClaudePSessionContinuationGate.Reason.BARRIER_NOT_ATOMIC,
-            refusalReason(
-                nodes,
-                regenerateCommand(),
-                MessageRole.USER,
-                ClaudePSessionContinuationGate.AnchorOrigin.ALREADY_COMMITTED,
-            ),
-        )
+        val immediate = admission(nodes, regenerateCommand(), MessageRole.USER)
+            as ClaudePSessionContinuationGate.Decision.Immediate
+
+        assertEquals(branchId(nodes.subList(0, 1)), immediate.branchId)
+        assertEquals(branchId(nodes), immediate.branchId)
     }
 
     @Test
@@ -1036,4 +1060,8 @@ class ClaudePSessionContinuationGateTest {
         assertFalse(text.contains(branchId(emptyList())))
         assertFalse(text.contains("gen-secret"))
     }
+    private companion object {
+        val FIXED_CREATED_AT = kotlinx.datetime.LocalDateTime(2019, 6, 1, 12, 0, 0)
+    }
+
 }

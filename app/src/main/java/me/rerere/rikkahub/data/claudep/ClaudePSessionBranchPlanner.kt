@@ -267,7 +267,10 @@ object ClaudePSessionBranchPlanner {
             Mode.NEW_DEFERRED_BIND -> ClaudePSessionContinuationPlan.Deferred(assistantId)
 
             Mode.KNOWN_BEFORE_DISPATCH -> {
-                val branch = when (val described = branchIdOf(conversation.messageNodes)) {
+                // The candidate graph — the one this command is about to commit — and not the one
+                // the command was admitted against. See [graphAfterCommand].
+                val candidate = graphAfterCommand(conversation, command)
+                val branch = when (val described = branchIdOf(candidate.messageNodes)) {
                     is Branch.Known -> described.id
                     is Branch.Rejected -> return ClaudePSessionContinuationPlan.Refused(
                         assistantId,
@@ -282,7 +285,7 @@ object ClaudePSessionBranchPlanner {
 
                 when (
                     val resolution = ClaudePSessionContinuationResolver.resolve(
-                        conversation = conversation,
+                        conversation = candidate,
                         branchId = branch,
                     )
                 ) {
@@ -323,6 +326,53 @@ object ClaudePSessionBranchPlanner {
                 }
             }
         }
+    }
+
+    /**
+     * The graph [command] is about to commit, which is what its branch identity must describe.
+     *
+     * ## Why the admitted graph is the wrong operand
+     *
+     * A user-target regenerate **truncates**: `executeRegenerateInline` keeps the nodes up to and
+     * including the target and drops everything after, then appends the assistant node this
+     * generation produces. The appended node sits at `selectIndex == 0` and so contributes nothing
+     * to the selection vector, which means the committed branch is exactly the identity of the
+     * **truncated** graph.
+     *
+     * Computing that identity from the graph as admitted — the whole conversation, suffix included —
+     * gives the same answer only when every dropped node happened to sit at `selectIndex == 0`. When
+     * any later node has a selected non-default variant, the two differ, and the difference is sent
+     * on the wire as `remote_branch_id`. That is not a mismatch that announces itself: the Server
+     * accepts the digest, resolves a session for a branch that is not the one about to exist, and
+     * the app records a binding against the same wrong identity. It is precisely the silent
+     * re-identification this whole layer exists to prevent, so the identity is derived from the
+     * candidate graph and from nothing else.
+     *
+     * ## Why it lives here
+     *
+     * [classify] already encodes what each command does to the graph — that truncation is *why* a
+     * user regenerate is `KNOWN_BEFORE_DISPATCH` at all. Putting the graph effect anywhere else
+     * would be a second copy of that knowledge, and the two copies would disagree the first time a
+     * command changed. This function is the executable form of the sentence in [classify]'s doc.
+     *
+     * Every other command leaves the graph as it is: a send appends a default node, an interrupt
+     * carries a send, and an approval continuation selects nothing new.
+     */
+    fun graphAfterCommand(conversation: Conversation, command: ChatCommand): Conversation {
+        val targetId = when (command) {
+            is RegenerateCommand -> command.targetMessageId
+            is InterruptRegenerateCommand -> command.regeneration.targetMessageId
+            else -> return conversation
+        }
+        // Only a *user* target truncates. An assistant-target regenerate appends a variant to the
+        // node it targets and selects it, which is the deferred path — it has no admission-time
+        // identity to get wrong, and truncating here would delete the very node it appends to.
+        val nodeIndex = conversation.messageNodes.indexOfFirst { node ->
+            node.messages.any { message -> message.id == targetId && message.role == MessageRole.USER }
+        }
+        if (nodeIndex < 0) return conversation
+        if (nodeIndex == conversation.messageNodes.lastIndex) return conversation
+        return conversation.copy(messageNodes = conversation.messageNodes.subList(0, nodeIndex + 1))
     }
 
     /** A send creates no variant, so its branch is always already committed. */
