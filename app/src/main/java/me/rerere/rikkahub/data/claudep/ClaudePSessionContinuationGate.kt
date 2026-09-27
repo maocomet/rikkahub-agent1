@@ -137,6 +137,44 @@ object ClaudePSessionContinuationGate {
 
         /** The continuation records on the selected path cannot all be true at once. */
         CONTINUATION_CONFLICTED,
+
+        /**
+         * A turn reported success but the graph holds no message that success could have produced.
+         *
+         * There is deliberately no fallback. Writing `BOUND` for a turn that produced no answer
+         * would credit the branch with a binding no model turn ever proved, and the next turn would
+         * send `immediate` on the strength of it.
+         */
+        SUCCESS_WITHOUT_TERMINAL_MESSAGE,
+
+        /**
+         * The run's barrier record is not on the selected path exactly once — zero matches, or the
+         * same step recorded twice.
+         *
+         * Either way the graph is not the one this obligation was written against, so there is no
+         * message the terminal belongs to and no safe place to invent one.
+         */
+        BARRIER_NOT_UNIQUELY_LOCATED,
+
+        /** The message a record was to be written to is no longer in the graph. */
+        SETTLEMENT_TARGET_MISSING,
+
+        /**
+         * The record was written, and the branch does not read back as it.
+         *
+         * The transition table refused the step — an illegal shape, a revision regression, a gap,
+         * or two records that cannot both be true — so the write is discarded rather than left in
+         * the graph as a record no reader can resolve.
+         */
+        SETTLEMENT_NOT_READABLE,
+
+        /**
+         * A `deferred` obligation reached the generation-terminal seam.
+         *
+         * A deferred branch is settled by the `session.bind` that follows the variant commit, not
+         * by a generation terminal, so this is a wiring defect rather than a branch state.
+         */
+        DEFERRED_SETTLES_THROUGH_BIND,
     }
 
     /**
@@ -715,14 +753,18 @@ object ClaudePSessionContinuationGate {
         data class Commit(val conversation: Conversation) : Settlement
 
         /**
-         * Nothing to write. Either this run owes no continuation, or the graph grew no message the
-         * record could legally attach to — which is a rollback, not a success, and is why the
-         * branch is left in whatever state the barrier put it in rather than being credited with a
-         * binding.
+         * This run carried no continuation obligation at all, so there is nothing a terminal could
+         * be about.
+         *
+         * **This is the only thing it means.** It is not "there was an obligation and the graph
+         * offered nowhere to put it": that case is [Refused], because a run that wrote a barrier
+         * and then could not settle it has left the branch in a state the gate reads as *a model
+         * may be running*, and reporting that as "nothing to do" is how a branch lingers in
+         * `START_IN_FLIGHT` forever.
          */
         data object NothingToWrite : Settlement
 
-        /** No dispatch may follow; see [Reason]. */
+        /** An obligation exists and could not be settled. The caller must fail visibly. */
         data class Refused(val reason: Reason) : Settlement
     }
 
@@ -747,19 +789,123 @@ object ClaudePSessionContinuationGate {
         obligation: Obligation.Immediate,
         terminal: Terminal,
     ): Settlement {
+        val record = immediateTerminal(
+            assistantId = obligation.assistantId,
+            branchId = obligation.branchId,
+            boundRevision = obligation.revision + 1L,
+            terminal = terminal,
+        )
+
+        // Where a terminal may lawfully go, in order of preference:
+        //
+        // 1. the newest message this branch gained — the assistant answer a completed turn
+        //    produced, or any message added after the barrier;
+        // 2. failing that, the barrier's own message, **superseded** — which is only legal when the
+        //    barrier is the last record on the path, and which the fold decides rather than this
+        //    function.
+        //
+        // A success has no second option. A turn that produced no answer did not succeed, and
+        // writing `BOUND` for it would claim a binding that no model turn ever proved.
         val target = terminalTarget(conversation, obligation.assistantId, obligation.branchId)
-            ?: return Settlement.NothingToWrite
-        val settled = attach(
-            conversation = conversation,
-            messageId = target,
-            record = immediateTerminal(
-                assistantId = obligation.assistantId,
-                branchId = obligation.branchId,
-                boundRevision = obligation.revision + 1L,
-                terminal = terminal,
-            ),
-        ) ?: return Settlement.NothingToWrite
-        return Settlement.Commit(settled)
+        if (target != null) {
+            val settled = attach(conversation, target, record)
+                ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
+            return validated(settled, obligation, record)
+        }
+
+        if (terminal == Terminal.SUCCEEDED) {
+            return Settlement.Refused(Reason.SUCCESS_WITHOUT_TERMINAL_MESSAGE)
+        }
+
+        // The rollback case: dispatch happened, the barrier is durable, and the graph grew nothing
+        // — no assistant message, or one that a rollback took with it. The exact barrier record is
+        // located rather than assumed, and superseded in place.
+        val barrier = barrierMessageIds(conversation, obligation)
+        if (barrier.size != 1) {
+            return Settlement.Refused(Reason.BARRIER_NOT_UNIQUELY_LOCATED)
+        }
+        val settled = attach(conversation, barrier.single(), record)
+            ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
+        return validated(settled, obligation, record)
+    }
+
+    /**
+     * [candidate] if the branch reads back as the record that was just written, or a refusal.
+     *
+     * ## Why the transition table is the arbiter and not this function
+     *
+     * Superseding a barrier is legal only when the terminal is the record the fold *ends* on. Turn
+     * two's barrier, for instance, sits after turn one's `BOUND`, and the table permits `BOUND` to
+     * be followed only by a start — so replacing that barrier with a terminal would fold as an
+     * illegal transition. Rather than restate that rule here (and get it subtly wrong), the
+     * candidate graph is resolved through the same resolver every other reader uses, and a
+     * resolution that is not the expected settled state is a refusal.
+     *
+     * That also catches the revision rules for free: a supersede that would read as a regression or
+     * a gap is not a `Resolved` terminal, so it is refused rather than written.
+     */
+    private fun validated(
+        candidate: Conversation,
+        obligation: Obligation.Immediate,
+        record: ClaudePSessionContinuation,
+    ): Settlement {
+        val read = ClaudePSessionContinuationResolver.resolve(candidate, obligation.branchId)
+        if (read !is ClaudePSessionContinuationResolution.Resolved) {
+            return Settlement.Refused(Reason.SETTLEMENT_NOT_READABLE)
+        }
+        if (read.state != record.state || read.revision != record.revision) {
+            return Settlement.Refused(Reason.SETTLEMENT_NOT_READABLE)
+        }
+        return Settlement.Commit(candidate)
+    }
+
+    /**
+     * The message ids on the selected path carrying **exactly** this run's barrier record, in path
+     * order.
+     *
+     * Exactness is the point and it is total: assistant, branch, revision, state *and* the absence
+     * of a generation id. A looser match would let a terminal settle onto a record from a different
+     * turn of the same branch — which carries the same assistant and branch by construction, and
+     * differs only in the revision that says *which* turn it was.
+     *
+     * The caller requires exactly one. Zero means the barrier is not where this run left it, and
+     * more than one means the path holds the same step twice, which no writer produces. Both are
+     * refusals, because both mean the graph is not the one this obligation was written against.
+     */
+    fun barrierMessageIds(
+        conversation: Conversation,
+        obligation: Obligation.Immediate,
+    ): List<String> {
+        val expected = ClaudePSessionContinuation(
+            assistantId = obligation.assistantId,
+            branchId = obligation.branchId,
+            revision = obligation.revision,
+            state = ClaudePSessionContinuationState.START_IN_FLIGHT,
+            generationId = null,
+        )
+        return conversation.messageNodes
+            .mapNotNull { node -> node.messages.getOrNull(node.selectIndex) }
+            .filter { message -> message.claudePSessionContinuation == expected }
+            .map { message -> message.id.toString() }
+    }
+
+    /**
+     * Settles whatever obligation [decision] carries, or [Settlement.NothingToWrite] when it
+     * carries none.
+     *
+     * The entry point every runtime exit calls. A `deferred` obligation is **refused** here rather
+     * than ignored: it is settled by the bind that follows the variant commit, not by the
+     * generation's terminal, and answering "nothing to write" for it would silently drop the bind
+     * this run owes.
+     */
+    fun settle(
+        conversation: Conversation,
+        decision: Decision,
+        terminal: Terminal,
+    ): Settlement = when (val obligation = Obligation.of(decision)) {
+        null -> Settlement.NothingToWrite
+        is Obligation.Immediate -> settleImmediate(conversation, obligation, terminal)
+        is Obligation.Deferred -> Settlement.Refused(Reason.DEFERRED_SETTLES_THROUGH_BIND)
     }
 
     /**

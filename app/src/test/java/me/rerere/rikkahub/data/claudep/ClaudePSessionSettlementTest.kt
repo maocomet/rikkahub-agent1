@@ -222,20 +222,55 @@ class ClaudePSessionSettlementTest {
      * a turn that cannot be settled must not look resumable.
      */
     @Test
-    fun `a turn that gained no message settles to nothing and stays blocked`() {
-        val nodes = listOf(node(1, listOf(message(1, MessageRole.USER))))
-        val branch = branchId(nodes)
-        val carried = conversation(nodes).copy(
-            messageNodes = listOf(
-                nodes.single().copy(
-                    messages = listOf(
-                        nodes.single().messages.single().copy(
-                            claudePSessionContinuation = record(State.START_IN_FLIGHT, 1, branch),
-                        ),
-                    ),
-                ),
+    fun `a failed run with no new message supersedes its own barrier`() {
+        val (carried, branch) = barrierOnlyTurn()
+
+        val settled = committed(
+            ClaudePSessionContinuationGate.settleImmediate(
+                carried,
+                ClaudePSessionContinuationGate.Obligation.Immediate(assistant, branch, 1L),
+                ClaudePSessionContinuationGate.Terminal.FAILED,
             ),
         )
+
+        val read = resolve(settled, branch) as ClaudePSessionContinuationResolution.Resolved
+        assertEquals(State.FAILED_CLOSED, read.state)
+        assertEquals(2L, read.revision)
+        assertFalse(read.allowsNewGeneration)
+        // One record, not two: the barrier was superseded, not shadowed.
+        assertEquals(1, settled.messageNodes.size)
+    }
+
+    /**
+     * Cancellation and a dropped connection take the same path, and land on `INTERRUPTED` — which
+     * carries no generation id, so `replay` offers nothing for a start that has nothing to re-send.
+     */
+    @Test
+    fun `a cancelled run with no new message supersedes its barrier to interrupted`() {
+        val (carried, branch) = barrierOnlyTurn()
+
+        val settled = committed(
+            ClaudePSessionContinuationGate.settleImmediate(
+                carried,
+                ClaudePSessionContinuationGate.Obligation.Immediate(assistant, branch, 1L),
+                ClaudePSessionContinuationGate.Terminal.UNPROVEN,
+            ),
+        )
+
+        val read = resolve(settled, branch) as ClaudePSessionContinuationResolution.Resolved
+        assertEquals(State.INTERRUPTED, read.state)
+        assertFalse(read.allowsNewGeneration)
+        assertNull(ClaudePSessionContinuationGate.replay(settled))
+    }
+
+    /**
+     * Success has no supersede fallback and must not get one. A turn that produced no answer did
+     * not succeed, and writing `BOUND` for it would credit the branch with a binding no model turn
+     * ever proved — which the next turn would then send `immediate` on the strength of.
+     */
+    @Test
+    fun `a successful run with no new message refuses rather than faking a bound`() {
+        val (carried, branch) = barrierOnlyTurn()
 
         val settlement = ClaudePSessionContinuationGate.settleImmediate(
             carried,
@@ -243,10 +278,157 @@ class ClaudePSessionSettlementTest {
             ClaudePSessionContinuationGate.Terminal.SUCCEEDED,
         )
 
-        assertEquals(ClaudePSessionContinuationGate.Settlement.NothingToWrite, settlement)
+        assertEquals(
+            ClaudePSessionContinuationGate.Settlement.Refused(
+                ClaudePSessionContinuationGate.Reason.SUCCESS_WITHOUT_TERMINAL_MESSAGE,
+            ),
+            settlement,
+        )
+        // And the barrier is untouched — still in flight, still blocking.
         val read = resolve(carried, branch) as ClaudePSessionContinuationResolution.Resolved
         assertEquals(State.START_IN_FLIGHT, read.state)
-        assertFalse(read.allowsNewGeneration)
+    }
+
+    /** Zero matches: the obligation names a barrier the selected path does not carry. */
+    @Test
+    fun `a barrier that is not on the path refuses`() {
+        val (carried, _) = barrierOnlyTurn()
+        val branch = branchId(carried.messageNodes)
+
+        val settlement = ClaudePSessionContinuationGate.settleImmediate(
+            carried,
+            ClaudePSessionContinuationGate.Obligation.Immediate(assistant, branch, 9L),
+            ClaudePSessionContinuationGate.Terminal.FAILED,
+        )
+
+        assertEquals(
+            ClaudePSessionContinuationGate.Settlement.Refused(
+                ClaudePSessionContinuationGate.Reason.BARRIER_NOT_UNIQUELY_LOCATED,
+            ),
+            settlement,
+        )
+    }
+
+    /** More than one match: the same step recorded twice, which no writer produces. */
+    @Test
+    fun `a barrier recorded twice on the path refuses`() {
+        val (carried, branch) = barrierOnlyTurn()
+        val doubled = carried.copy(
+            messageNodes = carried.messageNodes + carried.messageNodes.first().copy(id = uid(2, 9)),
+        )
+
+        val settlement = ClaudePSessionContinuationGate.settleImmediate(
+            doubled,
+            ClaudePSessionContinuationGate.Obligation.Immediate(assistant, branch, 1L),
+            ClaudePSessionContinuationGate.Terminal.FAILED,
+        )
+
+        assertEquals(
+            ClaudePSessionContinuationGate.Settlement.Refused(
+                ClaudePSessionContinuationGate.Reason.BARRIER_NOT_UNIQUELY_LOCATED,
+            ),
+            settlement,
+        )
+    }
+
+    /**
+     * A supersede the transition table refuses is refused here too, and this is the reachable case:
+     * a *later* turn's barrier sits after an earlier turn's `BOUND`, and the table permits `BOUND`
+     * to be followed only by a start. Writing the terminal anyway would leave a record no reader
+     * can resolve, which is worse than leaving the branch blocked — blocked is visible.
+     */
+    @Test
+    fun `a supersede the transition table refuses is refused, not written`() {
+        val branch = branchId(emptyList())
+        val nodes = listOf(
+            // Turn one settled: a lone bound record.
+            node(2, listOf(message(2, continuation = record(State.BOUND, 2, branch)))),
+            // Turn two's barrier, with nothing after it.
+            node(3, listOf(message(3, continuation = record(State.START_IN_FLIGHT, 3, branch)))),
+        )
+
+        val settlement = ClaudePSessionContinuationGate.settleImmediate(
+            conversation(nodes),
+            ClaudePSessionContinuationGate.Obligation.Immediate(assistant, branch, 3L),
+            ClaudePSessionContinuationGate.Terminal.FAILED,
+        )
+
+        assertEquals(
+            ClaudePSessionContinuationGate.Settlement.Refused(
+                ClaudePSessionContinuationGate.Reason.SETTLEMENT_NOT_READABLE,
+            ),
+            settlement,
+        )
+    }
+
+    /**
+     * The entry point every exit calls. With no obligation it reports nothing to write — and that
+     * is the **only** thing that member means.
+     */
+    @Test
+    fun `settle reports nothing to write only when the decision carries no obligation`() {
+        val (carried, _) = barrierOnlyTurn()
+
+        assertEquals(
+            ClaudePSessionContinuationGate.Settlement.NothingToWrite,
+            ClaudePSessionContinuationGate.settle(
+                carried,
+                ClaudePSessionContinuationGate.Decision.NotModelGeneration,
+                ClaudePSessionContinuationGate.Terminal.SUCCEEDED,
+            ),
+        )
+    }
+
+    /**
+     * A `deferred` obligation reaching the generation-terminal seam is a wiring defect, not a
+     * branch state: the branch is settled by the bind, and answering "nothing to write" would
+     * silently drop the bind this run owes.
+     */
+    @Test
+    fun `a deferred obligation is refused at the terminal seam, not ignored`() {
+        val (carried, _) = barrierOnlyTurn()
+
+        val refused = ClaudePSessionContinuationGate.settle(
+            carried,
+            ClaudePSessionContinuationGate.Decision.Deferred(
+                assistantId = assistant,
+                request = me.rerere.ai.provider.claudep.ClaudePSessionBindingRequest(
+                    assistantId = assistant,
+                    intent = me.rerere.ai.provider.claudep.ClaudePSessionBindingIntent.DEFERRED,
+                    branchId = null,
+                ),
+            ),
+            ClaudePSessionContinuationGate.Terminal.SUCCEEDED,
+        )
+
+        assertEquals(
+            ClaudePSessionContinuationGate.Settlement.Refused(
+                ClaudePSessionContinuationGate.Reason.DEFERRED_SETTLES_THROUGH_BIND,
+            ),
+            refused,
+        )
+    }
+
+    /**
+     * The graph immediately after a barrier was written and before anything answered: one user
+     * message carrying `START_IN_FLIGHT`, and nothing else.
+     */
+    private fun barrierOnlyTurn(barrierRevision: Long = 1L): Pair<Conversation, String> {
+        val nodes = listOf(node(1, listOf(message(1, MessageRole.USER))))
+        val branch = branchId(nodes)
+        val carried = conversation(nodes).copy(
+            messageNodes = listOf(
+                nodes.single().copy(
+                    messages = listOf(
+                        nodes.single().messages.single().copy(
+                            claudePSessionContinuation =
+                                record(State.START_IN_FLIGHT, barrierRevision, branch),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        return carried to branch
     }
 
     /** The terminal moves the branch forward exactly one step from the barrier. */
