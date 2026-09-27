@@ -1,11 +1,12 @@
 # M3-B — Android session continuation wiring
 
-- Status: **items 1–5 wired and activated. `mode: "auto"` is reachable in production. Awaiting
-  Codex review.**
+- Status: **items 1–5 wired, activated, and verified by a green CI run. Codex final closure
+  passed.**
 - Branch: `codex/claudep-cp1b-local`
 - Base: `60e9e70a` → `3e04b869` (immediate) → `54fd4716` (dispatch refusal) → the deferred-bind
-  commit → the replay commit → the activation commit this report ships with
-- Server: read-only, unchanged. No wire, schema, dependency or workflow change.
+  commit → the replay commit → the activation commit → the two CI-gate commits
+- Server: read-only, unchanged. No wire or schema change. The only non-production files this batch
+  touches are this report and `.github/workflows/build-debug-apk.yml`.
 - Working tree: the pre-existing untracked `web-ui/bun.lock`, and nothing else.
 
 ## 1. Items 1–5
@@ -107,6 +108,9 @@ before the recovery loop's first statement, so the loop body — and the dispatc
 unreachable when it fires, and the annotation path replaces only the annotation. A reader should
 treat those four checks as reviewed code, not as verified behaviour.
 
+**CI did not move this line.** The green run in §6.1 executes the first list and nothing more; §6.2
+states which conclusions stay arguments.
+
 ## 5. Accepted limitations
 
 All three are named, visible refusals. None falls back to `mode: "new"`, and none can produce a
@@ -126,6 +130,53 @@ hidden second session.
    call occurs.
 
 ## 6. Verification log
+
+### 6.1 CI (executed)
+
+| | |
+|---|---|
+| Run | [`36327474126`](https://github.com/maocomet/rikkahub-agent1/actions/runs/36327474126) |
+| Verified implementation SHA | `10c4164ac527d7a8bd632a7e3cae527948deb131` |
+| Event | `workflow_dispatch` |
+| Conclusion | **`success`** |
+
+Every one of the workflow's 18 steps ended in its expected conclusion. The only outcome that is
+not `success` is `Diagnose web-ui build (on failure)`, which is `skipped` by its own `if: failure()`
+— on a green run that step *must* not execute, so "18/18 success" would be the wrong claim to
+record.
+
+| Checked by CI | Evidence |
+|---|---|
+| Real Kotlin compilation | step 9 `Build debug APK` (`assembleDebug`) `success` |
+| APK fixed signing | step 10 `success`; all three APKs report the same `sha256:2f1965cf…fcc3` |
+| Regression gates | steps 11–12 `success` |
+| All REQUIRED Claude P classes | `All 64 required Claude P test classes executed.` — the step exits non-zero if any class is missing, or reports 0 tests, failures, errors or skips |
+| The six M3-B suites | `ClaudePFinalAnswerRecoveryTest` 5, `ClaudePSessionAdmissionWiringTest` 15, `ClaudePSessionContinuationAdmissionsTest` 6, `ClaudePSessionContinuationDispatchTest` 8, `ClaudePSessionDeferredBindTest` 8, `ClaudePSessionReplayTest` 13 — 55 tests, every one `0 skipped`, `0 failures` |
+| conformance self-test | `Conformance XML gate self-test: 8 cases behaved as expected.` |
+| conformance revision | `Conformance corpus verified against specification revision v1-r4.` |
+| conformance corpus | `ClaudePConformanceCorpusTest executed exactly 18 tests, none skipped and none failing.` |
+| Error annotations | `##[error]` appears **0** times in the run log |
+
+**`##[error]` is the marker, not `::error::`.** The log contains 18 literal `::error::` strings and
+none of them is an emitted annotation: they are the *script bodies* GitHub echoes into the log at
+the top of each step, e.g. `^[[36;1m  echo "::error::…"^[[0m`. Counting the literal would report 18
+errors for a run that has none, so the distinction is recorded here rather than left to a reader who
+greps for the substring.
+
+### 6.2 What CI did **not** verify
+
+CI executes the suites in §4.1's first list. It does **not** turn §4.1's second list into verified
+behaviour: the four flow-level checks around the recovery refusal — `generation.start` counts, the
+absence of a second request id, content preservation on a partial answer, and the tool-loop case —
+remain **arguments read out of the code**, not executed evidence. The repository has no
+`GenerationHandler` test harness and this batch did not add one.
+
+The same holds for the connection epoch's transport wiring: the epoch's *shape* and the
+per-connection rule are executed; that `WssClaudePGatewayClient` mints on a completed handshake is
+reviewed code. And nothing in CI touches a Server, a Worker, a model or a real socket — no
+`mode: "auto"` request has ever left a real device for a real gateway.
+
+### 6.3 Local
 
 | Check | Command | Result |
 |---|---|---|
@@ -147,4 +198,20 @@ assumed — `git diff --name-only` for these commits matches nothing in `Hardlin
 - **No Server run, VPS or Worker.** `session.bind` has still never been sent to a real Server, and
   no `mode: "auto"` request has ever left this device for one.
 - **No model call, OAuth or CLI child.**
-- **No push, no CI run, no deploy, no usage UI, no M4.**
+- **No deploy, no usage UI, no M4.**
+
+Push and CI did happen, and §6.1 records them. What CI verified is the executed list in §4.1; the
+structural conclusions in §4.1 and §6.2 are unchanged by it.
+
+---
+
+## Conclusion
+
+**M3-B Android session continuation wiring complete and CI verified.**
+
+Items 1–5 are wired and activated, the activation audit accounts for every path that can dispatch a
+Claude P generation, and run `36327474126` at
+`10c4164ac527d7a8bd632a7e3cae527948deb131` is green — real compilation, the fixed `.agenttest`
+signature on all three APKs, the regression gates, all 64 required Claude P test classes, and the
+conformance corpus at `v1-r4`. Three shapes are refused by name rather than supported, and each is
+recorded in §5 as an accepted limitation.
