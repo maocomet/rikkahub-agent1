@@ -340,20 +340,82 @@ class StableSystemPromptCompositionTest {
         assertTrue("the reference is what remains", turn.systemText.contains("<runtime_value_ref name=\"cur_date\"/>"))
     }
 
-    @Test
-    fun `no unresolved placeholder reaches the model anywhere`() {
-        val turn = runTurn(nextTurn)
-
+    /**
+     * No **registered** key survives in raw form, in any brace form and any case.
+     *
+     * Written as a scan over the vocabulary rather than as a list of literals on purpose: the
+     * defect this catches is a token that is neither substituted nor refused, and a hardcoded list
+     * would have to be extended by whoever adds the next key — which is exactly the moment the hole
+     * would reopen.
+     */
+    private fun assertNoRawRegisteredPlaceholder(turn: Turn) {
+        val tokenForms = listOf(
+            Regex("\\{\\{([A-Za-z0-9_]{1,64})\\}\\}"),
+            Regex("\\{([A-Za-z0-9_]{1,64})\\}"),
+        )
         for (message in turn.providerMessages) {
             val text = message.parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text }
-            assertFalse(
-                "a template token survived into the request: $text",
-                text.contains("{{cur_date}}") ||
-                    text.contains("{{cur_time}}") ||
-                    text.contains("{{battery_level}}") ||
-                    text.contains("{{char}}"),
+            for (form in tokenForms) {
+                for (match in form.findAll(text)) {
+                    val key = PromptReferencePolicy.canonicalKey(match.groupValues[1])
+                    assertFalse(
+                        "a raw '${match.value}' reached the request, and '{{cur_date}}' spelled any " +
+                            "way is the placeholder this whole change removes",
+                        PromptReferencePolicy.REGISTERED_KEYS.contains(key),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `no unresolved placeholder reaches the model anywhere`() {
+        assertNoRawRegisteredPlaceholder(runTurn(nextTurn))
+    }
+
+    @Test
+    fun `a mixed-case assistant prompt still sends canonical bytes`() {
+        // The R1 regression, end to end. `{Battery_Level}` is the shape that used to slip through
+        // silently: the single-brace form would not match, would not be refused, and would sit in
+        // both the system message and the frozen expectation — so the wire check agreed with
+        // itself and dispatched a raw placeholder as the system instruction.
+        val mixedCasePrompt = """
+            You are a helpful assistant, called {{CHAR}}, based on model {{MODEL_NAME}}.
+
+            ## Info
+            - Date: {{CUR_DATE}}
+            - Battery: {Battery_Level}
+            - Time: {cur_TIME}
+        """.trimIndent()
+
+        val turn = runTurn(nextTurn, assistantPrompt = mixedCasePrompt)
+
+        assertEquals(1, turn.startCalls)
+        assertEquals(
+            "the freeze and the wire agree, and both are canonical",
+            turn.frozenSystemPrompt,
+            turn.dispatchedSystemPrompt,
+        )
+
+        // The stable key substitutes however it was spelled...
+        assertTrue(turn.systemText.contains("called Rikka"))
+        // ...and every dynamic one becomes the canonical marker.
+        for (key in listOf("model_name", "cur_date", "battery_level", "cur_time")) {
+            assertTrue(
+                "expected a canonical marker for $key in: ${turn.systemText}",
+                turn.systemText.contains("<runtime_value_ref name=\"$key\"/>"),
             )
         }
+
+        // And the values arrive under their canonical names.
+        for (key in listOf("cur_date", "battery_level", "cur_time")) {
+            assertTrue(
+                "expected a canonical runtime value for $key in: ${turn.lastUserText}",
+                turn.lastUserText.contains("<runtime_value name=\"$key\">"),
+            )
+        }
+
+        assertNoRawRegisteredPlaceholder(turn)
     }
 
     @Test

@@ -194,8 +194,37 @@ object PromptReferencePolicy {
      * a lone `{...}` is ordinary prose and JSON, so scanning for unknown single-brace tokens would
      * refuse perfectly good system prompts. An unknown key is therefore only a refusal when it is
      * written in the unambiguous double-brace form; single-brace text is left exactly as it was.
+     *
+     * The character class already admits both cases — what makes the match case-insensitive is that
+     * the captured name is canonicalised before it is looked up. See [canonicalKey].
      */
     private val DOUBLE_BRACE_TOKEN = Regex("\\{\\{([A-Za-z0-9_]{1,64})\\}\\}")
+
+    /** The single-brace form, which the placeholder engine has always also understood. */
+    private val SINGLE_BRACE_TOKEN = Regex("\\{([A-Za-z0-9_]{1,64})\\}")
+
+    /**
+     * The registry key a token names, whatever case it was written in.
+     *
+     * ## Why this exists, and what it fixes
+     *
+     * The transformer this replaced matched registered keys with `ignoreCase = true`, so
+     * `{{CUR_DATE}}` and `{Cur_Date}` have always been the same placeholder as `{{cur_date}}`. A
+     * case-sensitive lookup here would not merely be stricter: it would *split* the two, and the
+     * split is asymmetric in a way that hides itself.
+     *
+     * - `{{CUR_DATE}}` would be refused as unclassified, which is loud.
+     * - `{CUR_DATE}` would match nothing, be left in the text, and be left *identically* in the
+     *   frozen expectation — so the system message the app froze and the one it dispatched would
+     *   still agree, and the wire check would pass with a raw placeholder inside the system
+     *   instruction. Silence is the failure mode, which is exactly what this module exists to
+     *   remove.
+     *
+     * So every lookup canonicalises first, and every marker, recorded value and refusal reason
+     * names the canonical lowercase key rather than the spelling that happened to be typed.
+     * `lowercase()` with no argument is locale-independent, and the vocabulary is ASCII either way.
+     */
+    fun canonicalKey(key: String): String = key.lowercase()
 
     /**
      * Rewrites an app-controlled template into its **stable** form: dynamic keys become fixed
@@ -223,7 +252,12 @@ object PromptReferencePolicy {
                     ?: throw PromptReferenceException(PromptReferenceRejection.UNRESOLVED, key)
             }
         }
-        return NeutralizedPromptTemplate(text = rewritten, referencedKeys = referenced.toList())
+        // Re-ordered into the registry's declaration order. `referenced` is filled in the order the
+        // *text* happened to name them, and the contract is a function of the key **set**: two
+        // templates that use the same keys must report them identically, or a rephrasing of the
+        // assistant prompt would reorder a list nothing downstream wants ordered by phrasing.
+        val ordered = REGISTERED_KEYS.filter { referenced.contains(it) }
+        return NeutralizedPromptTemplate(text = rewritten, referencedKeys = ordered)
     }
 
     /**
@@ -283,19 +317,24 @@ object PromptReferencePolicy {
         text: String,
         replacementFor: (String, PromptReferenceClass) -> String,
     ): String {
+        // Refused first, before any replacement runs, so the refusal never depends on which token
+        // happened to be rewritten before the offending one was reached.
         for (match in DOUBLE_BRACE_TOKEN.findAll(text)) {
-            val key = match.groupValues[1]
-            if (!REGISTERED_KEYS.contains(key)) {
-                throw PromptReferenceException(PromptReferenceRejection.UNCLASSIFIED, key)
+            val canonical = canonicalKey(match.groupValues[1])
+            if (!REGISTERED_KEYS.contains(canonical)) {
+                throw PromptReferenceException(PromptReferenceRejection.UNCLASSIFIED, canonical)
             }
         }
 
-        var result = text
-        for (key in REGISTERED_KEYS) {
-            val token = "{{$key}}"
-            if (!result.contains(token) && !result.contains("{$key}")) continue
+        fun substitute(regex: Regex, source: String): String = regex.replace(source) { match ->
+            val canonical = canonicalKey(match.groupValues[1])
+            val classification = CLASSIFICATIONS[canonical]
+                // An unregistered *single*-brace token is ordinary prose — a JSON object, a
+                // natural-language aside — and is returned untouched. An unregistered double-brace
+                // token cannot reach here: it was refused above.
+                ?: return@replace match.value
 
-            val replacement = replacementFor(key, CLASSIFICATIONS.getValue(key))
+            val replacement = replacementFor(canonical, classification)
 
             // A replacement must not carry a token of its own. Checked here rather than left to the
             // end-of-rewrite check for a reason that is easy to miss: whether a value's token
@@ -304,7 +343,7 @@ object PromptReferencePolicy {
             // a property of how the table happens to be written down.
             val introduced = DOUBLE_BRACE_TOKEN.find(replacement)
             if (introduced != null) {
-                val inner = introduced.groupValues[1]
+                val inner = canonicalKey(introduced.groupValues[1])
                 throw PromptReferenceException(
                     if (REGISTERED_KEYS.contains(inner)) {
                         PromptReferenceRejection.UNRESOLVED
@@ -315,23 +354,25 @@ object PromptReferencePolicy {
                 )
             }
 
-            // Double-brace first: `{{key}}` contains `{key}` as a substring, and replacing the
-            // longer form first is what stops the second pass from rewriting the replacement's own
-            // text if it happens to contain braces. The placeholder engine relies on the same
-            // ordering.
-            result = result.replace(token, replacement).replace("{$key}", replacement)
+            replacement
         }
+
+        // Double-brace first: `{{key}}` contains `{key}` as a substring, and replacing the longer
+        // form first is what stops the second pass from rewriting the replacement's own text if it
+        // happens to contain braces. The placeholder engine relies on the same ordering.
+        val afterDoubleBrace = substitute(DOUBLE_BRACE_TOKEN, text)
+        val result = substitute(SINGLE_BRACE_TOKEN, afterDoubleBrace)
 
         val survivor = DOUBLE_BRACE_TOKEN.find(result)
         if (survivor != null) {
-            val key = survivor.groupValues[1]
+            val canonical = canonicalKey(survivor.groupValues[1])
             throw PromptReferenceException(
-                if (REGISTERED_KEYS.contains(key)) {
+                if (REGISTERED_KEYS.contains(canonical)) {
                     PromptReferenceRejection.UNRESOLVED
                 } else {
                     PromptReferenceRejection.UNCLASSIFIED
                 },
-                key,
+                canonical,
             )
         }
 
