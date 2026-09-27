@@ -3317,29 +3317,120 @@ class ChatService(
      * A `null` return is a refusal and must fail the save: a completed turn whose branch cannot be
      * settled would leave `START_IN_FLIGHT` behind and close the branch forever.
      */
-    private fun continuationSettled(
+    /**
+     * What the terminal transaction must persist, and what the caller still owes once it commits.
+     *
+     * [deferred] is non-null exactly when this turn created a branch: the `BIND_PENDING` shares the
+     * transaction that commits the new variant, but the `session.bind` that settles it cannot — it
+     * is an RPC, and it must not be sent until the record it depends on is durable.
+     */
+    private data class ContinuationTerminalCommit(
+        val conversation: Conversation,
+        val deferred: me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.DeferredPending? = null,
+    )
+
+    private fun continuationCommit(
         conversation: Conversation,
         runControl: GenerationRunControl?,
         terminalState: me.rerere.rikkahub.service.chat.DurableCommandState,
-    ): Conversation? {
-        val decision = claudePSessionAdmissions.find(runControl?.runId) ?: return conversation
+        generationId: String?,
+    ): ContinuationTerminalCommit? {
+        val decision = claudePSessionAdmissions.find(runControl?.runId)
+            ?: return ContinuationTerminalCommit(conversation)
+
         if (decision is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Deferred) {
-            return conversation
+            // A `deferred` run owes a `BIND_PENDING` only when it actually produced the variant
+            // that creates its branch. One that failed or was cancelled produced nothing, so it
+            // owes nothing — and writing a pending record for a candidate that does not exist
+            // would be a bind obligation for a branch the Server never made.
+            if (terminalState != me.rerere.rikkahub.service.chat.DurableCommandState.COMPLETED) {
+                return ContinuationTerminalCommit(conversation)
+            }
+            // A completed `deferred` generation with no identity is the Server having never
+            // accepted it. That cannot be bound, and a `BIND_PENDING` without a generation id is a
+            // bind that can never be replayed — so it is a refusal rather than a record.
+            val identity = generationId ?: return null
+            val pending = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+                .deferredPending(conversation, decision.assistantId, identity)
+                ?: return null
+            return ContinuationTerminalCommit(pending.conversation, pending)
         }
+
         val terminal = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
-            .terminalFor(terminalState) ?: return conversation
+            .terminalFor(terminalState) ?: return ContinuationTerminalCommit(conversation)
         return when (
             val settlement = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
                 .settle(conversation, decision, terminal)
         ) {
             is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.Commit ->
-                settlement.conversation
+                ContinuationTerminalCommit(settlement.conversation)
 
             me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.NothingToWrite ->
-                conversation
+                ContinuationTerminalCommit(conversation)
 
             is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.Refused ->
                 null
+        }
+    }
+
+    /**
+     * Sends the one `session.bind` a committed `deferred` generation owes, and records the answer.
+     *
+     * ## The order, and why it is this order
+     *
+     * The caller reaches here only after the transaction that committed the new variant **and** its
+     * `BIND_PENDING` returned, so the obligation is durable before the RPC that discharges it is
+     * sent. The identity sent is the one the persisted record carries — the same
+     * `(generationId, branchId)` a replay would re-send — never a freshly derived one, because
+     * §6.1 recognises the repeat by identity and a new id would be a different bind.
+     *
+     * ## A dropped connection is not a failure
+     *
+     * A transport failure means the outcome is *unknown*, never that the bind did not happen: the
+     * Server may have applied it before the socket died. That is written as `INTERRUPTED` carrying
+     * the same generation id, which is exactly the state a later user-triggered replay resumes
+     * from. Treating it as a failure would close a branch that is in fact fine.
+     */
+    private suspend fun bindDeferredSession(
+        pending: me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.DeferredPending,
+        provider: me.rerere.ai.provider.ProviderSetting.ClaudeP,
+        conversationId: Uuid,
+    ) {
+        val generationId = pending.record.generationId ?: return
+        val outcome = runCatching {
+            val claudeP = providerManager.getProviderByType(provider) as?
+                me.rerere.ai.provider.providers.ClaudePProvider
+            claudeP?.bindSession(
+                generationId = generationId,
+                branchId = pending.branchId,
+                assistantId = pending.record.assistantId,
+            ) ?: me.rerere.ai.provider.claudep.ClaudePSessionBindOutcome.Unproven
+        }.getOrElse {
+            Log.w(TAG, "claude_p bind transport failure", it)
+            me.rerere.ai.provider.claudep.ClaudePSessionBindOutcome.Unproven
+        }
+
+        val conversation = conversationRepo.getConversationById(conversationId) ?: return
+        when (
+            val settlement = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate
+                .settleDeferred(conversation, pending, outcome)
+        ) {
+            is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Settlement.Commit -> {
+                conversationRepo.updateConversation(settlement.conversation)
+                conversationRepo.refreshSearchProjection(settlement.conversation)
+            }
+
+            else -> {
+                // The Server answered and this device could not record what it said. The branch
+                // stays `BIND_PENDING`, which is closed, and a replay does not apply to a bind that
+                // already settled — so this is surfaced rather than swallowed.
+                Log.w(TAG, "claude_p_bind_settlement_refused:$settlement")
+                addError(
+                    IllegalStateException("claude_p_bind_settlement_refused"),
+                    conversationId,
+                    title = context.getString(R.string.error_title_generation),
+                )
+            }
         }
     }
 
@@ -3519,6 +3610,22 @@ class ChatService(
         val timingAppliedToolResults = if (agentTiming != null) mutableSetOf<String>() else null
         val authority = runControl?.runtimeCommandAuthority()
         var waitingAuthorityCommitted = false
+        /**
+         * The Server's generation id for this dispatch, if it sends one.
+         *
+         * Only a `deferred` generation is stamped, and the observation point is the one place every
+         * provider chunk passes — a streamed attempt, a non-streamed one, a fallback and a retry
+         * alike. The rule about a *second, different* id lives in the observer rather than in a
+         * closure here: two ids for one dispatch are two generations, and the caller's next step is
+         * to bind a branch to one of them, so the conflict is raised rather than resolved.
+         *
+         * Read by the terminal path, which is why it is declared out here rather than inside the
+         * generation block: a `deferred` commit needs the identity in the very transaction that
+         * persists the new variant.
+         */
+        var claudePGenerationId: String? = null
+        val claudePGenerationIdentity = me.rerere.rikkahub.data.claudep
+            .ClaudePGenerationIdentityObserver { id -> claudePGenerationId = id }
 
         val generationResult = runCatching {
             // reset suggestions
@@ -3938,6 +4045,9 @@ class ChatService(
                 // command whose admission refused to produce a decision — in which case no
                 // generation is running under it in the first place.
                 claudePSessionBindingRequest = continuationRequestFor(runControl),
+                // The Server's generation id, for a `deferred` generation to be bound to the
+                // branch variant it is about to create.
+                onClaudePGenerationAccepted = claudePGenerationIdentity::observe,
                 // Read once per call so the surface that wrote the addendum (Telegram bot,
                 // anything else) gets its runtime context into the system prompt without
                 // having to plumb a parameter all the way through sendMessage. Returns null
@@ -4671,12 +4781,15 @@ class ChatService(
                             // absorbing state that stops the next turn from resuming a session the
                             // Server may have half-applied.
                             val settledFinal = requireNotNull(
-                                continuationSettled(
+                                continuationCommit(
                                     conversation = final,
                                     runControl = runControl,
                                     terminalState = me.rerere.rikkahub.service.chat.DurableCommandState.FAILED,
+                                    // A failed turn produced no variant, so there is no candidate
+                                    // to name and no identity is consulted.
+                                    generationId = null,
                                 ),
-                            ) { "claude_p_continuation_settlement_refused" }
+                            ) { "claude_p_continuation_settlement_refused" }.conversation
                             authority.finish(
                                 conversation = settledFinal,
                                 terminalState = me.rerere.rikkahub.service.chat.DurableCommandState.FAILED,
@@ -4717,6 +4830,8 @@ class ChatService(
         }.onSuccess {
             if (runControl?.isUpdateFenced() == true) return@onSuccess
             agentTiming?.mark(AgentTimingEventKind.FINAL_SAVE_STARTED)
+            var deferredToBind:
+                me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.DeferredPending? = null
             try {
                 applyRunUpdate {
                     val finalConversation = getConversationFlow(conversationId).value
@@ -4726,14 +4841,18 @@ class ChatService(
                             ?: error("final_assistant_message_missing")
                         // The continuation terminal rides in the same transaction as the command's
                         // terminal: a turn that completed proves the branch's binding, and the two
-                        // facts commit together or not at all.
-                        val settledConversation = requireNotNull(
-                            continuationSettled(
+                        // facts commit together or not at all. A refusal here is thrown, caught by
+                        // the surrounding `catch (saveError)` and fenced as a failed save — it is a
+                        // named domain outcome turned into a failed command, never an app crash.
+                        val terminalCommit = requireNotNull(
+                            continuationCommit(
                                 conversation = finalConversation,
                                 runControl = runControl,
                                 terminalState = me.rerere.rikkahub.service.chat.DurableCommandState.COMPLETED,
+                                generationId = claudePGenerationId,
                             ),
                         ) { "claude_p_continuation_settlement_refused" }
+                        val settledConversation = terminalCommit.conversation
                         try {
                             authority.finish(
                                 conversation = settledConversation,
@@ -4747,6 +4866,9 @@ class ChatService(
                             )
                             updateConversation(conversationId, settledConversation)
                             conversationRepo.refreshSearchProjection(settledConversation)
+                            // Set only once the transaction above has committed, so the bind that
+                            // follows cannot precede the record that obliges it.
+                            deferredToBind = terminalCommit.deferred
                         } catch (saveError: Throwable) {
                             if (!authority.isTerminalCommitted()) {
                                 runCatching { authority.finishAfterFinalSaveFailure() }
@@ -4784,6 +4906,16 @@ class ChatService(
                 Log.w(TAG, "handleMessageComplete: final authority save failed", saveError)
             } finally {
                 agentTiming?.mark(AgentTimingEventKind.FINAL_SAVE_FINISHED)
+            }
+            // Exactly one `session.bind`, and only after the transaction above returned — which is
+            // what makes "the obligation was durable before the RPC that discharges it was sent" a
+            // property of the order rather than of a check.
+            deferredToBind?.let { pending ->
+                val claudePProvider = resolvedProvider as?
+                    me.rerere.ai.provider.ProviderSetting.ClaudeP
+                if (claudePProvider != null) {
+                    bindDeferredSession(pending, claudePProvider, conversationId)
+                }
             }
         }
         authorityFailure?.let { throw it }

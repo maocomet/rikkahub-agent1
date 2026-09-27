@@ -594,6 +594,40 @@ object ClaudePSessionContinuationGate {
     }
 
     /**
+     * The conversation the transaction **after** a `deferred` bind must persist, or a refusal.
+     *
+     * ## Why the bind's two writes are two transactions
+     *
+     * The `BIND_PENDING` shares the transaction that commits the variant, because a bind obligation
+     * that is not durable must not be sent. The *answer* arrives later, over a socket, and cannot be
+     * inside that transaction — so it is written by a transaction of its own, and the record it
+     * writes supersedes the pending one **in the same slot** ([pending]`."messageId"`), keeping its
+     * revision: the branch shows one record either way, which is what §5.2's "no admission
+     * transaction runs for a deferred path" leaves room for.
+     *
+     * A refusal here is not "nothing to do": the Server has already answered and this device cannot
+     * record what it said, so the caller must surface it rather than leave the branch reading as
+     * `BIND_PENDING` for a bind that in fact settled.
+     */
+    fun settleDeferred(
+        conversation: Conversation,
+        pending: DeferredPending,
+        outcome: ClaudePSessionBindOutcome,
+    ): Settlement {
+        val record = deferredSettlement(
+            assistantId = pending.record.assistantId,
+            branchId = pending.branchId,
+            revision = pending.revision,
+            generationId = pending.record.generationId
+                ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING),
+            outcome = outcome,
+        )
+        val settled = attach(conversation, pending.messageId, record)
+            ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
+        return validated(settled, pending.branchId, record)
+    }
+
+    /**
      * `BIND_PENDING -> BOUND` **in the same slot**.
      *
      * The bound record keeps the pending record's revision, because it supersedes that exact record
@@ -839,7 +873,7 @@ object ClaudePSessionContinuationGate {
             )
             val settled = attach(conversation, target, record)
                 ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
-            return validated(settled, obligation, record)
+            return validated(settled, obligation.branchId, record)
         }
 
         if (terminal == Terminal.SUCCEEDED) {
@@ -861,7 +895,7 @@ object ClaudePSessionContinuationGate {
         )
         val settled = attach(conversation, barrier.single(), record)
             ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
-        return validated(settled, obligation, record)
+        return validated(settled, obligation.branchId, record)
     }
 
     /**
@@ -881,10 +915,10 @@ object ClaudePSessionContinuationGate {
      */
     private fun validated(
         candidate: Conversation,
-        obligation: Obligation.Immediate,
+        branchId: String,
         record: ClaudePSessionContinuation,
     ): Settlement {
-        val read = ClaudePSessionContinuationResolver.resolve(candidate, obligation.branchId)
+        val read = ClaudePSessionContinuationResolver.resolve(candidate, branchId)
         if (read !is ClaudePSessionContinuationResolution.Resolved) {
             return Settlement.Refused(Reason.SETTLEMENT_NOT_READABLE)
         }
@@ -1101,7 +1135,7 @@ object ClaudePSessionContinuationGate {
         )
         val settled = attach(conversation, barrier.single(), record)
             ?: return Settlement.Refused(Reason.SETTLEMENT_TARGET_MISSING)
-        return validated(settled, stale, record)
+        return validated(settled, stale.branchId, record)
     }
 
     /**
@@ -1142,6 +1176,7 @@ object ClaudePSessionContinuationGate {
             branchId = branchId,
             revision = revision,
             record = record,
+            messageId = target,
         )
     }
 
@@ -1151,12 +1186,20 @@ object ClaudePSessionContinuationGate {
      * Returned as one value so the caller cannot take the conversation to commit and the identity
      * to bind from two different computations — which is the shape of bug this whole layer is
      * written against.
+     *
+     * [messageId] is the message the pending record was written to, and it is carried for the same
+     * reason: the settlement that follows the bind **supersedes that record in its own slot**, and
+     * the slot cannot be re-derived afterwards. [terminalTarget] answers "the last message with no
+     * record of this branch", and once the pending record is on it the answer is a different
+     * message — so a caller that recomputed it would write the settled state somewhere the pending
+     * one never was, leaving the path showing two records where there should be one.
      */
     data class DeferredPending(
         val conversation: Conversation,
         val branchId: String,
         val revision: Long,
         val record: ClaudePSessionContinuation,
+        val messageId: String,
     )
 
     /**
