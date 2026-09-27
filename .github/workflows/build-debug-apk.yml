@@ -492,12 +492,17 @@ jobs:
             fi
           }
 
-          synth "$tmpdir/ok.xml"    14 0 0 0; expect_accept "$tmpdir/ok.xml"    "14 tests, none skipped or failing"
-          synth "$tmpdir/zero.xml"   0 0 0 0; expect_reject "$tmpdir/zero.xml"  "zero tests executed"
-          synth "$tmpdir/skip.xml"  14 1 0 0; expect_reject "$tmpdir/skip.xml"  "one skipped test"
-          synth "$tmpdir/count.xml" 13 0 0 0; expect_reject "$tmpdir/count.xml" "a wrong test count"
-          synth "$tmpdir/fail.xml"  14 0 1 0; expect_reject "$tmpdir/fail.xml"  "one failing test"
-          synth "$tmpdir/err.xml"   14 0 0 1; expect_reject "$tmpdir/err.xml"   "one errored test"
+          # The fixtures derive their count from the pinned expectation instead of spelling it a
+          # second time. They used to be independent, and they drifted the moment the pin moved:
+          # the "ok" fixture still carried 14 while the expectation became 18, so a suite at the
+          # *correct* count was synthesised as a wrong one and the self-test rejected the very case
+          # it exists to accept. Everything that should reach the count check now moves with it.
+          synth "$tmpdir/ok.xml"    "$EXPECTED_CONFORMANCE_TESTS" 0 0 0; expect_accept "$tmpdir/ok.xml"    "a suite at the expected count, none skipped or failing"
+          synth "$tmpdir/zero.xml"  0 0 0 0; expect_reject "$tmpdir/zero.xml"  "zero tests executed"
+          synth "$tmpdir/skip.xml"  "$EXPECTED_CONFORMANCE_TESTS" 1 0 0; expect_reject "$tmpdir/skip.xml"  "one skipped test"
+          synth "$tmpdir/count.xml" "$((EXPECTED_CONFORMANCE_TESTS - 1))" 0 0 0; expect_reject "$tmpdir/count.xml" "a wrong test count"
+          synth "$tmpdir/fail.xml"  "$EXPECTED_CONFORMANCE_TESTS" 0 1 0; expect_reject "$tmpdir/fail.xml"  "one failing test"
+          synth "$tmpdir/err.xml"   "$EXPECTED_CONFORMANCE_TESTS" 0 0 1; expect_reject "$tmpdir/err.xml"   "one errored test"
           expect_reject "$tmpdir/does-not-exist.xml" "a missing suite file"
           printf '<testsuite/><testsuite/>\n' > "$tmpdir/dup.xml"; expect_reject "$tmpdir/dup.xml" "two suite elements"
 
