@@ -41,6 +41,29 @@ data class ClaudePCachedModel(
 )
 
 /**
+ * Records one successful catalog read.
+ *
+ * A single-method interface rather than a direct dependency on a settings store, so a caller states
+ * the one thing it needs and a test can supply it without one. The production implementation is the
+ * same authority that owns the pairing fields — there is exactly one writer for
+ * `ProviderSetting.ClaudeP`'s catalog columns, for the same reason the pairing lifecycle has one.
+ *
+ * It is deliberately **not** a dispatch gate. What is cached here is what the settings screen and an
+ * offline hint read; whether a model may run is decided by the live connection and the gateway, never
+ * by this cache. Treating it as authority would make a stale entry a capability.
+ */
+fun interface ClaudePCatalogRecorder {
+    /**
+     * Persists [entries] and the Claude Code version the **same connection** reported.
+     *
+     * One call for both, because they are one observation: written separately, the columns could hold
+     * entries from one connection beside a version from another and present them as a single fact.
+     * Returns `false` when the write failed.
+     */
+    suspend fun recordCatalog(entries: List<ClaudePCachedModel>, claudeCodeVersion: String): Boolean
+}
+
+/**
  * Device identity shared with the gateway.
  *
  * `deviceId` is an opaque public identifier, not a credential — it is useless without the

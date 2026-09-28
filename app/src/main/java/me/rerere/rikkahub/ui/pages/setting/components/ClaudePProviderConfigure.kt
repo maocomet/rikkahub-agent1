@@ -115,7 +115,15 @@ fun ClaudePProviderConfigure(
                     Text(text = "Gateway", style = MaterialTheme.typography.titleMedium)
                     LabeledValue("Origin", provider.pairedOrigin ?: "Unavailable")
                     LabeledValue("Fingerprint", provider.gatewayFingerprint ?: "Unavailable")
-                    LabeledValue("Claude Code", provider.claudeCodeVersion ?: "Unavailable")
+                    // "Unavailable" was the wrong word for the absent case: it reads as "this device
+                    // could not find out", when what actually happened is that the gateway reported
+                    // nothing in `server.hello`. Those are different problems, and only one of them is
+                    // something the user can act on — so the label says which one this is.
+                    LabeledValue(
+                        "Claude Code",
+                        provider.claudeCodeVersion?.takeIf { it.isNotBlank() }
+                            ?: "Not reported by gateway",
+                    )
                     LabeledValue("Device", provider.device.displayName.ifBlank { "This device" })
                 }
             }
@@ -158,12 +166,20 @@ fun ClaudePProviderConfigure(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(text = "Capabilities", style = MaterialTheme.typography.titleMedium)
-                // Stated so a missing attachment picker and a missing tool approval read as known
-                // limits rather than as bugs.
-                LabeledValue("Supported", "Text, reasoning summary")
+                // Stated so a missing attachment picker reads as a known limit rather than as a bug.
+                //
+                // Tools moved off this list when the tool bridge was activated: the Gateway
+                // announces `tool.bridge.v1` in `server.hello`, the app wires a real
+                // `ClaudePToolBridgeHost`, and an invocation can now arrive and be executed. Listing
+                // it as unsupported was the stale claim, not a conservative one.
+                //
+                // The multimodal limits are unchanged and still true — the catalog, the DTOs and the
+                // bridge are text-only — so they stay, and nothing here is widened on the strength of
+                // the tool work.
+                LabeledValue("Supported", "Text, reasoning summary, tools")
                 LabeledValue(
                     "Not supported yet",
-                    "Tools, images, documents, audio, video, background tasks",
+                    "Images, documents, audio, video, background tasks",
                 )
             }
         }

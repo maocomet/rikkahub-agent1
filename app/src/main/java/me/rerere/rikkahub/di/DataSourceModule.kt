@@ -1686,6 +1686,10 @@ val dataSourceModule = module {
                     // exactly one instance is shared by the provider and by anything else that ever
                     // needs to ask it a question.
                     toolHost = get(),
+                    // The same settings authority the pairing lifecycle writes through, so the
+                    // catalog columns have one writer rather than two. Requested by its registered
+                    // type: Koin binds the interface, and does not answer for a supertype.
+                    catalogRecorder = get<me.rerere.ai.provider.claudep.ClaudePPairingSettingsGateway>(),
                 ),
             )
         }

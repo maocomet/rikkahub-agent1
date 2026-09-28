@@ -22,6 +22,8 @@ import me.rerere.ai.provider.StableSystemPromptProvider
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.claudep.ClaudePCancelReason
 import me.rerere.ai.provider.claudep.ClaudePConnectionEpoch
+import me.rerere.ai.provider.claudep.ClaudePCachedModel
+import me.rerere.ai.provider.claudep.ClaudePCatalogRecorder
 import me.rerere.ai.provider.claudep.ClaudePCatalogResultBody
 import me.rerere.ai.provider.claudep.ClaudePToolBridgeHost
 import me.rerere.ai.provider.claudep.ClaudePToolCancelBody
@@ -135,6 +137,16 @@ class ClaudePProvider(
      * can arrive.
      */
     private val toolHost: ClaudePToolBridgeHost = ClaudePToolBridgeHost.NONE,
+    /**
+     * Where a successful catalog read is persisted, or `null` to persist nothing.
+     *
+     * The production wiring passes the settings authority that already owns this provider's
+     * columns. It is optional rather than required so a provider built in a test records nothing
+     * without having to stand up a settings store — and so the absence of a recorder can never turn
+     * a catalog read into a failure. Persistence is a side effect of a successful read, not a
+     * precondition for one.
+     */
+    private val catalogRecorder: ClaudePCatalogRecorder? = null,
 ) : Provider<ProviderSetting.ClaudeP>, StableSystemPromptProvider {
 
     /**
@@ -156,8 +168,24 @@ class ClaudePProvider(
         get() = cachedServerHello
 
     override suspend fun listModels(providerSetting: ProviderSetting.ClaudeP): List<Model> {
-        ensureHandshake(requireDeviceId())
-        return gateway.catalog().toModels()
+        // The handshake first, always. `catalog.get` ahead of `client.hello` is precisely the frame
+        // the Gateway refuses as `MALFORMED_EVENT_BODY`, and the ordering is this caller's to get
+        // right — the transport cannot send a hello on the caller's behalf without changing what the
+        // caller asked for.
+        val hello = ensureHandshake(requireDeviceId())
+        val catalog = gateway.catalog()
+
+        // Persisted only after a successful read. A failed refresh leaves the previous cache in
+        // place, so the screen can show what was last known instead of an empty list that reads like
+        // "this gateway offers no models" — which is a different, and false, claim.
+        catalogRecorder?.recordCatalog(
+            entries = catalog.enabledModels().map { it.toCachedModel() },
+            // The version from *this* connection's `server.hello`, read off the handshake this call
+            // just used rather than from a cache that a reconnect may have invalidated.
+            claudeCodeVersion = hello.claudeCodeVersion,
+        )
+
+        return catalog.toModels()
     }
 
     override suspend fun streamText(
@@ -579,15 +607,35 @@ class ClaudePProvider(
     }
 
     /**
+     * The entries a user may actually choose.
+     *
+     * One filter, applied by both the returned models and the persisted cache, so the list on screen
+     * and the list in settings cannot come to disagree about which aliases the gateway offered.
+     */
+    private fun ClaudePCatalogResultBody.enabledModels(): List<ClaudePModelEntry> =
+        models.filter { it.enabled && it.alias.isNotBlank() }
+
+    /**
      * Maps a server catalog onto [Model]s.
      *
      * Only enabled aliases survive, only `text` input is honoured, and reasoning is advertised
      * solely when the server lists `reasoning_summary`. Note what is *absent*: no alias is derived
      * from `server.hello.claude_code_version`, so a CLI build string can never become a model.
      */
-    private fun ClaudePCatalogResultBody.toModels(): List<Model> = models
-        .filter { it.enabled && it.alias.isNotBlank() }
-        .map { it.toModel() }
+    private fun ClaudePCatalogResultBody.toModels(): List<Model> = enabledModels().map { it.toModel() }
+
+    /**
+     * The display half of a catalog entry.
+     *
+     * Narrower than [toModel] deliberately: this is rendered, never dispatched. The `enabled` flag is
+     * not carried because [enabledModels] has already applied it — persisting it would invite a
+     * later reader to treat the cache as the authority on what may run.
+     */
+    private fun ClaudePModelEntry.toCachedModel(): ClaudePCachedModel = ClaudePCachedModel(
+        alias = alias,
+        displayName = displayName.ifBlank { alias },
+        reasoningSummary = features.contains(FEATURE_REASONING_SUMMARY),
+    )
 
     private fun ClaudePModelEntry.toModel(): Model {
         val abilities = buildList {

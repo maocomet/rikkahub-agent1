@@ -390,6 +390,11 @@ class ClaudePDevicePairingRepositoryTest {
         override suspend fun markRevoked(): Boolean = delegate.markRevoked()
 
         override suspend fun markNotPaired(): Boolean = delegate.markNotPaired()
+
+        override suspend fun recordCatalog(
+            entries: List<me.rerere.ai.provider.claudep.ClaudePCachedModel>,
+            claudeCodeVersion: String,
+        ): Boolean = delegate.recordCatalog(entries, claudeCodeVersion)
     }
 
     private companion object {

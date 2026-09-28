@@ -88,6 +88,29 @@ class InMemoryClaudePPairingSettingsGateway(
     var failedWriteCount: Int = 0
         private set
 
+    /** The last catalog a provider recorded, or `null` when none has been. */
+    @Volatile
+    var recordedCatalog: Pair<List<ClaudePCachedModel>, String>? = null
+        private set
+
+    /** How many catalog writes actually landed — used to assert one write per successful read. */
+    private val recordCatalogCount = AtomicInteger(0)
+
+    val recordedCatalogCount: Int get() = recordCatalogCount.get()
+
+    override suspend fun recordCatalog(
+        entries: List<ClaudePCachedModel>,
+        claudeCodeVersion: String,
+    ): Boolean {
+        if (writesFail) {
+            failedWriteCount += 1
+            return false
+        }
+        recordedCatalog = entries to claudeCodeVersion
+        recordCatalogCount.incrementAndGet()
+        return true
+    }
+
     private val markRevokedCount = AtomicInteger(0)
 
     /** How many times the coordinator forced revocation — used to assert ordering. */

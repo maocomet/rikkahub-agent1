@@ -196,6 +196,7 @@ jobs:
             --tests "me.rerere.ai.provider.claudep.*" \
             --tests "me.rerere.ai.provider.claudep.ClaudePSessionBranchIdTest" \
             --tests "me.rerere.ai.provider.providers.ClaudePProviderStreamTest" \
+            --tests "me.rerere.ai.provider.providers.ClaudePProviderCatalogTest" \
             --tests "me.rerere.ai.provider.providers.ClaudePToolStatusMappingTest" \
             --tests "me.rerere.ai.provider.providers.ClaudePProviderIdentityTest" \
             --tests "me.rerere.ai.provider.providers.ClaudePProviderCancellationTest" \
@@ -239,6 +240,7 @@ jobs:
             --tests "me.rerere.rikkahub.data.authority.source.ConversationContinuationSourceRevisionTest" \
             --tests "me.rerere.rikkahub.data.capability.CapabilitySubjectResolverTest" \
             --tests "me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigureTest" \
+            --tests "me.rerere.rikkahub.ui.pages.setting.ClaudePModelPickerPolicyTest" \
             --tests "me.rerere.rikkahub.data.execution.ApprovalContinuationModeTest" \
             --tests "me.rerere.rikkahub.data.execution.ApprovalOwnerAdmissibilityTest" \
             --tests "me.rerere.rikkahub.data.execution.InFlightApprovalWaitersTest"

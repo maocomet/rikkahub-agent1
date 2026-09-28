@@ -76,8 +76,13 @@ interface ClaudePCleanupTombstoneStore {
  * An interface rather than a direct dependency on the settings store, because the whole point of
  * putting the coordinator in `ai` is that it can then be driven by tests without Android. The app
  * layer implements it over `SettingsStore`.
+ *
+ * It also carries [ClaudePCatalogRecorder], so the catalog columns have the same single writer as
+ * the pairing columns. Two writers on one `ProviderSetting.ClaudeP` is the double-write the pairing
+ * lifecycle was explicitly built to avoid; adding a second one for the catalog would reintroduce it
+ * for the fields written most often.
  */
-interface ClaudePPairingSettingsGateway {
+interface ClaudePPairingSettingsGateway : ClaudePCatalogRecorder {
     /** Current persisted pairing state. */
     suspend fun pairingState(): ClaudePPairingState
 

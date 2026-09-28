@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -100,6 +101,7 @@ import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.claudep.ClaudePCachedModel
 import me.rerere.ai.provider.claudep.ClaudePConfigureUi
 import me.rerere.ai.provider.claudep.ClaudePPairingState
 import me.rerere.ai.context.ABSOLUTE_CONTEXT_WINDOW_TOKENS
@@ -485,24 +487,31 @@ private fun ModelList(
 ) {
     val providerManager = koinInject<ProviderManager>()
     val toaster = LocalToaster.current
-    val modelList by produceState(emptyList(), providerSetting) {
+    // Whether the list on screen came from the persisted cache rather than from the gateway.
+    //
+    // Surfaced rather than hidden: a list that quietly degrades to stale looks exactly like a fresh
+    // one, and the user would have no way to tell that a refresh had failed.
+    var showingCachedCatalog by remember(providerSetting.id) { mutableStateOf(false) }
+    val modelList by produceState(
+        initialValue = emptyList(),
+        // Keyed on identity and pairing state, **not** on the whole setting object.
+        //
+        // A successful Claude P read now writes `cachedModels`, `catalogCachedAt` and
+        // `claudeCodeVersion` back into settings, and `ProviderSetting`'s equality covers those
+        // columns. Keying on the object would make that write restart this effect — which would read
+        // again and write again, for as long as the screen stayed open. These two keys are what the
+        // fetch actually depends on.
+        providerSetting.id,
+        (providerSetting as? ProviderSetting.ClaudeP)?.pairingState,
+    ) {
         // An unpaired Claude P has no gateway to ask. Showing the cached catalog (empty until
         // pairing exists) avoids a guaranteed NOT_PAIRED failure and the error toast that would
         // come with it, while still being honest about what is available.
         if (providerSetting is ProviderSetting.ClaudeP &&
             providerSetting.pairingState != ClaudePPairingState.PAIRED
         ) {
-            value = providerSetting.cachedModels.map { cached ->
-                Model(
-                    modelId = cached.alias,
-                    displayName = cached.displayName.ifBlank { cached.alias },
-                    abilities = if (cached.reasoningSummary) {
-                        listOf(ModelAbility.REASONING)
-                    } else {
-                        emptyList()
-                    },
-                )
-            }
+            value = providerSetting.cachedModels.map { it.toDisplayModel() }
+            showingCachedCatalog = providerSetting.cachedModels.isNotEmpty()
             return@produceState
         }
         runCatching {
@@ -510,6 +519,7 @@ private fun ModelList(
                 .listModels(providerSetting)
                 .sortedBy { it.modelId }
                 .toList()
+            showingCachedCatalog = false
         }.onFailure { error ->
             // runCatching catches Throwable, which includes CancellationException
             // (e.g. when the user navigates away from the Models tab mid-fetch
@@ -519,10 +529,19 @@ private fun ModelList(
             error.printStackTrace()
             // Surface real failures (missing/invalid API key, providers like
             // Minimax that return an HTTP 200 error envelope instead of a 4xx).
+            // A Claude P failure is already named — `ClaudePGatewayException` renders its code —
+            // so the toast says which check failed rather than "failed to load models".
             toaster.show(
                 error.message ?: "Failed to load models",
                 type = ToastType.Error
             )
+            // A paired Claude P still knows what it last saw. Falling back to that, and marking it,
+            // is not the same as leaving the list empty: an empty list asserts the gateway offers
+            // no models, which is a different claim and one this failure has not earned.
+            if (providerSetting is ProviderSetting.ClaudeP) {
+                value = providerSetting.cachedModels.map { it.toDisplayModel() }
+                showingCachedCatalog = providerSetting.cachedModels.isNotEmpty()
+            }
         }
     }
     var expanded by rememberSaveable { mutableStateOf(true) }
@@ -604,6 +623,17 @@ private fun ModelList(
                 .align(Alignment.BottomCenter)
                 .offset(y = -ScreenOffset),
         ) {
+            // Says out loud that this list is the cache. Without it a failed refresh would be
+            // indistinguishable from a gateway that genuinely offers these models — which is the
+            // silent-empty failure in the other direction.
+            if (showingCachedCatalog) {
+                Text(
+                    text = "Cached catalog",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+            }
             AddModelButton(
                 models = modelList,
                 selectedModels = providerSetting.models,
@@ -829,6 +859,33 @@ private fun ModelSettingsForm(
     }
 }
 
+/**
+ * A cached Claude P alias as a selectable [Model].
+ *
+ * The cache is a display artefact, so this reconstructs only what the list renders. Abilities come
+ * from the cached `reasoningSummary` flag and nothing else — the same rule the live mapping applies,
+ * so a cache can never advertise something a fresh read would not.
+ */
+private fun ClaudePCachedModel.toDisplayModel(): Model = Model(
+    modelId = alias,
+    displayName = displayName.ifBlank { alias },
+    abilities = if (reasoningSummary) listOf(ModelAbility.REASONING) else emptyList(),
+)
+
+/**
+ * Whether this provider may be given a model id typed by hand.
+ *
+ * False for Claude P, and the reason is a property of the provider rather than a UI preference: its
+ * models are the aliases the paired Gateway's catalog returns, and the provider refuses any other id
+ * at dispatch time. So the manual form could only ever produce a model that fails later — offering
+ * it would teach the user that the provider is broken, when what is true is that its set is fixed.
+ *
+ * A predicate rather than the `is ProviderSetting.ClaudeP` test written inline, so the rule the UI
+ * applies is the rule a test can assert. An inline check in a private composable is untestable
+ * without rendering it, which is how a rule like this quietly stops being true.
+ */
+internal fun ProviderSetting.allowsManualModelEntry(): Boolean = this !is ProviderSetting.ClaudeP
+
 @Composable
 private fun AddModelButton(
     models: List<Model>,
@@ -875,26 +932,31 @@ private fun AddModelButton(
             }
         )
 
-        Button(
-            onClick = {
-                dialogState.open(Model())
-            }
-        ) {
-            Row(
-                modifier = Modifier,
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
+        // Claude P gets the picker and nothing else. The picker's entries come from `listModels`,
+        // which for Claude P is the gateway's catalog — so the list *is* the allowlist, and the
+        // second affordance would only offer ids the provider will refuse.
+        if (parentProvider.allowsManualModelEntry()) {
+            Button(
+                onClick = {
+                    dialogState.open(Model())
+                }
             ) {
-                Icon(
-                    HugeIcons.Add01,
-                    contentDescription = stringResource(R.string.setting_provider_page_add_model)
-                )
-                AnimatedVisibility(expanded) {
-                    Spacer(modifier = Modifier.size(8.dp))
-                    Text(
-                        stringResource(R.string.setting_provider_page_add_new_model),
-                        style = MaterialTheme.typography.bodyLarge
+                Row(
+                    modifier = Modifier,
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        HugeIcons.Add01,
+                        contentDescription = stringResource(R.string.setting_provider_page_add_model)
                     )
+                    AnimatedVisibility(expanded) {
+                        Spacer(modifier = Modifier.size(8.dp))
+                        Text(
+                            stringResource(R.string.setting_provider_page_add_new_model),
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
                 }
             }
         }

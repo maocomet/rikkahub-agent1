@@ -1,6 +1,9 @@
 package me.rerere.rikkahub.data.claudep
 
+import java.time.Instant
+
 import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.claudep.ClaudePCachedModel
 import me.rerere.ai.provider.claudep.ClaudePDeviceDescriptor
 import me.rerere.ai.provider.claudep.ClaudePPairedDevice
 import me.rerere.ai.provider.claudep.ClaudePPairedMetadata
@@ -64,6 +67,32 @@ class SettingsClaudePPairingGateway(
             cachedModels = emptyList(),
             catalogCachedAt = null,
             claudeCodeVersion = null,
+        )
+    }
+
+    /**
+     * Persists one successful catalog read, in one write.
+     *
+     * Three columns move together because they are one observation of one connection: the entries,
+     * when they were read, and the Claude Code version `server.hello` reported on that same socket.
+     * Writing them in separate updates would let a reader see entries from one connection beside a
+     * version from another — two facts that never held at the same time, presented as one.
+     *
+     * The timestamp is stamped here rather than passed in, so every writer of this column uses the
+     * same clock. `Instant.now()` is UTC ISO-8601, which sorts lexically and matches what the
+     * pairing columns already store.
+     */
+    override suspend fun recordCatalog(
+        entries: List<ClaudePCachedModel>,
+        claudeCodeVersion: String,
+    ): Boolean = write { setting ->
+        setting.copy(
+            cachedModels = entries,
+            catalogCachedAt = Instant.now().toString(),
+            // A gateway that reports no version leaves the previous value alone rather than blanking
+            // it: "this gateway does not say" is not the same claim as "there is no version", and
+            // overwriting a real version with an empty string would destroy the only evidence of one.
+            claudeCodeVersion = claudeCodeVersion.ifBlank { setting.claudeCodeVersion },
         )
     }
 
