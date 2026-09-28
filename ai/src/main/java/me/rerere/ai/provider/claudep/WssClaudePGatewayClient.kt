@@ -111,6 +111,20 @@ class WssClaudePGatewayClient(
     @Volatile
     private var connectionEpochToken: ClaudePConnectionEpoch? = null
 
+    /**
+     * The handshake that completed on a specific session, if any.
+     *
+     * Keyed on the session **object**, because "handshaken" is a property of one connection rather
+     * than of this client: a socket that ends takes its handshake with it, and its replacement must
+     * send its own. Comparing identity makes that automatic — there is no invalidation step to
+     * forget.
+     */
+    @Volatile
+    private var completedHandshake: Pair<ClaudePWebSocketSession, ClaudePServerHelloBody>? = null
+
+    /** Serialises the handshake, so concurrent callers on one connection share a single hello. */
+    private val handshakeMutex = Mutex()
+
     /** Server-advertised outbound frame cap, clamped by our own hard ceiling. */
     @Volatile
     private var outboundFrameLimit: Int = ClaudePTransportLimits.HARD_MAX_OUTBOUND_FRAME_BYTES
@@ -149,6 +163,39 @@ class WssClaudePGatewayClient(
      */
     override suspend fun hello(request: ClaudePClientHelloBody): ClaudePServerHelloBody {
         val ready = ensureSession()
+        // **One `client.hello` per connection.**
+        //
+        // The Gateway admits `client.hello` only before the handshake completes
+        // (`HANDSHAKE_ONLY_TYPES`) and answers a repeat with `MALFORMED_EVENT_BODY` followed by
+        // `close(1002, "protocol")`. Callers re-negotiate before every request on purpose
+        // (`ClaudePProvider.ensureHandshake`), so a socket that was reused without this check got a
+        // second hello — which is what killed the connection three times in the minute after a
+        // successful pairing, and left the device with an empty catalog.
+        //
+        // Returning the completed handshake rather than re-sending it is safe *because* the session
+        // is the same object: the negotiated `connection_id`, frame cap and epoch all still describe
+        // the connection the caller is about to use.
+        completedHandshake?.let { carried -> if (carried.first === ready) return carried.second }
+
+        return handshakeMutex.withLock {
+            // Re-checked under the lock: a concurrent caller may have completed the handshake while
+            // this one waited, and it must join that result rather than send a second hello.
+            completedHandshake?.let { carried -> if (carried.first === ready) return carried.second }
+            performHandshake(ready, request)
+        }
+    }
+
+    /**
+     * The handshake exchange itself.
+     *
+     * Reached only through [hello], which guarantees it runs at most once per live connection. Split
+     * out so that guarantee lives in one readable place rather than being threaded through the
+     * signing, sending and validation steps below.
+     */
+    private suspend fun performHandshake(
+        ready: ClaudePWebSocketSession,
+        request: ClaudePClientHelloBody,
+    ): ClaudePServerHelloBody {
         val key = deviceKeyStore.loadExisting(keyAlias)
             ?: throw failClosed(
                 ClaudePConnectionState.CREDENTIAL_INVALID,
@@ -217,6 +264,10 @@ class WssClaudePGatewayClient(
         connectionEpochToken = ClaudePConnectionEpoch(epochCounter.incrementAndGet())
         _connectionState.value = ClaudePConnectionState.READY
         _lastError.value = null
+        // Recorded last, and only on the success path. Every `throw` above leaves this unset, so a
+        // refused or interrupted handshake leaves no cache for a later call to believe in — and the
+        // next `hello` genuinely retries rather than returning a success that never happened.
+        completedHandshake = ready to helloEvent.body
         return helloEvent.body
     }
 
@@ -666,6 +717,12 @@ class WssClaudePGatewayClient(
         session = null
         readerJob = null
         connectionEpochToken = null
+        // The handshake belonged to the socket that just ended — its `connection_id`, frame cap and
+        // negotiated version describe a connection that no longer exists. Cleared here rather than
+        // left for the next connect to overwrite, so `clientFrame` can never stamp a new socket's
+        // frames with the dead one's identity.
+        negotiatedHello = null
+        completedHandshake = null
 
         if (_connectionState.value.isStableFailure) return
 
@@ -841,6 +898,7 @@ class WssClaudePGatewayClient(
         readerJob = null
         negotiatedHello = null
         connectionEpochToken = null
+        completedHandshake = null
         router.failEverything(ClaudePErrorCode.STREAM_INTERRUPTED)
         active?.close(WS_CLOSE_NORMAL)
         _connectionState.value = ClaudePConnectionState.DISCONNECTED

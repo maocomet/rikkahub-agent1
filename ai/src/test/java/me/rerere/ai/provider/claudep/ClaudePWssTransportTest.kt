@@ -119,6 +119,152 @@ class ClaudePWssTransportTest {
         }
 
     // ---------------------------------------------------------------------------------------
+    // Handshake lifecycle: one `client.hello` per connection
+    //
+    // These tests pin the defect that left a paired phone with an empty catalog.
+    //
+    // What went wrong. `hello()` resolved a session with `ensureSession()` and then sent
+    // `client.hello` unconditionally. When a session was already live, `ensureSession()` returned
+    // it unchanged — so the next call put a second `client.hello` on the *same* socket. The Gateway
+    // admits exactly one hello per connection (`HANDSHAKE_ONLY_TYPES`) and answers a repeat with
+    // `MALFORMED_EVENT_BODY` followed by `close(1002, "protocol")`, which is what the deployed
+    // Gateway logged three times within a minute of a successful pairing. Production reaches this
+    // on every settings visit: `ClaudePProvider.ensureHandshake` re-negotiates before each request.
+    //
+    // Why nothing caught it. The fake server *accepts* a repeat — its `helloCount` simply reaches
+    // two — so the duplicate this side sends was never checked against the phase rule on the other
+    // side. A fake more permissive than production turns a protocol violation into a green test.
+    // The first test below therefore asserts on the count the *real* Gateway enforces a limit on,
+    // not merely on the fake's tolerance.
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    fun `repeat requests on one connection send exactly one hello`() = withClient { client, connector ->
+        // The production shape: ensureHandshake, then catalog, then the next request's
+        // ensureHandshake again, then catalog again.
+        client.hello(helloRequest())
+        client.catalog()
+        client.hello(helloRequest())
+        client.catalog()
+
+        val session = connector.lastSession!!
+
+        assertEquals("the socket must be reused, not replaced", 1, connector.connectCount)
+        assertEquals(1, session.sent.count { it.contains(ClaudePEventType.CLIENT_HELLO) })
+        // The requests themselves still go out every time. Only the handshake is once-only.
+        assertEquals(2, session.sent.count { it.contains(ClaudePEventType.CATALOG_GET) })
+        assertEquals(1, connector.server.helloCount)
+    }
+
+    @Test
+    fun `a second hello on a live connection is not sent and returns the negotiated hello`() =
+        withClient { client, connector ->
+            val first = client.hello(helloRequest())
+            val second = client.hello(helloRequest())
+
+            val session = connector.lastSession!!
+
+            assertEquals(1, connector.connectCount)
+            assertEquals(1, connector.sessions.size)
+            assertEquals(1, session.sent.count { it.contains(ClaudePEventType.CLIENT_HELLO) })
+            // The caller gets the real negotiated values back, not a placeholder, and not a failure:
+            // re-negotiating is the caller's *intent*, and it is satisfied without a frame.
+            assertEquals(first.protocolVersion, second.protocolVersion)
+            assertEquals(first.connectionId, second.connectionId)
+        }
+
+    @Test
+    fun `a reconnect hands a handshake to the new socket and only one`() = withClient { client, connector ->
+        client.hello(helloRequest())
+        val first = connector.lastSession!!
+        first.dropConnection()
+
+        client.hello(helloRequest())
+
+        val second = connector.lastSession!!
+        assertNotSame(first, second)
+        assertEquals(2, connector.connectCount)
+        // The dead socket keeps the single hello it carried; the replacement gets its own single one.
+        // A handshake carried across the reconnect would be the same protocol violation in the other
+        // direction: a `connection_id` stamped on frames for a connection that no longer exists.
+        assertEquals(1, first.sent.count { it.contains(ClaudePEventType.CLIENT_HELLO) })
+        assertEquals(1, second.sent.count { it.contains(ClaudePEventType.CLIENT_HELLO) })
+    }
+
+    @Test
+    fun `concurrent hellos on one connection are collapsed into one`() = withClient { client, connector ->
+        // Both callers are racing for the handshake. The assertion is the invariant, and it holds
+        // under *every* interleaving — so this cannot be flaky, only occasionally less concurrent
+        // than intended.
+        val results = listOf(
+            async(Dispatchers.Default) { client.hello(helloRequest()) },
+            async(Dispatchers.Default) { client.hello(helloRequest()) },
+            async(Dispatchers.Default) { client.hello(helloRequest()) },
+        ).map { it.await() }
+
+        assertEquals(1, connector.connectCount)
+        assertEquals(1, connector.server.helloCount)
+        assertEquals(1, connector.lastSession!!.sent.count { it.contains(ClaudePEventType.CLIENT_HELLO) })
+        // Every caller saw the same negotiated connection, not three different ones.
+        assertEquals(1, results.map { it.connectionId }.toSet().size)
+    }
+
+    @Test
+    fun `a refused handshake leaves no success to reuse and no second hello`() =
+        withClient(
+            connector = {
+                FakeClaudePWebSocketConnector(
+                    server = FakeClaudePFrameServer(handshakeRejection = ClaudePErrorCode.DEVICE_REVOKED),
+                )
+            },
+        ) { client, connector ->
+            gatewayFailure { hello(helloRequest()) }
+            // The second attempt must fail too. If the first failure had left anything cached, this
+            // would return a success that never happened — the "false success cache" this fix exists
+            // to prevent.
+            gatewayFailure { hello(helloRequest()) }
+
+            assertEquals(1, connector.connectCount)
+            assertEquals(1, connector.server.helloCount)
+            assertEquals(1, connector.lastSession!!.sent.count { it.contains(ClaudePEventType.CLIENT_HELLO) })
+        }
+
+    // ---------------------------------------------------------------------------------------
+    // Catalog
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    fun `catalog is sent after the handshake, parses the entries, and dispatches nothing`() =
+        withClient { client, connector ->
+            client.hello(helloRequest())
+            val catalog = client.catalog()
+
+            val session = connector.lastSession!!
+            val helloAt = session.sent.indexOfFirst { it.contains(ClaudePEventType.CLIENT_HELLO) }
+            val catalogAt = session.sent.indexOfFirst { it.contains(ClaudePEventType.CATALOG_GET) }
+
+            // Ordering on the wire, not merely in the source: a `catalog.get` ahead of the hello is
+            // the frame the Gateway refuses, so the assertion is about the sequence the peer sees.
+            assertTrue("the handshake must be on the wire", helloAt >= 0)
+            assertTrue("catalog.get must follow the handshake", catalogAt > helloAt)
+
+            assertEquals(
+                FakeClaudePFrameServer.DEFAULT_CATALOG.map { it.alias },
+                catalog.models.map { it.alias },
+            )
+            assertEquals(
+                FakeClaudePFrameServer.DEFAULT_CATALOG.map { it.enabled },
+                catalog.models.map { it.enabled },
+            )
+
+            // A directory read is not a model run, and this whole feature depends on that: pairing,
+            // listing and choosing a model must all be possible with `generation.start` at zero.
+            assertEquals(0, connector.server.startCount)
+            assertEquals(0, connector.server.dispatchCount)
+            assertEquals(0, client.remoteDispatchCount)
+        }
+
+    // ---------------------------------------------------------------------------------------
     // Protocol violations
     // ---------------------------------------------------------------------------------------
 
