@@ -530,6 +530,16 @@ data class TextGenerationParams(
     @Transient
     val claudePToolGenerationContext: ClaudePToolGenerationContext? = null,
     /**
+     * Stable app conversation identity used as Claude P's protocol `remote_thread_id`.
+     *
+     * This must be supplied per generation: a provider instance is shared by every chat, so a
+     * constructor-level placeholder would collapse unrelated conversations into one Server
+     * session. It is transient because the Claude P provider maps it to the protocol field; no
+     * other provider or generic request body should see it.
+     */
+    @Transient
+    val claudePRemoteThreadId: String? = null,
+    /**
      * Which branch this Claude P generation belongs to, and whether it is about to create one.
      *
      * Transient for the same reason as the context above: the branch identity is the app's own,

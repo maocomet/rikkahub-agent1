@@ -3849,6 +3849,9 @@ class GenerationHandler(
             // Transient on the params, so it reaches the Claude P provider and nothing else: not
             // the encoded request, not the fingerprint, not the prompt.
             claudePToolGenerationContext = claudePToolGenerationContext,
+            // A provider instance serves every conversation. Carry the graph authority's real
+            // conversation id per request so separate chats cannot share one remote session.
+            claudePRemoteThreadId = conversationId?.toString(),
             // The branch this generation belongs to. Transient for the same reason as the context
             // above, and `null` for every provider that is not Claude P and for every call path
             // that resolved no branch — which is what keeps the pre-M3 `mode: "new"` shape.

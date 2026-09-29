@@ -3301,7 +3301,12 @@ class ChatService(
                         writeReplayRecord(conversationId, owed, record)
                     },
                     bind = { generationId, branchId, assistantId ->
-                        claudeP.bindSession(generationId, branchId, assistantId)
+                        claudeP.bindSession(
+                            generationId = generationId,
+                            branchId = branchId,
+                            assistantId = assistantId,
+                            requestRemoteThreadId = conversationId.toString(),
+                        )
                     },
                 )
         ) {
@@ -3529,6 +3534,7 @@ class ChatService(
                 generationId = generationId,
                 branchId = pending.branchId,
                 assistantId = pending.record.assistantId,
+                requestRemoteThreadId = conversationId.toString(),
             ) ?: me.rerere.ai.provider.claudep.ClaudePSessionBindOutcome.Unproven
         }.getOrElse {
             Log.w(TAG, "claude_p bind transport failure", it)

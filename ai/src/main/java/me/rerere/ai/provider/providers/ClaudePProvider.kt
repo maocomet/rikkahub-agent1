@@ -216,6 +216,9 @@ class ClaudePProvider(
         // `StableSystemPromptProvider` claim true rather than aspirational — see the method.
         requireStableSystemPrompt(systemPrompt, params.stableSystemPromptExpectation)
         val requestId = requestIdFactory()
+        val requestRemoteThreadId = params.claudePRemoteThreadId
+            ?.takeIf(String::isNotBlank)
+            ?: remoteThreadId
 
         // The catalog is frozen before dispatch, because it has to travel *in* `generation.start`.
         // With no tools — or no bridge host — this is [ClaudePToolPreparation.NONE], the snapshot
@@ -238,7 +241,7 @@ class ClaudePProvider(
 
         val fingerprint = ClaudePRequestFingerprint.compute(
             deviceId = deviceId,
-            remoteThreadId = remoteThreadId,
+            remoteThreadId = requestRemoteThreadId,
             remoteBranchId = shape.remoteBranchId,
             mode = shape.mode,
             modelAlias = modelAlias,
@@ -254,7 +257,7 @@ class ClaudePProvider(
             bindingIntent = shape.bindingIntent,
         )
         val body = ClaudePGenerationStartBody(
-            remoteThreadId = remoteThreadId,
+            remoteThreadId = requestRemoteThreadId,
             remoteBranchId = shape.remoteBranchId,
             mode = shape.mode,
             modelAlias = modelAlias,
@@ -370,10 +373,12 @@ class ClaudePProvider(
         generationId: String,
         branchId: String,
         assistantId: String,
+        requestRemoteThreadId: String = remoteThreadId,
     ): ClaudePSessionBindOutcome {
         require(generationId.isNotBlank()) { "A bind must name the generation it binds" }
         require(assistantId.isNotBlank()) { "A bind must name the assistant it binds" }
         require(branchId.matches(BRANCH_ID)) { "A bind must carry a canonical branch id" }
+        require(requestRemoteThreadId.isNotBlank()) { "A bind must name the remote thread it binds" }
 
         // A bind travels on the same authenticated connection as everything else, so it goes
         // through the same handshake. Doing it here rather than assuming the caller already did
@@ -383,7 +388,7 @@ class ClaudePProvider(
 
         return gateway.bindSessionOnce(
             generationId = generationId,
-            remoteThreadId = remoteThreadId,
+            remoteThreadId = requestRemoteThreadId,
             branchId = branchId,
             assistantId = assistantId,
         )
