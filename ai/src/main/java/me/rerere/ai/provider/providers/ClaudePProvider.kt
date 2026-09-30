@@ -238,6 +238,11 @@ class ClaudePProvider(
         // computed twice could be fingerprinted as one thing and sent as another — and the
         // Server would then deduplicate two genuinely different requests under one key.
         val shape = resolveRequestShape(params.claudePSessionBindingRequest)
+        val rebuildHistory = if (shape.mode == MODE_NEW) {
+            messages.rebuildHistoryBeforeLastUser().takeIf { it.isNotEmpty() }
+        } else {
+            null
+        }
 
         val fingerprint = ClaudePRequestFingerprint.compute(
             deviceId = deviceId,
@@ -247,6 +252,7 @@ class ClaudePProvider(
             modelAlias = modelAlias,
             systemPrompt = systemPrompt,
             turn = turn,
+            rebuildHistory = rebuildHistory,
             // Part of the fingerprint for the same reason it is part of the generation's
             // identity: two requests that offer Claude different tools are not the same request,
             // and idempotency keyed without it would replay the first one's answer.
@@ -263,7 +269,7 @@ class ClaudePProvider(
             modelAlias = modelAlias,
             systemPrompt = systemPrompt,
             turn = turn,
-            rebuildHistory = null,
+            rebuildHistory = rebuildHistory,
             toolSnapshot = toolSnapshot,
             limits = ClaudePGenerationLimits(maxOutputTokens = params.maxTokens),
             bindingIntent = shape.bindingIntent,
@@ -1422,6 +1428,22 @@ private fun List<UIMessage>.lastUserTurn(): ClaudePTurn? {
         .map { ClaudePTurnPart(type = "text", text = it.text) }
     if (parts.isEmpty()) return null
     return ClaudePTurn(role = "user", parts = parts)
+}
+
+private fun List<UIMessage>.rebuildHistoryBeforeLastUser(): List<ClaudePTurn> {
+    val currentUserIndex = indexOfLast { it.role == MessageRole.USER }
+    if (currentUserIndex <= 0) return emptyList()
+    return take(currentUserIndex).mapNotNull { message ->
+        if (message.role != MessageRole.USER && message.role != MessageRole.ASSISTANT) {
+            return@mapNotNull null
+        }
+        val parts = message.parts.filterIsInstance<UIMessagePart.Text>()
+            .filter { it.text.isNotEmpty() }
+            .map { ClaudePTurnPart(text = it.text) }
+        parts.takeIf { it.isNotEmpty() }?.let {
+            ClaudePTurn(role = message.role.name.lowercase(), parts = it)
+        }
+    }
 }
 
 private fun List<UIMessage>.systemPromptOrNull(): String? {
