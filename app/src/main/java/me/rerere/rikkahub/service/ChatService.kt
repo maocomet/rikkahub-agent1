@@ -3176,9 +3176,7 @@ class ChatService(
         claudePSessionAdmissions.find(envelope.id)?.let { return it }
 
         val targetRole = regenerationTargetRole(conversation, envelope.command)
-        recoverStrandedStart(conversation, envelope.command, targetRole, envelope.conversationId)
-
-        val decision = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.admission(
+        val decision = me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.cacheFirstAdmission(
             conversation = admittedConversation,
             command = envelope.command,
             targetRole = targetRole,
@@ -3467,6 +3465,12 @@ class ChatService(
     ): ContinuationTerminalCommit? {
         val decision = claudePSessionAdmissions.find(runControl?.runId)
             ?: return ContinuationTerminalCommit(conversation)
+
+        if (decision is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Immediate &&
+            decision.admissionRecord == null
+        ) {
+            return ContinuationTerminalCommit(conversation)
+        }
 
         if (decision is me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationGate.Decision.Deferred) {
             // A `deferred` run owes a `BIND_PENDING` only when it actually produced the variant

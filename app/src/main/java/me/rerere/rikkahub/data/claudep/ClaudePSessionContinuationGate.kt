@@ -216,6 +216,55 @@ object ClaudePSessionContinuationGate {
     }
 
     /**
+     * Cache-first admission for the production Claude P path.
+     *
+     * ConversationRuntime already serializes model commands for a conversation. The additional
+     * START_IN_FLIGHT/BOUND journal in UI messages duplicated that ownership and could leave an
+     * otherwise completed server turn permanently blocking the next user message when the final
+     * graph transaction failed. This admission keeps the part the server actually needs for
+     * continuation -- the stable thread and branch binding -- without writing a second run-state
+     * journal into the message graph.
+     *
+     * Regenerating an assistant variant remains deferred because its branch identity is not known
+     * until the variant is committed. Ordinary sends, user-target regenerations, and approval
+     * resumes carry an immediate binding for the selected branch. A null [Decision.Immediate]
+     * admission record deliberately means there is no graph barrier and therefore no terminal
+     * graph settlement to perform.
+     */
+    fun cacheFirstAdmission(
+        conversation: Conversation,
+        command: ChatCommand,
+        targetRole: me.rerere.ai.core.MessageRole?,
+    ): Decision {
+        val assistantId = conversation.assistantId.toString()
+        return when (ClaudePSessionBranchPlanner.classify(command, targetRole)) {
+            ClaudePSessionBranchPlanner.Mode.NOT_MODEL_GENERATION -> Decision.NotModelGeneration
+            ClaudePSessionBranchPlanner.Mode.NEW_DEFERRED_BIND ->
+                Decision.Deferred(assistantId, deferredRequest(assistantId))
+
+            ClaudePSessionBranchPlanner.Mode.KNOWN_BEFORE_DISPATCH -> {
+                val candidate = ClaudePSessionBranchPlanner.graphAfterCommand(conversation, command)
+                val branchId = when (
+                    val branch = ClaudePSessionBranchPlanner.branchIdOf(candidate.messageNodes)
+                ) {
+                    is ClaudePSessionBranchPlanner.Branch.Known -> branch.id
+                    is ClaudePSessionBranchPlanner.Branch.Rejected ->
+                        return Decision.Refused(assistantId, Reason.BRANCH_NOT_DESCRIBABLE)
+                    is ClaudePSessionBranchPlanner.Branch.Malformed ->
+                        return Decision.Refused(assistantId, Reason.BRANCH_MALFORMED)
+                }
+                Decision.Immediate(
+                    assistantId = assistantId,
+                    branchId = branchId,
+                    revision = 0L,
+                    admissionRecord = null,
+                    request = immediateRequest(assistantId, branchId),
+                )
+            }
+        }
+    }
+
+    /**
      * The immediate path, which always owes a barrier.
      *
      * An earlier build refused the cases where the barrier had to be attached to an
@@ -1100,7 +1149,9 @@ object ClaudePSessionContinuationGate {
      */
     fun settlementFor(decision: Decision): GenerationTerminalGraphSettlement? =
         when (decision) {
-            is Decision.Immediate -> GenerationTerminalGraphSettlement { conversation, state ->
+            is Decision.Immediate -> if (decision.admissionRecord == null) {
+                null
+            } else GenerationTerminalGraphSettlement { conversation, state ->
                 val terminal = terminalFor(state)
                     ?: return@GenerationTerminalGraphSettlement null
                 val settlement = settleImmediate(
