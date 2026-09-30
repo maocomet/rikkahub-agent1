@@ -2,6 +2,12 @@ name: Build Debug APK
 
 on:
   workflow_dispatch:
+    inputs:
+      user_path_first:
+        description: Build, verify, and upload the signed APK without running tests
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - master
@@ -122,6 +128,7 @@ jobs:
       # Second-user tool allowlist unit tests are pinned here so the new/edited tests
       # actually run in CI (the step intentionally does not run the full suite).
       - name: Run regression unit tests
+        if: ${{ inputs.user_path_first != true }}
         run: |
           chmod +x gradlew
           ./gradlew :app:testDebugUnitTest \
@@ -170,7 +177,7 @@ jobs:
       # the JUnit XML basenames is what actually proves a pinned class executed rather than only
       # compiled.
       - name: Report executed regression test classes
-        if: always()
+        if: ${{ always() && inputs.user_path_first != true }}
         run: |
           results=app/build/test-results/testDebugUnitTest
           if [ ! -d "$results" ]; then
@@ -190,6 +197,7 @@ jobs:
       #      compile there but are never run.
       # Pinned by class name so an unrelated pre-existing :ai failure cannot break this job.
       - name: Run Claude P provider unit tests (CP1-A)
+        if: ${{ inputs.user_path_first != true }}
         run: |
           chmod +x gradlew
           ./gradlew :ai:testDebugUnitTest \
@@ -248,7 +256,7 @@ jobs:
       # Compiling is not running. Gradle only fails when the COMBINED filter matches nothing, and
       # its test logging is off project-wide, so the JUnit XML basenames are the proof.
       - name: Report executed Claude P test classes
-        if: always()
+        if: ${{ always() && inputs.user_path_first != true }}
         run: |
           set -uo pipefail
           # Every class below is REQUIRED to have produced a JUnit XML. Listing the expected set
@@ -394,7 +402,7 @@ jobs:
       #      step's own claim was stronger than what it verified. That is fixed below, and
       #      the self-test asserts it stays fixed.
       - name: Verify the conformance corpus gate
-        if: always()
+        if: ${{ always() && inputs.user_path_first != true }}
         run: |
           set -uo pipefail
 
@@ -530,7 +538,7 @@ jobs:
       # the run it came from, and it contains no secret -- only test names, timings and
       # assertion messages from synthetic corpus fixtures.
       - name: Upload unit test results
-        if: always()
+        if: ${{ always() && inputs.user_path_first != true }}
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-results-${{ github.run_id }}-${{ github.sha }}
