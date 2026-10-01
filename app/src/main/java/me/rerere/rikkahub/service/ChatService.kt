@@ -12,6 +12,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,6 +20,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -895,6 +897,28 @@ class ChatService(
     // 统一会话管理
     private val sessions = ConcurrentHashMap<Uuid, ConversationSession>()
     private val runtimes = ConcurrentHashMap<Uuid, ConversationRuntime>()
+    /**
+     * Mobile, user-driven Claude P chats deliberately do not enter the durable agent runtime.
+     *
+     * The app conversation is the source of truth for this path. One FIFO worker owns one
+     * generation at a time; a Claude P approval wakes that same generation through
+     * [claudePToolRunControls]. Scheduled work and system-assistant commands keep using
+     * [ConversationRuntime] and its durable queue.
+     */
+    private data class SimpleMobileTurn(
+        val id: Uuid,
+        val parts: List<UIMessagePart>,
+        val answer: Boolean,
+    )
+
+    private class SimpleMobileQueue {
+        val pending = ArrayDeque<SimpleMobileTurn>()
+        var worker: Job? = null
+        var activeTurnId: Uuid? = null
+        var activeControl: GenerationRunControl? = null
+    }
+
+    private val simpleMobileClaudePQueues = ConcurrentHashMap<Uuid, SimpleMobileQueue>()
     private val sessionLifecycleLock = Any()
     private val commandSequences = ConcurrentHashMap<Uuid, AtomicLong>()
     /**
@@ -1807,10 +1831,101 @@ class ChatService(
 
     fun sendMessage(conversationId: Uuid, content: List<UIMessagePart>, answer: Boolean = true) {
         if (content.isEmptyInputMessage()) return
-        // Ordinary sends are in-memory FIFO commands.  Explicit interrupt UI
-        // actions use submitEmergency(InterruptCommand) instead.
         appScope.launch {
-            submitUserMessage(conversationId, content, answer, CommandOrigin.APP_UI)
+            initializeConversation(conversationId)
+            val conversation = getConversationFlow(conversationId).value
+            if (usesClaudePProvider(conversation)) {
+                enqueueSimpleMobileClaudePTurn(conversationId, content, answer)
+            } else {
+                submitUserMessage(conversationId, content, answer, CommandOrigin.APP_UI)
+            }
+        }
+    }
+
+    private suspend fun enqueueSimpleMobileClaudePTurn(
+        conversationId: Uuid,
+        content: List<UIMessagePart>,
+        answer: Boolean,
+    ) {
+        val queue = simpleMobileClaudePQueues.getOrPut(conversationId, ::SimpleMobileQueue)
+        val turn = SimpleMobileTurn(Uuid.random(), content, answer)
+        var workerToStart: Job? = null
+        synchronized(queue) {
+            queue.pending.addLast(turn)
+            if (queue.worker?.isActive != true) {
+                val worker = appScope.launch(start = CoroutineStart.LAZY) {
+                    runSimpleMobileClaudePQueue(conversationId, queue)
+                }
+                queue.worker = worker
+                workerToStart = worker
+            }
+        }
+        workerToStart?.let { worker ->
+            getOrCreateSession(conversationId).attachRunJob(worker)
+            worker.start()
+        }
+    }
+
+    private suspend fun runSimpleMobileClaudePQueue(
+        conversationId: Uuid,
+        queue: SimpleMobileQueue,
+    ) {
+        val workerJob = currentCoroutineContext()[Job]
+        try {
+            while (true) {
+                val turn = synchronized(queue) {
+                    queue.pending.removeFirstOrNull()?.also { queue.activeTurnId = it.id }
+                } ?: break
+                val control = GenerationRunControl(turn.id)
+                synchronized(queue) { queue.activeControl = control }
+                claudePToolRunControls.register(turn.id.toString(), control)
+                try {
+                    val conversation = getConversationFlow(conversationId).value
+                    val settings = settingsStore.settingsFlow.first()
+                    val assistant = settings.getAssistantById(conversation.assistantId)
+                        ?: settings.getCurrentAssistant()
+                    val processed = preprocessUserInputParts(turn.parts, assistant)
+                    executeSendMessageLegacy(
+                        commandId = turn.id,
+                        branchAnchorMessageId = Uuid.random(),
+                        origin = CommandOrigin.APP_UI,
+                        conversationId = conversationId,
+                        content = RawUserContent(processed, turn.answer),
+                        control = control,
+                        acceptedAssistantSnapshot = assistant,
+                        agentTiming = null,
+                    )
+                } finally {
+                    claudePToolRunControls.unregister(turn.id.toString(), control)
+                    synchronized(queue) {
+                        if (queue.activeControl === control) queue.activeControl = null
+                        if (queue.activeTurnId == turn.id) queue.activeTurnId = null
+                    }
+                }
+            }
+        } finally {
+            val mayContinue = currentCoroutineContext().isActive
+            var replacement: Job? = null
+            synchronized(queue) {
+                queue.activeControl = null
+                queue.activeTurnId = null
+                if (queue.worker === workerJob) {
+                    if (!mayContinue) queue.pending.clear()
+                    if (queue.pending.isEmpty()) {
+                        queue.worker = null
+                    } else {
+                        replacement = appScope.launch(start = CoroutineStart.LAZY) {
+                            runSimpleMobileClaudePQueue(conversationId, queue)
+                        }
+                        queue.worker = replacement
+                    }
+                }
+            }
+            replacement?.let { worker ->
+                getOrCreateSession(conversationId).attachRunJob(worker)
+                worker.start()
+            }
+            getOrCreateSession(conversationId).requestIdleCheck()
         }
     }
 
@@ -3137,6 +3252,14 @@ class ChatService(
      * way of answering "which provider is this" is how a conversation comes to be treated as a
      * continuation on one path and as an ordinary generation on another.
      */
+    private suspend fun usesClaudePProvider(conversation: Conversation): Boolean {
+        val settings = settingsStore.settingsFlow.first()
+        val assistant = settings.getAssistantById(conversation.assistantId) ?: return false
+        val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId) ?: return false
+        return model.findProvider(settings.providers) is
+            me.rerere.ai.provider.ProviderSetting.ClaudeP
+    }
+
     private suspend fun dispatchesThroughClaudeP(conversation: Conversation): Boolean {
         // The one activation point. Everything downstream of this — the barrier, the settlement,
         // the binding request — is unreachable while it is `false`, so a Claude P dispatch keeps
@@ -3144,11 +3267,7 @@ class ChatService(
         if (!me.rerere.rikkahub.data.claudep.ClaudePSessionContinuationActivation.ENABLED) {
             return false
         }
-        val settings = settingsStore.settingsFlow.first()
-        val assistant = settings.getAssistantById(conversation.assistantId) ?: return false
-        val model = settings.findModelById(assistant.chatModelId ?: settings.chatModelId) ?: return false
-        return model.findProvider(settings.providers) is
-            me.rerere.ai.provider.ProviderSetting.ClaudeP
+        return usesClaudePProvider(conversation)
     }
 
     /**
@@ -6082,8 +6201,19 @@ class ChatService(
     }
 
     // 停止当前会话生成任务（不清理会话缓存�?
-    suspend fun stopGeneration(conversationId: Uuid): SubmitResult =
-        submitEmergency(conversationId, StopCommand(), CommandOrigin.APP_UI)
+    suspend fun stopGeneration(conversationId: Uuid): SubmitResult {
+        simpleMobileClaudePQueues[conversationId]?.let { queue ->
+            val snapshot = synchronized(queue) {
+                Triple(queue.worker, queue.activeControl, queue.activeTurnId)
+            }
+            if (snapshot.first?.isActive == true) {
+                snapshot.second?.requestProviderCancel(ToolCancelReason.USER_STOPPED)
+                snapshot.first?.cancel()
+                return SubmitResult.Accepted(snapshot.third ?: Uuid.random())
+            }
+        }
+        return submitEmergency(conversationId, StopCommand(), CommandOrigin.APP_UI)
+    }
 
 }
 

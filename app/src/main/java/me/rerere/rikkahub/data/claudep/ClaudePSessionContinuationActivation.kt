@@ -53,10 +53,10 @@ object ClaudePSessionContinuationActivation {
     /**
      * Whether production acts on Claude P continuations.
      *
-     * `true` as of M3-B's activation. Turning it **off** is now the deliberate act: while it is
-     * `false` no decision is produced, no barrier is written and every Claude P request reverts to
-     * the `mode: "new"` shape — which is a state the wire and the Server both still accept, so it
-     * remains a safe place to stand.
+     * Disabled for mobile chat. The app conversation is again the only history authority, so no
+     * continuation decision or graph barrier is written and Claude P uses the supported
+     * `mode: "new"` request shape. Background agent continuation may be reintroduced later only
+     * behind its own surface; it must not own or pause the ordinary chat queue.
      */
-    val ENABLED: Boolean = true
+    val ENABLED: Boolean = false
 }

@@ -117,22 +117,15 @@ class ClaudePSessionContinuationAdmissionsTest {
     }
 
     /**
-     * **M3-B is active, and this test is what makes turning it off deliberate.**
-     *
-     * It is not asserting a constant for its own sake. While it is `true`, production Claude P
-     * dispatches under `mode: "auto"` with a binding intent, writes a barrier in the transaction
-     * that admits the command, and settles a continuation record on the way out — which is only
-     * safe because every exit settles, including a dropped connection and a process that never
-     * returns. Flipping it back to `false` is a safe place to stand (the wire and the Server both
-     * still accept `mode: "new"`), but it is a deliberate act and not a fallback.
-     *
-     * So this test failing is the intended signal: it means the switch moved, and the list in
-     * [ClaudePSessionContinuationActivation] has to have moved with it.
+     * Mobile chat treats the app conversation as the only history authority. Claude P therefore
+     * uses the protocol's supported `mode: "new"` shape and rebuilds context from app messages;
+     * the remote continuation graph must remain disabled unless it is moved behind a separate
+     * background-agent surface.
      */
     @Test
-    fun `production acts on a Claude P continuation`() {
-        assertTrue(
-            "M3-B activation moved: see ClaudePSessionContinuationActivation",
+    fun `production keeps mobile chat out of Claude P continuation`() {
+        assertFalse(
+            "mobile chat keeps the app history authoritative",
             ClaudePSessionContinuationActivation.ENABLED,
         )
     }

@@ -43,6 +43,28 @@ class ClaudePInFlightApprovalWiringTest {
         )
     }
 
+    @Test
+    fun `mobile Claude P uses one fifo worker while background commands retain the runtime`() {
+        assertTrue(
+            "the app UI route must select Claude P independently of continuation activation",
+            "if (usesClaudePProvider(conversation))" in chatService,
+        )
+        assertTrue(
+            "mobile Claude P turns must enter the simple FIFO",
+            "enqueueSimpleMobileClaudePTurn(conversationId, content, answer)" in chatService,
+        )
+        assertTrue(
+            "the simple worker must publish and withdraw the exact live run",
+            "claudePToolRunControls.register(turn.id.toString(), control)" in chatService &&
+                "claudePToolRunControls.unregister(turn.id.toString(), control)" in chatService,
+        )
+        assertTrue(
+            "background and non-Claude-P submissions must retain the durable command path",
+            "submitUserMessage(conversationId, content, answer, CommandOrigin.APP_UI)" in chatService &&
+                "private suspend fun executeRuntimeCommand(" in chatService,
+        )
+    }
+
     private fun projectFile(vararg candidates: String): File = candidates
         .asSequence()
         .map(::File)
