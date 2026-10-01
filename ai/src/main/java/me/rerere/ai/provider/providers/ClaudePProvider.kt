@@ -237,7 +237,10 @@ class ClaudePProvider(
         // body. §7 requires every field a request carries to enter its fingerprint, so a shape
         // computed twice could be fingerprinted as one thing and sent as another — and the
         // Server would then deduplicate two genuinely different requests under one key.
-        val shape = resolveRequestShape(params.claudePSessionBindingRequest)
+        val shape = resolveRequestShape(
+            binding = params.claudePSessionBindingRequest,
+            preparation = preparation,
+        )
         val rebuildHistory = if (shape.mode == MODE_NEW) {
             messages.rebuildHistoryBeforeLastUser().takeIf { it.isNotEmpty() }
         } else {
@@ -579,12 +582,26 @@ class ClaudePProvider(
      * request that carries neither produces the exact byte stream v1-r3 produced. That is what
      * keeps the frozen fingerprints in `claudep/conformance/` valid.
      */
-    private fun resolveRequestShape(binding: ClaudePSessionBindingRequest?): RequestShape =
+    private fun resolveRequestShape(
+        binding: ClaudePSessionBindingRequest?,
+        preparation: ClaudePToolPreparation,
+    ): RequestShape =
         when (binding?.intent) {
             null -> RequestShape(
                 mode = MODE_NEW,
-                remoteBranchId = remoteBranchId,
-                assistantId = null,
+                // Text-only legacy calls retain the frozen CP1-A shape. A fresh tool call also
+                // names the identities already validated by the execution plan, so the Gateway
+                // can bind invocations without enabling session continuation.
+                remoteBranchId = if (preparation.catalog.isEmpty) {
+                    remoteBranchId
+                } else {
+                    preparation.branchId
+                },
+                assistantId = if (preparation.catalog.isEmpty) {
+                    null
+                } else {
+                    preparation.assistantId
+                },
                 bindingIntent = null,
             )
 

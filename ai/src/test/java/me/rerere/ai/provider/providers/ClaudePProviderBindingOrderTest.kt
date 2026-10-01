@@ -360,6 +360,22 @@ class ClaudePProviderBindingOrderTest {
             "the frozen catalog must be in the start frame",
             gateway.startBodies.single().toolSnapshot,
         )
+        assertEquals(
+            "a fresh tool generation must carry the plan's assistant identity",
+            context().assistantId,
+            gateway.startBodies.single().assistantId,
+        )
+        assertEquals(
+            "a fresh tool generation must bind the same branch as its execution plan",
+            context().branchId,
+            gateway.startBodies.single().remoteBranchId,
+        )
+        assertEquals(
+            "the simple path stays fresh rather than enabling session continuation",
+            "new",
+            gateway.startBodies.single().mode,
+        )
+        assertNull(gateway.startBodies.single().bindingIntent)
 
         // 2. The preparation is built **before** the request leaves — it has to be, it is in it.
         assertEquals("prepare must run before start", 1, prepareCallsAtStart)

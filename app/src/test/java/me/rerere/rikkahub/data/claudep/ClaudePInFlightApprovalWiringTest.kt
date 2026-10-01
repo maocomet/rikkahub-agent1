@@ -56,7 +56,9 @@ class ClaudePInFlightApprovalWiringTest {
         assertTrue(
             "the simple worker must publish and withdraw the exact live run",
             "claudePToolRunControls.register(turn.id.toString(), control)" in chatService &&
-                "claudePToolRunControls.unregister(turn.id.toString(), control)" in chatService,
+                "claudePToolRunControls.unregister(turn.id.toString(), control)" in chatService &&
+                "claudePToolBranchIdOverride = turn.branchAnchorMessageId" in chatService &&
+                "?: claudePToolBranchIdOverride" in chatService,
         )
         assertTrue(
             "background and non-Claude-P submissions must retain the durable command path",

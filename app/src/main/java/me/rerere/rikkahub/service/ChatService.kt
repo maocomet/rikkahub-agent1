@@ -907,6 +907,7 @@ class ChatService(
      */
     private data class SimpleMobileTurn(
         val id: Uuid,
+        val branchAnchorMessageId: Uuid,
         val parts: List<UIMessagePart>,
         val answer: Boolean,
     )
@@ -1848,7 +1849,12 @@ class ChatService(
         answer: Boolean,
     ) {
         val queue = simpleMobileClaudePQueues.getOrPut(conversationId, ::SimpleMobileQueue)
-        val turn = SimpleMobileTurn(Uuid.random(), content, answer)
+        val turn = SimpleMobileTurn(
+            id = Uuid.random(),
+            branchAnchorMessageId = Uuid.random(),
+            parts = content,
+            answer = answer,
+        )
         var workerToStart: Job? = null
         synchronized(queue) {
             queue.pending.addLast(turn)
@@ -1887,13 +1893,14 @@ class ChatService(
                     val processed = preprocessUserInputParts(turn.parts, assistant)
                     executeSendMessageLegacy(
                         commandId = turn.id,
-                        branchAnchorMessageId = Uuid.random(),
+                        branchAnchorMessageId = turn.branchAnchorMessageId,
                         origin = CommandOrigin.APP_UI,
                         conversationId = conversationId,
                         content = RawUserContent(processed, turn.answer),
                         control = control,
                         acceptedAssistantSnapshot = assistant,
                         agentTiming = null,
+                        claudePToolBranchIdOverride = turn.branchAnchorMessageId,
                     )
                 } finally {
                     claudePToolRunControls.unregister(turn.id.toString(), control)
@@ -2128,6 +2135,7 @@ class ChatService(
         control: GenerationRunControl,
         acceptedAssistantSnapshot: Assistant?,
         agentTiming: AgentTimingHandle?,
+        claudePToolBranchIdOverride: Uuid? = null,
     ): RunOutcome = withCommandHeadlessScope(conversationId, origin, control) {
         executeSendMessageScoped(
             commandId = commandId,
@@ -2138,6 +2146,7 @@ class ChatService(
             control = control,
             acceptedAssistantSnapshot = acceptedAssistantSnapshot,
             agentTiming = agentTiming,
+            claudePToolBranchIdOverride = claudePToolBranchIdOverride,
         )
     }
 
@@ -2150,6 +2159,7 @@ class ChatService(
         control: GenerationRunControl,
         acceptedAssistantSnapshot: Assistant?,
         agentTiming: AgentTimingHandle?,
+        claudePToolBranchIdOverride: Uuid? = null,
     ): RunOutcome {
         try {
             val session = getOrCreateSession(conversationId)
@@ -2334,6 +2344,7 @@ class ChatService(
                             responseCorrelationAnnotation = responseCorrelationAnnotation,
                             propagateFailure = true,
                             agentTiming = agentTiming,
+                            claudePToolBranchIdOverride = claudePToolBranchIdOverride,
                         )
                     } else {
                         finishControlAuthority(conversationId, control)
@@ -3791,6 +3802,7 @@ class ChatService(
         deferPostCommitActions: Boolean = false,
         onDeferredPostCommit: ((DeferredGenerationPostCommit) -> Unit)? = null,
         agentTiming: AgentTimingHandle? = null,
+        claudePToolBranchIdOverride: Uuid? = null,
     ) {
         // Some continuation paths (regenerate, resume-after-approval) do not carry the
         // original command id into this method, but every live generation still owns a
@@ -4311,7 +4323,8 @@ class ChatService(
                         authoritativeCommandId = authoritativeCommandId,
                         conversationId = conversationId,
                         assistantId = assistant.id,
-                        branchId = generationLineage?.branchAnchorMessageId,
+                        branchId = generationLineage?.branchAnchorMessageId
+                            ?: claudePToolBranchIdOverride,
                         // The enum's own name, which is what the app's exact-match mapping
                         // compares. Nothing normalises it, so a token the bridge cannot map is a
                         // refusal rather than a silently substituted origin.

@@ -153,8 +153,8 @@ data class ClaudePGenerationStartBody(
                 "An auto request must name its assistant"
             }
         } else {
-            require(assistantId == null && bindingIntent == null) {
-                "Legacy and M3 request shapes must not be mixed"
+            require(bindingIntent == null) {
+                "Legacy and M3 continuation shapes must not be mixed"
             }
         }
 
