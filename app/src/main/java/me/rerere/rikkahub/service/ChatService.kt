@@ -2723,21 +2723,42 @@ class ChatService(
                 conversationId = conversationId.toString(),
                 toolCallId = toolCallId,
             )
-            submitCommand(
-                conversationId,
-                ToolApprovalCommand(
-                    toolCallId = toolCallId,
-                    decision = decision,
-                    toolName = toolName,
-                    scope = scope.name,
-                    approvalId = projection?.approvalId,
-                    executionId = projection?.executionId,
-                    expectedStateVersion = projection?.stateVersion,
-                    resolutionRequestId = Uuid.random().toString(),
-                ),
-                origin,
-                timingSubmission,
+            val command = ToolApprovalCommand(
+                toolCallId = toolCallId,
+                decision = decision,
+                toolName = toolName,
+                scope = scope.name,
+                approvalId = projection?.approvalId,
+                executionId = projection?.executionId,
+                expectedStateVersion = projection?.stateVersion,
+                resolutionRequestId = Uuid.random().toString(),
             )
+            if (projection?.isInFlightContinuation() == true) {
+                // Claude P is still inside the original generation waiting for this exact
+                // decision. Do not enqueue a second runtime command: ConversationRuntime has one
+                // active-run slot, so the child would be rejected while the provider waits.
+                val control = claudePToolRunControls.find(projection.traceId)
+                if (control == null) {
+                    addError(IllegalStateException("claude_p_in_flight_approval_run_missing"), conversationId)
+                    return@launch
+                }
+                when (val outcome = executeToolApprovalInline(
+                    conversationId = conversationId,
+                    command = command,
+                    control = control,
+                    origin = origin,
+                    envelopeId = Uuid.random(),
+                    ownsRuntimeCommand = false,
+                )) {
+                    is RunOutcome.Completed -> Unit
+                    is RunOutcome.Rejected -> addError(IllegalStateException(outcome.reason), conversationId)
+                    is RunOutcome.Conflict -> addError(IllegalStateException(outcome.reason), conversationId)
+                    is RunOutcome.Failed -> addError(outcome.error, conversationId)
+                    else -> addError(IllegalStateException("claude_p_in_flight_approval_not_resolved"), conversationId)
+                }
+                return@launch
+            }
+            submitCommand(conversationId, command, origin, timingSubmission)
         }
     }
 
@@ -2747,6 +2768,7 @@ class ChatService(
         control: GenerationRunControl,
         origin: CommandOrigin,
         envelopeId: Uuid,
+        ownsRuntimeCommand: Boolean = true,
     ): RunOutcome {
         val timing = agentTimingStore.handleForRun(control.runId)
             ?: agentTimingStore.openHandleForConversation(conversationId)
@@ -3006,10 +3028,12 @@ class ChatService(
                 return RunOutcome.Conflict("approval_resume_atomic_commit_missing")
             }
         }
-        _generationDoneFlow.emit(conversationId)
-        // This command owns one persisted approval decision only. Other pending tools suspend
-        // the generation lineage; they must not leave this approval child non-terminal.
-        finishControlAuthority(conversationId, control)
+        if (ownsRuntimeCommand) {
+            _generationDoneFlow.emit(conversationId)
+            // IN_FLIGHT Claude P approval is an event inside the original generation. It owns no
+            // second command and must never terminalize the original run's authority.
+            finishControlAuthority(conversationId, control)
+        }
         return RunOutcome.Completed()
     }
 
@@ -4714,7 +4738,7 @@ class ChatService(
                                         ?: error("approval_assistant_message_missing")
                                     val existingExecutionIds = owningMessage
                                         .persistedToolExecutionIds(runControl)
-                                    if (authority != null) {
+                                    if (authority != null && continuation != ApprovalContinuationMode.IN_FLIGHT) {
                                         try {
                                             authority.checkpointWaiting(
                                                 conversation = updatedConversation,
@@ -4799,7 +4823,8 @@ class ChatService(
                                             }
                                         }
                                     } else if (pendingOwner != null) {
-                                        secondUserApprovalLifecycle.persistPendingBarrier(
+                                        val directBarrierReceipts =
+                                            secondUserApprovalLifecycle.persistPendingBarrier(
                                             conversation = updatedConversation,
                                             owner = pendingOwner,
                                             tools = pendingTools,
@@ -4807,15 +4832,27 @@ class ChatService(
                                             sourceInvalidationNowMs = persistenceSourceInvalidationNowMs,
                                             continuationMode = requireNotNull(continuation),
                                         )
-                                        // No authority transaction means no commit, so there is
-                                        // nothing to acknowledge. A publisher waiting on one of
-                                        // these would otherwise hang until its deadline; refusing
-                                        // tells it to run nothing straight away.
+                                        // IN_FLIGHT keeps the root generation RUNNING. The graph
+                                        // and approval rows above committed atomically without
+                                        // converting that root into a WAITING command, so its
+                                        // exact waiter can now be acknowledged and later released
+                                        // by the approval tap.
                                         publicationKeys.forEach { key ->
-                                            claudePToolPublicationReceipts.refuse(
-                                                key = key,
-                                                localReason = "approval_authority_transaction_absent",
-                                            )
+                                            val receipt = directBarrierReceipts.firstOrNull {
+                                                it.toolCallId == key.toolCallId
+                                            }
+                                            if (receipt == null) {
+                                                claudePToolPublicationReceipts.refuse(
+                                                    key = key,
+                                                    localReason = "approval_barrier_missing",
+                                                )
+                                            } else {
+                                                claudePToolPublicationReceipts.complete(
+                                                    key = key,
+                                                    approvalId = receipt.approvalId,
+                                                    executionId = receipt.executionId,
+                                                )
+                                            }
                                         }
                                     }
                                 }
