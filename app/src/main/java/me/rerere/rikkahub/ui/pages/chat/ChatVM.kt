@@ -299,11 +299,10 @@ class ChatVM(
 
         viewModelScope.launch {
             reportSubmitResult(
-                chatService.submitUserMessage(
+                chatService.submitMobileUserMessage(
                     conversationId = _conversationId,
                     content = content,
                     answer = answer,
-                    origin = CommandOrigin.APP_UI,
                     agentTimingSubmission = agentTimingSubmission,
                 )
             )

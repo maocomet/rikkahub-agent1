@@ -908,8 +908,8 @@ class ChatService(
     private data class SimpleMobileTurn(
         val id: Uuid,
         val branchAnchorMessageId: Uuid,
-        val parts: List<UIMessagePart>,
-        val answer: Boolean,
+        val content: RawUserContent,
+        val agentTimingSubmission: AgentTimingSubmissionToken?,
     )
 
     private class SimpleMobileQueue {
@@ -1510,6 +1510,45 @@ class ChatService(
         agentTimingSubmission = agentTimingSubmission,
     ).submission
 
+    /**
+     * Main-chat submission boundary.
+     *
+     * User-driven Claude P turns use the lightweight per-conversation FIFO. Other providers and
+     * non-chat surfaces retain the durable command runtime. Keeping this decision in ChatService
+     * makes the UI entry point and the provider decision one atomic route instead of relying on a
+     * fire-and-forget helper that the real chat page can accidentally bypass.
+     */
+    suspend fun submitMobileUserMessage(
+        conversationId: Uuid,
+        content: List<UIMessagePart>,
+        answer: Boolean = true,
+        annotations: List<UIMessageAnnotation> = emptyList(),
+        agentTimingSubmission: AgentTimingSubmissionToken? = null,
+    ): SubmitResult {
+        if (content.isEmptyInputMessage()) {
+            agentTimingSubmission?.handle?.finish(AgentTimingTraceStatus.FAILED)
+            return SubmitResult.Rejected("Empty message")
+        }
+        initializeConversation(conversationId)
+        val conversation = getConversationFlow(conversationId).value
+        if (!usesClaudePProvider(conversation)) {
+            return submitUserMessage(
+                conversationId = conversationId,
+                content = content,
+                answer = answer,
+                origin = CommandOrigin.APP_UI,
+                annotations = annotations,
+                agentTimingSubmission = agentTimingSubmission,
+            )
+        }
+        val turnId = enqueueSimpleMobileClaudePTurn(
+            conversationId = conversationId,
+            content = RawUserContent(content, answer, annotations),
+            agentTimingSubmission = agentTimingSubmission,
+        )
+        return SubmitResult.Accepted(turnId)
+    }
+
     suspend fun <T> runPetInteraction(
         conversationId: Uuid,
         block: suspend () -> T,
@@ -1833,27 +1872,21 @@ class ChatService(
     fun sendMessage(conversationId: Uuid, content: List<UIMessagePart>, answer: Boolean = true) {
         if (content.isEmptyInputMessage()) return
         appScope.launch {
-            initializeConversation(conversationId)
-            val conversation = getConversationFlow(conversationId).value
-            if (usesClaudePProvider(conversation)) {
-                enqueueSimpleMobileClaudePTurn(conversationId, content, answer)
-            } else {
-                submitUserMessage(conversationId, content, answer, CommandOrigin.APP_UI)
-            }
+            submitMobileUserMessage(conversationId, content, answer)
         }
     }
 
     private suspend fun enqueueSimpleMobileClaudePTurn(
         conversationId: Uuid,
-        content: List<UIMessagePart>,
-        answer: Boolean,
-    ) {
+        content: RawUserContent,
+        agentTimingSubmission: AgentTimingSubmissionToken?,
+    ): Uuid {
         val queue = simpleMobileClaudePQueues.getOrPut(conversationId, ::SimpleMobileQueue)
         val turn = SimpleMobileTurn(
             id = Uuid.random(),
             branchAnchorMessageId = Uuid.random(),
-            parts = content,
-            answer = answer,
+            content = content,
+            agentTimingSubmission = agentTimingSubmission,
         )
         var workerToStart: Job? = null
         synchronized(queue) {
@@ -1870,6 +1903,7 @@ class ChatService(
             getOrCreateSession(conversationId).attachRunJob(worker)
             worker.start()
         }
+        return turn.id
     }
 
     private suspend fun runSimpleMobileClaudePQueue(
@@ -1890,16 +1924,18 @@ class ChatService(
                     val settings = settingsStore.settingsFlow.first()
                     val assistant = settings.getAssistantById(conversation.assistantId)
                         ?: settings.getCurrentAssistant()
-                    val processed = preprocessUserInputParts(turn.parts, assistant)
+                    val processed = preprocessUserInputParts(turn.content.parts, assistant)
+                    val agentTiming = turn.agentTimingSubmission?.handle
+                    agentTiming?.bindCommand(turn.id)
                     executeSendMessageLegacy(
                         commandId = turn.id,
                         branchAnchorMessageId = turn.branchAnchorMessageId,
                         origin = CommandOrigin.APP_UI,
                         conversationId = conversationId,
-                        content = RawUserContent(processed, turn.answer),
+                        content = turn.content.copy(parts = processed),
                         control = control,
                         acceptedAssistantSnapshot = assistant,
-                        agentTiming = null,
+                        agentTiming = agentTiming,
                         claudePToolBranchIdOverride = turn.branchAnchorMessageId,
                     )
                 } finally {

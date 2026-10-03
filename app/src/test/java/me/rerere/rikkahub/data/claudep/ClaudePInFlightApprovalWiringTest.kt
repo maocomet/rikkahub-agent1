@@ -14,6 +14,13 @@ class ClaudePInFlightApprovalWiringTest {
         ).readText(Charsets.UTF_8)
     }
 
+    private val chatViewModel by lazy {
+        projectFile(
+            "app/src/main/java/me/rerere/rikkahub/ui/pages/chat/ChatVM.kt",
+            "src/main/java/me/rerere/rikkahub/ui/pages/chat/ChatVM.kt",
+        ).readText(Charsets.UTF_8)
+    }
+
     @Test
     fun `in flight approval is delivered to the exact live run without a second command`() {
         assertTrue("IN_FLIGHT decisions must take the direct path", 
@@ -47,11 +54,11 @@ class ClaudePInFlightApprovalWiringTest {
     fun `mobile Claude P uses one fifo worker while background commands retain the runtime`() {
         assertTrue(
             "the app UI route must select Claude P independently of continuation activation",
-            "if (usesClaudePProvider(conversation))" in chatService,
+            "if (!usesClaudePProvider(conversation))" in chatService,
         )
         assertTrue(
             "mobile Claude P turns must enter the simple FIFO",
-            "enqueueSimpleMobileClaudePTurn(conversationId, content, answer)" in chatService,
+            "val turnId = enqueueSimpleMobileClaudePTurn(" in chatService,
         )
         assertTrue(
             "the simple worker must publish and withdraw the exact live run",
@@ -62,8 +69,26 @@ class ClaudePInFlightApprovalWiringTest {
         )
         assertTrue(
             "background and non-Claude-P submissions must retain the durable command path",
-            "submitUserMessage(conversationId, content, answer, CommandOrigin.APP_UI)" in chatService &&
+            "return submitUserMessage(" in chatService &&
+                "origin = CommandOrigin.APP_UI" in chatService &&
                 "private suspend fun executeRuntimeCommand(" in chatService,
+        )
+    }
+
+    @Test
+    fun `main chat submits through the mobile provider router`() {
+        assertTrue(
+            "the real main-chat ViewModel must enter the provider-aware mobile boundary",
+            "chatService.submitMobileUserMessage(" in chatViewModel,
+        )
+        assertTrue(
+            "the main-chat send path must not bypass the mobile Claude P FIFO",
+            "chatService.submitUserMessage(" !in chatViewModel.substringAfter("fun handleMessageSend")
+                .substringBefore("fun handleSteer"),
+        )
+        assertTrue(
+            "the mobile boundary must route Claude P to the simple queue",
+            "val turnId = enqueueSimpleMobileClaudePTurn(" in chatService,
         )
     }
 
