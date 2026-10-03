@@ -256,7 +256,11 @@ class ClaudePSessionAdmissionWiringTest {
         val (base, branch) = stranded()
         val settlement = present(
             ClaudePSessionContinuationGate.settlementFor(
-                immediate(branch, revision = 1L, admissionRecord = null),
+                immediate(
+                    branch,
+                    revision = 1L,
+                    admissionRecord = record(State.START_IN_FLIGHT, 1L, branch),
+                ),
             ),
         )
 
@@ -283,7 +287,11 @@ class ClaudePSessionAdmissionWiringTest {
         val (base, _) = stranded()
         val settlement = present(
             ClaudePSessionContinuationGate.settlementFor(
-                immediate("0".repeat(64), revision = 1L, admissionRecord = null),
+                immediate(
+                    "0".repeat(64),
+                    revision = 1L,
+                    admissionRecord = record(State.START_IN_FLIGHT, 1L, "0".repeat(64)),
+                ),
             ),
         )
 
