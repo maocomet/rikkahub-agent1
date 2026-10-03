@@ -222,6 +222,15 @@ class ClaudePToolBridgeHostImpl(
             callOrigin = callOrigin,
             timeoutMs = DEFAULT_TOOL_DEADLINE_MS,
             tools = tools,
+            // Frozen here, from *this* list, at the instant the generation's catalog is frozen —
+            // so the schema identity a pending card later carries is a fact about the tools the
+            // peer was actually offered rather than a fresh lookup against a surface that may
+            // since have changed. The same construction the conversation authority's fallback
+            // uses, which is what makes the two comparable when both are available.
+            toolSchemaFingerprints = ToolCatalogSnapshot
+                .fromDefinitions(tools)
+                .entries
+                .associate { entry -> entry.toolName to entry.schemaFingerprint },
         )
 
         // A token of this host's own, so the plan can be readied before the generation has an id.
@@ -575,6 +584,21 @@ class ClaudePToolBridgeHostImpl(
             return ApprovalGate.NoDecision
         }
 
+        // Resolved **before** the publication is begun, and that order is load-bearing in both
+        // directions. A miss has to return before `begin`, or the early return would leave a
+        // publication live for a card that will never be published. And the answer has to be in
+        // hand before the card is published, because the fingerprint is a required field of the
+        // card: publishing first and looking it up afterwards would mean either a card with an
+        // absent identity or a second, later lookup — the mutable-surface read this field exists
+        // to remove.
+        //
+        // Fail-closed on a miss. The name is looked up exactly as the runtime knows it, against
+        // the list this generation froze; a name that is not there is a call this generation was
+        // never offered, and the right answer is to publish nothing rather than to guess a schema
+        // identity for a call nobody can prove the user was shown.
+        val toolSchemaFingerprint = plan.frozenSchemaFingerprintFor(invocation.toolNameForRuntime)
+            ?: return ApprovalGate.NoDecision
+
         // `null` means this invocation cannot be published: its run and generation were never
         // bound together, or this exact key is already live or settled-but-unreleased. Each is a
         // refusal rather than a replacement — a second entry under one key would give two waiters
@@ -592,6 +616,10 @@ class ClaudePToolBridgeHostImpl(
                     // inside the Worker on this very call, so approving it must release a waiter
                     // and must never create a resume command that starts a second generation.
                     pendingContinuation = ApprovalContinuationMode.IN_FLIGHT.name,
+                    // This generation's own frozen identity for the tool, resolved above. It is
+                    // what lets the card be committed without the authority re-deriving it from a
+                    // surface that no longer describes the catalog the peer was offered.
+                    toolSchemaFingerprint = toolSchemaFingerprint,
                 ),
             )
             // A refusal means the card is not on screen, so nothing can be tapped, so nothing may
@@ -833,6 +861,25 @@ data class ClaudePToolExecutionPlan(
      */
     val tools: List<Tool> = emptyList(),
     /**
+     * The schema identity of every tool this generation froze, keyed by the exact tool name.
+     *
+     * ## Why this is recorded rather than looked up when it is needed
+     *
+     * A pending approval card has to carry the schema fingerprint of the tool it is for, and the
+     * authority that commits the card has no way to derive it: it re-reads the app's *current*
+     * tool surface, which is a different, mutable fact from the list this generation was offered.
+     * For a tool that is in the frozen list but not in that surface — the observed case, an MCP
+     * tool the model called from the frozen catalog — the lookup finds nothing, and a card whose
+     * fingerprint cannot be stated cannot be committed at all.
+     *
+     * So the identity is taken once, from the list this plan holds, and travels with the card.
+     * Lookup is by exact name: no prefix stripping, no case folding, no `contains`, and no
+     * fallback to a near match. A name that is not here exactly is a name this generation did not
+     * freeze, and the correct answer to that is to publish nothing — never to run a tool under a
+     * schema identity that was guessed.
+     */
+    val toolSchemaFingerprints: Map<String, String> = emptyMap(),
+    /**
      * How much wall clock one call may take, from the app's own turn budget.
      *
      * A Claude P generation has no turn to measure — the provider's stream *is* the turn — so this
@@ -841,6 +888,22 @@ data class ClaudePToolExecutionPlan(
      */
     val wallClockBudgetMs: Long = ToolRuntimeLimits.turnBudgetMs,
 ) {
+    /**
+     * This generation's frozen schema identity for one runtime tool name, or `null`.
+     *
+     * The **only** place a frozen fingerprint is read, so the rule below cannot drift away from the
+     * one call site that depends on it. The lookup is exact: the runtime tool name as the call
+     * arrived with it, against the names this generation froze. No prefix stripping, no case
+     * folding, no `contains`, and no search over the list — a near match is a different tool, and
+     * answering with a near match's fingerprint would attribute one tool's schema to another's call.
+     *
+     * `null` is a refusal, not a gap to fill in: a name this generation did not freeze is a call
+     * the peer was never offered, and the caller must publish nothing rather than run it under a
+     * guessed identity.
+     */
+    internal fun frozenSchemaFingerprintFor(toolName: String): String? =
+        toolSchemaFingerprints[toolName]
+
     /**
      * What two plans for the same generation have to agree on.
      *

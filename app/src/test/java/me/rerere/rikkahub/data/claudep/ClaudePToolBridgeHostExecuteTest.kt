@@ -45,6 +45,7 @@ import me.rerere.rikkahub.data.execution.InFlightApprovalDecision
 import me.rerere.rikkahub.data.execution.InFlightApprovalIdentity
 import me.rerere.rikkahub.data.execution.InFlightApprovalOutcome
 import me.rerere.rikkahub.data.execution.InFlightApprovalWaiters
+import me.rerere.rikkahub.toolcatalog.ToolCatalogSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -591,6 +592,17 @@ class ClaudePToolBridgeHostExecuteTest {
             ApprovalContinuationMode.IN_FLIGHT.name,
             sink.updates.first().pendingContinuation,
         )
+        // The card carries the schema identity of the tool as *this generation* froze it — the
+        // same digest the app's catalog derives for that exact tool, computed here from the same
+        // one-tool list the host was handed. Nothing re-derives it later from the app's live
+        // surface, which need not still contain the tool.
+        assertEquals(
+            "the pending card carries the frozen schema identity of the exact tool",
+            ToolCatalogSnapshot.fromDefinitions(listOf(tool.tool))
+                .entry(tool.tool.name)!!
+                .schemaFingerprint,
+            sink.updates.first().toolSchemaFingerprint,
+        )
         // Only the card carries a continuation. The decision and the run are not publications, and
         // a continuation on either would raise a second barrier for a call that already has one.
         assertNull(sink.updates[1].pendingContinuation)
@@ -674,6 +686,128 @@ class ClaudePToolBridgeHostExecuteTest {
         assertEquals(0, tool.invocations.size)
         assertEquals(ToolCallState.FAILED, execution.outcome.state)
         assertNull("nothing was concluded about a call that never ran", execution.part)
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The frozen schema identity a pending card is published under
+    // ---------------------------------------------------------------------------------------
+
+    /** A whole SHA-256 digest in the only shape a frozen identity has: 64 lowercase hex. */
+    private val frozenFingerprint = "3b1f70c9e2a4d86507c1be94f2a38d60e5714cb90fa2638de4109b7c5f2e8a04"
+
+    /**
+     * A plan holding this test's own frozen identities, built the way `prepare` builds one.
+     *
+     * The map is supplied by hand rather than derived, because the property under test is the
+     * *lookup* — which names a plan answers for — and deriving the map here would only re-assert
+     * that the derivation is total. What the derivation actually produces is asserted by the
+     * published-card test above, against the real `prepare`.
+     */
+    private fun planWithFingerprints(vararg names: String) = ClaudePToolExecutionPlan(
+        deviceRef = "device-1",
+        runId = "11111111-1111-1111-1111-111111111111",
+        commandId = "22222222-2222-2222-2222-222222222222",
+        conversationId = "33333333-3333-3333-3333-333333333333",
+        assistantId = "44444444-4444-4444-4444-444444444444",
+        branchId = "branch-1",
+        callOrigin = ToolCallOrigin.LocalChat,
+        timeoutMs = 60_000L,
+        toolSchemaFingerprints = names.associateWith { frozenFingerprint },
+    )
+
+    /**
+     * The identity is found by the **exact** runtime tool name, and a near match is no match.
+     *
+     * Every rejection below is a name that a fuzzy lookup would have accepted: a prefix-stripped
+     * form of an MCP tool, a case-folded one, a `contains` match against a longer name, and a
+     * truncation of the same name. Each would attribute one tool's schema to another tool's call —
+     * and on the failing path this identity decides whether a tool may run, so a near match is not
+     * a convenience, it is a call approved against the wrong schema.
+     */
+    @Test
+    fun `a frozen identity is found by its exact name and never by a near match`() {
+        val plan = planWithFingerprints("mcp__b82fa262_funf__ping", "write_file")
+
+        assertEquals(frozenFingerprint, plan.frozenSchemaFingerprintFor("mcp__b82fa262_funf__ping"))
+        assertEquals(frozenFingerprint, plan.frozenSchemaFingerprintFor("write_file"))
+
+        assertNull("an unqualified name is a different tool", plan.frozenSchemaFingerprintFor("ping"))
+        assertNull("a case-folded name is a different tool", plan.frozenSchemaFingerprintFor("WRITE_FILE"))
+        assertNull("a name this generation never froze", plan.frozenSchemaFingerprintFor("write"))
+        assertNull("a longer name is not this one", plan.frozenSchemaFingerprintFor("write_file_v2"))
+        assertNull("an empty name is not a name", plan.frozenSchemaFingerprintFor(""))
+    }
+
+    /**
+     * A plan that froze no identity for a name answers `null`, which its caller refuses on.
+     *
+     * The data class default is the empty map, so this is the shape a plan has when nothing
+     * populated it. It answers no name at all — and `awaitApproval` returns `NoDecision` on that,
+     * which runs nothing and publishes nothing. Stated as an assertion because the alternative —
+     * an empty result read as "no fingerprint needed" — is how a call would be run under an
+     * identity nobody stated.
+     */
+    @Test
+    fun `a plan that froze no identity answers nothing for every name`() {
+        val plan = ClaudePToolExecutionPlan(
+            deviceRef = "device-1",
+            runId = "11111111-1111-1111-1111-111111111111",
+            commandId = "22222222-2222-2222-2222-222222222222",
+            conversationId = "33333333-3333-3333-3333-333333333333",
+            assistantId = "44444444-4444-4444-4444-444444444444",
+            branchId = "branch-1",
+            callOrigin = ToolCallOrigin.LocalChat,
+            timeoutMs = 60_000L,
+            // The default, spelled out because it is the point of the test.
+            toolSchemaFingerprints = emptyMap(),
+        )
+
+        assertNull(plan.frozenSchemaFingerprintFor("write_file"))
+        assertNull(plan.frozenSchemaFingerprintFor(""))
+    }
+
+    /**
+     * A real `prepare` freezes an identity for every tool it offered, so the refusal above is a
+     * guard rather than a path a generation reaches by accident.
+     *
+     * The two lists are derived from one argument, so a name `execute` accepts always has an
+     * identity to publish. This asserts the *published* consequence of that on the one tool that
+     * can be observed publishing at all, and the pairing matters: a future change that filtered
+     * one list and not the other would make every approval-gated MCP call undecidable, and it
+     * would look like the original crash rather than like a catalog change.
+     */
+    @Test
+    fun `a prepared generation's card identity matches the catalog it froze`() = runBlocking {
+        val tool = RecordingTool("mcp__abcd1234_myserver__write", needsApproval = true)
+        val receipts = ClaudePToolPublicationReceipts()
+        val waiters = InFlightApprovalWaiters()
+        val runtime = RecordingRuntime()
+        val host = boundHost(listOf(tool.tool), runtime, publications = receipts, waiters = waiters)
+        val sink = AuthoritySink(receipts, boundRunId) { key ->
+            receipts.complete(key, "approval-1", "execution-1")
+        }
+        waiters.onAwaitRegistration = {
+            waiters.signalDecided(
+                InFlightApprovalIdentity(
+                    approvalId = "approval-1",
+                    executionId = "execution-1",
+                    conversationId = context().conversationId,
+                    toolCallId = "call-1",
+                ),
+                InFlightApprovalOutcome.Decided(InFlightApprovalDecision.APPROVED),
+            )
+        }
+
+        host.executeWithClaim(invocation("gen-1", "mcp__abcd1234_myserver__write"), sink)
+
+        assertEquals(
+            "the identity the card is published under is the catalog's own, for the exact name",
+            ToolCatalogSnapshot.fromDefinitions(listOf(tool.tool))
+                .entry("mcp__abcd1234_myserver__write")!!
+                .schemaFingerprint,
+            sink.updates.first { it.status == ClaudePToolCallStatus.PENDING_APPROVAL }
+                .toolSchemaFingerprint,
+        )
     }
 
     /** A barrier that rolled back is a refusal, and a refusal is never an execution. */

@@ -100,6 +100,27 @@ data class ClaudePToolStatusUpdate(
      * in. It never travels: this type is local, and nothing here reaches a frame.
      */
     val pendingContinuation: String? = null,
+    /**
+     * The schema identity of the tool this status is about, as the publishing generation froze it.
+     *
+     * ## Why the publisher supplies it rather than the conversation deriving it
+     *
+     * A pending card is committed against the schema fingerprint of the tool it approves, and the
+     * side that commits it holds only the app's *current* tool surface. That surface is a
+     * different, mutable fact from the tool list the generation was offered: a tool can be in the
+     * frozen catalog the peer was shown and absent from the live surface — an MCP tool the model
+     * called from the catalog is the observed case — and then the committing side has no way to
+     * state the fingerprint at all.
+     *
+     * So the one side that does hold the frozen list states it, once, and it travels with the
+     * card. It is a 64-character lowercase hexadecimal SHA-256, or `null` when the publisher did
+     * not supply one; the consuming side validates that shape before treating it as frozen
+     * identity, so a value from anywhere else is not accepted as one.
+     *
+     * `null` is not a default to fill in from the surface here: this module carries what it was
+     * given and derives nothing. It never travels on the wire — this type is local.
+     */
+    val toolSchemaFingerprint: String? = null,
 )
 
 /** What publishing one status did. A closed set, so an unhandled failure is a compile error. */

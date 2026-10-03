@@ -303,6 +303,23 @@ internal fun resolveGenerationCommandId(
 /** Authority correlation never treats an ephemeral generation run as an admitted command. */
 internal fun resolveAuthoritativeCommandId(activeCommandId: Uuid?): Uuid? = activeCommandId
 
+/**
+ * Whether a value may stand in as a **frozen** tool schema identity.
+ *
+ * The app's fingerprints are whole SHA-256 digests rendered as 64 lowercase hexadecimal
+ * characters — `ToolCatalogSnapshot`'s own output, and what `SecondUserApprovalLifecycle` asserts
+ * before it commits a barrier. This predicate is the same shape check, stated once so the approval
+ * path has one rule rather than a regex spelled inline, and it is deliberately exact: no trimming,
+ * no case folding, no prefix or length tolerance.
+ *
+ * It exists because the value can arrive from a part. A part is app-owned bookkeeping that only the
+ * internal Claude P bridge writes today, and this check is what keeps that true if a future path
+ * ever carries a fingerprint-shaped string that some other layer produced: a value that is not a
+ * whole lowercase digest is not treated as frozen identity, so it cannot be spent as one.
+ */
+internal fun isFrozenToolSchemaFingerprint(value: String?): Boolean =
+    value != null && value.length == 64 && value.all { char -> char in '0'..'9' || char in 'a'..'f' }
+
 internal fun List<UIMessage>.withResponseCorrelation(
     annotation: UIMessageAnnotation?,
 ): List<UIMessage> {
@@ -4847,12 +4864,36 @@ class ChatService(
                                     val pendingTools = if (pendingOwner == null) {
                                         emptyList()
                                     } else {
-                                        pendingParts.map { tool ->
-                                            val schemaFingerprint = me.rerere.rikkahub.toolcatalog
-                                                .ToolCatalogSnapshot
+                                        // The surface is read once for the whole card set rather than
+                                        // once per card: it is a single snapshot either way, and a
+                                        // per-card read would invite the reading-fresh assumption
+                                        // that this fallback exists to be explicit about.
+                                        val surfaceSnapshot =
+                                            me.rerere.rikkahub.toolcatalog.ToolCatalogSnapshot
                                                 .fromDefinitions(toolExecutionSurface.snapshot())
-                                                .entry(tool.toolName)
-                                                ?.schemaFingerprint
+                                        pendingParts.map { tool ->
+                                            // Two sources, and only one of them is trustworthy for an
+                                            // in-flight Claude P card. A fingerprint the publishing
+                                            // generation froze on the part describes the catalog the
+                                            // model was actually shown, and is used only where an
+                                            // internal IN_FLIGHT card can have put it there — never
+                                            // for a resume-command card, where the part may have come
+                                            // from a provider wire message that has no business
+                                            // asserting its own schema identity.
+                                            //
+                                            // Everything else — every other provider, every card
+                                            // raised before this field existed, every reloaded old
+                                            // message — keeps the original lookup against the live
+                                            // surface, unchanged.
+                                            val frozenSchemaFingerprint = tool.toolSchemaFingerprint
+                                                ?.takeIf {
+                                                    continuation == ApprovalContinuationMode.IN_FLIGHT
+                                                }
+                                                ?.takeIf(::isFrozenToolSchemaFingerprint)
+                                            val schemaFingerprint = frozenSchemaFingerprint
+                                                ?: surfaceSnapshot
+                                                    .entry(tool.toolName)
+                                                    ?.schemaFingerprint
                                                 ?: error("approval_tool_schema_missing")
                                             me.rerere.rikkahub.data.execution.PendingApprovalTool(
                                                 toolCallId = tool.toolCallId,

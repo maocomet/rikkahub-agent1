@@ -541,6 +541,21 @@ sealed class UIMessagePart {
          * "never started" (Approved-but-not-yet-tried).
          */
         val executionStartedAt: Long? = null,
+        /**
+         * The schema identity of this tool as the generation that raised the call froze it, when
+         * the publisher supplied one.
+         *
+         * Carried on the part because the part is what the conversation authority commits a
+         * pending approval against, and the authority cannot re-derive it: it holds the app's
+         * *current* tool surface, which is a different fact from the frozen catalog the model was
+         * shown. Null for every part from any other source, including all pre-existing messages —
+         * those keep the authority's own lookup, and a value that is not a 64-character lowercase
+         * hexadecimal digest is not treated as frozen identity.
+         *
+         * Never opened by a provider message converter: this is the app's own bookkeeping, and it
+         * is not sent anywhere.
+         */
+        val toolSchemaFingerprint: String? = null,
         override var metadata: JsonObject? = null
     ) : UIMessagePart() {
         /** Whether the tool has been executed (has output) */
@@ -575,6 +590,12 @@ sealed class UIMessagePart {
                 output = output + other.output,
                 approvalState = approvalState,
                 executionStartedAt = executionStartedAt ?: other.executionStartedAt,
+                // First non-null wins, in the same direction as `executionStartedAt`: a published
+                // card supplies it once, and every later delta for the same call — the approval,
+                // the run, the result — carries no fingerprint of its own. Dropping it on merge
+                // would leave the card that is actually committed without the identity it was
+                // published under.
+                toolSchemaFingerprint = toolSchemaFingerprint ?: other.toolSchemaFingerprint,
                 metadata = if (other.metadata != null) other.metadata else metadata,
             )
         }

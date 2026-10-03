@@ -2,6 +2,10 @@ package me.rerere.ai.provider.providers
 
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
@@ -12,6 +16,7 @@ import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.provider.claudep.ClaudePEventType
+import me.rerere.ai.provider.claudep.ClaudePGenerationStartBody
 import me.rerere.ai.provider.claudep.ClaudePGatewayClient
 import me.rerere.ai.provider.claudep.ClaudePGatewayException
 import me.rerere.ai.provider.claudep.ClaudePErrorCode
@@ -20,11 +25,13 @@ import me.rerere.ai.provider.claudep.FakeFrame
 import me.rerere.ai.provider.claudep.UnpairedClaudePGatewayClient
 import me.rerere.ai.ui.FinishCategory
 import me.rerere.ai.ui.MessageChunk
+import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -387,5 +394,215 @@ class ClaudePProviderStreamTest {
         assertEquals(expected, failure.input)
         assertEquals(0, gateway.startGenerationCallCount)
         assertEquals(0, gateway.remoteDispatchCount)
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The tool card the app persists after a tool turn
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * A tool card exactly as the app writes one, with values chosen to be findable.
+     *
+     * The arguments and the output are distinctive strings so that "this did not reach the
+     * request" is a search rather than an inference. The name is the local tool from the on-device
+     * reproduction, and the call id is the one it really carried.
+     *
+     * `approvalState = Auto` is the state the app writes for a call that needed no decision, which
+     * is the case that reproduced.
+     */
+    private fun toolCard() = UIMessagePart.Tool(
+        toolCallId = "mcpcall_85c2bd4b7f8c8850e990c4aa2d50d94e",
+        toolName = "get_time_info",
+        input = """{"secret_argument":"/data/local/tmp/never-sent"}""",
+        output = listOf(UIMessagePart.Text("TOOL-OUTPUT-MUST-NOT-TRAVEL")),
+        approvalState = ToolApprovalState.Auto,
+    )
+
+    /**
+     * The conversation the device left behind: a user turn, an assistant turn that ran a tool, and
+     * a following user turn.
+     *
+     * The assistant turn has text *around* the card, because that is what the app really produces
+     * (a lead-in, the card, the final answer) and because the interesting assertion is that the
+     * surrounding text survives while the card does not.
+     *
+     * No system message: `requireStableSystemPrompt` deliberately refuses a system instruction with
+     * no frozen expectation, and that is a different subject with its own suite.
+     */
+    private fun toolTurnConversation(withCard: Boolean = true): List<UIMessage> = listOf(
+        UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Text("what time is it?"))),
+        UIMessage(
+            role = MessageRole.ASSISTANT,
+            parts = buildList {
+                add(UIMessagePart.Text("Let me look that up."))
+                if (withCard) add(toolCard())
+                add(UIMessagePart.Text("It is 00:06 on 2026-10-03."))
+            },
+        ),
+        UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Text("thanks"))),
+    )
+
+    /** Dispatches one request and hands back the body the gateway actually received. */
+    private suspend fun dispatchedBody(messages: List<UIMessage>): ClaudePGenerationStartBody {
+        val gateway = FakeClaudePGatewayClient()
+        provider(gateway).streamText(setting, messages, params()).toList()
+        assertEquals("the request must have reached the gateway", 1, gateway.remoteDispatchCount)
+        return gateway.startBodies.single()
+    }
+
+    /**
+     * A conversation that already used a tool can still be sent.
+     *
+     * This is the on-device defect, pinned: the assistant message carries the tool card the app
+     * itself wrote, and every later message in that conversation was refused with
+     * `claude_p_unsupported_input: TOOL_CALL` — so the conversation was permanently unusable after
+     * its first tool call, and the refusal named a part the provider's own turn builders drop.
+     */
+    @Test
+    fun `a history tool card is not refused and the next user turn dispatches`() = runBlocking {
+        val gateway = FakeClaudePGatewayClient()
+
+        val chunks = provider(gateway)
+            .streamText(setting, toolTurnConversation(), params())
+            .toList()
+
+        assertEquals("the turn must reach the gateway exactly once", 1, gateway.startGenerationCallCount)
+        assertEquals(1, gateway.remoteDispatchCount)
+        assertEquals("Hello, world", textOf(chunks))
+    }
+
+    /**
+     * The rebuilt history keeps the text around the card and carries nothing of the card.
+     *
+     * Asserted on the body the gateway received rather than on a helper, because the claim is about
+     * what Claude is sent. The surrounding texts are checked to be *present* for the same reason
+     * the card is checked absent: dropping the whole assistant turn would also satisfy "no tool
+     * identity travels", and would silently lose the conversation.
+     */
+    @Test
+    fun `the rebuilt history keeps the surrounding text and carries no tool identity`() = runBlocking {
+        val body = dispatchedBody(toolTurnConversation())
+
+        assertEquals("new", body.mode)
+        assertEquals("user", body.turn.role)
+        assertEquals(listOf("thanks"), body.turn.parts.map { it.text })
+
+        val history = body.rebuildHistory
+            ?: error("a new mobile turn with prior turns must send its rebuilt history")
+        assertEquals(listOf("user", "assistant"), history.map { it.role })
+        assertEquals(
+            listOf("what time is it?"),
+            history[0].parts.map { it.text },
+        )
+        assertEquals(
+            "the text before and after the card must both survive, in order",
+            listOf("Let me look that up.", "It is 00:06 on 2026-10-03."),
+            history[1].parts.map { it.text },
+        )
+        assertTrue(
+            "every rebuilt part is text, which is the only kind the wire can carry",
+            (body.turn.parts + history.flatMap { it.parts }).all { it.type == "text" },
+        )
+
+        // The structural claim above is only as good as the type it rests on, so it is stated
+        // directly: a part has a `type` and a `text`, and nowhere for a name, an argument or a
+        // result to travel in. Then the serialized body is searched for the card's own values, so
+        // a future field would have to defeat both checks rather than slip past one.
+        val wire = Json.encodeToString(ClaudePGenerationStartBody.serializer(), body)
+        assertFalse("the tool name must not travel", wire.contains("get_time_info"))
+        assertFalse("the tool call id must not travel", wire.contains("mcpcall_85c2bd4b"))
+        assertFalse("the tool arguments must not travel", wire.contains("secret_argument"))
+        assertFalse("the tool arguments must not travel", wire.contains("/data/local/tmp/never-sent"))
+        assertFalse("the tool output must not travel", wire.contains("TOOL-OUTPUT-MUST-NOT-TRAVEL"))
+    }
+
+    /**
+     * A persisted card changes nothing about the request — including the cache identity over it.
+     *
+     * Two conversations differing only by the card produce byte-identical `generation.start`
+     * bodies. Since the request fingerprint is computed from exactly these fields (the turn, the
+     * rebuilt history, the system prompt, the identities, the frozen catalog) and the app's
+     * `providerCacheIdentity` is built from the conversation, assistant and memory projections
+     * rather than from message parts, an equal body means an equal cache identity: a tool card
+     * cannot re-key a prompt that is otherwise unchanged.
+     */
+    @Test
+    fun `a persisted tool card changes nothing about the request Claude is sent`() = runBlocking {
+        val withCard = dispatchedBody(toolTurnConversation(withCard = true))
+        val withoutCard = dispatchedBody(toolTurnConversation(withCard = false))
+
+        assertEquals(
+            "the rebuilt history must be identical with and without the card",
+            withoutCard.rebuildHistory,
+            withCard.rebuildHistory,
+        )
+        assertEquals(withoutCard.turn, withCard.turn)
+        assertEquals(
+            "and the whole body, which is what the fingerprint is taken over",
+            Json.encodeToString(ClaudePGenerationStartBody.serializer(), withoutCard),
+            Json.encodeToString(ClaudePGenerationStartBody.serializer(), withCard),
+        )
+    }
+
+    /**
+     * The plain, no-tool conversation is unchanged: one user turn, no history, no snapshot.
+     *
+     * Pinned separately from the comparison above because "the card makes no difference" would
+     * still hold if *both* shapes had drifted. This says what the shape is.
+     */
+    @Test
+    fun `a plain conversation dispatches the frozen text-only shape`() = runBlocking {
+        val body = dispatchedBody(listOf(UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Text("hi")))))
+
+        assertEquals("new", body.mode)
+        assertEquals("user", body.turn.role)
+        assertEquals(listOf("hi"), body.turn.parts.map { it.text })
+        assertNull("a first turn has nothing before it to rebuild", body.rebuildHistory)
+        assertNull("no tools were declared, so nothing was frozen", body.toolSnapshot)
+        assertNull("and no binding intent is sent for a new mobile turn", body.bindingIntent)
+    }
+
+    /**
+     * A legacy `ToolCall` is still refused, wherever it appears in the conversation.
+     *
+     * These are not this app's current shape — they are what older builds and the importers
+     * persisted — and a legacy tool turn replayed as text-only history would silently lose the
+     * fact that it happened. That is the case the refusal exists for, and it is deliberately
+     * untouched by the change that lets a current tool card through.
+     */
+    @Test
+    @Suppress("DEPRECATION")
+    fun `a legacy tool call in history is still refused`() = runBlocking {
+        val legacy = UIMessagePart.ToolCall(
+            toolCallId = "call-legacy",
+            toolName = "read_file",
+            arguments = """{"path":"/tmp/x"}""",
+        )
+        assertRejectedBeforeDispatch(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(UIMessagePart.Text("reading"), legacy),
+            ),
+            ClaudePUnsupportedInput.TOOL_CALL,
+        )
+    }
+
+    /** A legacy `ToolResult` is refused for the same reason, and independently of the call. */
+    @Test
+    @Suppress("DEPRECATION")
+    fun `a legacy tool result in history is still refused`() = runBlocking {
+        val legacy = UIMessagePart.ToolResult(
+            toolCallId = "call-legacy",
+            toolName = "read_file",
+            content = JsonPrimitive("legacy content"),
+            arguments = JsonObject(emptyMap()),
+        )
+        assertRejectedBeforeDispatch(
+            UIMessage(
+                role = MessageRole.ASSISTANT,
+                parts = listOf(UIMessagePart.Text("read it"), legacy),
+            ),
+            ClaudePUnsupportedInput.TOOL_CALL,
+        )
     }
 }

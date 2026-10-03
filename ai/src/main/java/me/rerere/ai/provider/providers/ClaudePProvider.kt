@@ -727,14 +727,31 @@ class ClaudePProvider(
     }
 
     /**
-     * Rejects anything Phase 1 cannot faithfully send.
+     * Rejects anything this provider cannot faithfully send.
      *
      * Runs before the flow is constructed, so a rejected input cannot have reached the gateway.
      *
-     * The deprecated `ToolCall` / `ToolResult` / `Search` branches are suppressed rather than
-     * removed: `UIMessagePart` is sealed, so every subtype must be handled, and those variants are
-     * still present in conversation history persisted by older builds. Dropping them would mean a
-     * legacy tool turn silently reaching a provider that cannot execute tools.
+     * ## What is deliberately *not* rejected
+     *
+     * A `UIMessagePart.Tool` is the app's own record of a tool turn: the card the user approves, the
+     * result the app ran, and the audit trail behind both. It is not sent anywhere. The turn list
+     * built below ([lastUserTurn] and [rebuildHistoryBeforeLastUser]) keeps text parts only, and
+     * [ClaudePTurnPart] has no field a tool name, an argument or a result could travel in — so a
+     * card is dropped from the request by construction, and refusing it here would be refusing an
+     * input this provider is about to handle correctly.
+     *
+     * That is not hypothetical: every Claude P tool turn writes exactly such a card into the
+     * assistant message, so while `Tool` was in the refusal below, the first tool call in a
+     * conversation made *every later message in it* fail closed with
+     * `claude_p_unsupported_input: TOOL_CALL` — including the ones the app had just built itself.
+     * Observed on device, and the reason this branch is `Unit` rather than a removal of the arm:
+     * `UIMessagePart` is sealed, so every subtype still has to be handled here.
+     *
+     * The deprecated `ToolCall` / `ToolResult` / `Search` branches remain refusals, and are
+     * suppressed rather than removed. Those variants are *not* this app's current shape: they are
+     * what older builds and the chat importers persisted, and a legacy tool turn replayed as
+     * text-only history would silently lose the fact that it happened — which is the case this
+     * refusal exists for.
      */
     @Suppress("DEPRECATION")
     private fun rejectUnsupportedInput(
@@ -770,7 +787,11 @@ class ClaudePProvider(
                     is UIMessagePart.Document ->
                         throw ClaudePUnsupportedInputException(ClaudePUnsupportedInput.DOCUMENT)
 
-                    is UIMessagePart.Tool,
+                    // This app's own record of a tool turn, which the turn builders below drop
+                    // rather than replay. See the note above: carrying it no further is the
+                    // correct handling, not a tolerated one.
+                    is UIMessagePart.Tool -> Unit
+
                     is UIMessagePart.ToolCall,
                     is UIMessagePart.ToolResult,
                     ->
@@ -1501,5 +1522,10 @@ internal fun ClaudePToolStatusUpdate.asInterimToolPart(): UIMessagePart.Tool? {
         input = arguments.toString(),
         output = emptyList(),
         approvalState = approvalState,
+        // Carried verbatim, and only ever set by the host that froze this generation's catalog.
+        // The card is what a pending approval is committed against, so a fingerprint that stopped
+        // here would leave the committing side to re-derive it from a surface that need not still
+        // contain the tool — which is the failure this field exists to remove.
+        toolSchemaFingerprint = toolSchemaFingerprint,
     )
 }
