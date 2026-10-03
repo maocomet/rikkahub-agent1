@@ -214,32 +214,15 @@ class SecondUserApprovalLifecycle(
             )
             tools.distinctBy { it.toolCallId }.map { tool ->
                 val executionId = ExecutionRecordIds.tool(owner.runId, tool.toolCallId)
-                val resolved = ToolCapabilityResolver.resolve(tool.toolName, tool.arguments)
                 val schemaFingerprint = tool.toolSchemaFingerprint
                     ?: MessageDigest.getInstance("SHA-256")
                         .digest("legacy-approval-schema\u0000${tool.toolName}".encodeToByteArray())
                         .joinToString("") { "%02x".format(it) }
-                val projection = PendingToolApprovalRecord(
-                    approvalId = approvalId(executionId),
-                    executionId = executionId,
-                    traceId = owner.runId.take(MAX_ID_CHARS),
-                    toolCallId = tool.toolCallId.take(MAX_ID_CHARS),
-                    conversationId = owner.conversationId.take(MAX_ID_CHARS),
-                    subjectId = owner.subjectId.take(MAX_SUBJECT_CHARS),
-                    subjectType = owner.subjectType.name,
-                    origin = owner.origin.name,
-                    capabilityKey = resolved.capabilities
-                        .map { it.value }
-                        .sorted()
-                        .joinToString(",")
-                        .take(MAX_CAPABILITY_CHARS),
-                    resourceCategory = resolved.resource.kind.take(MAX_CATEGORY_CHARS),
+                val projection = pendingApprovalProjection(
+                    owner = owner,
+                    tool = tool,
                     requestedAtMs = requestedAt,
-                    stateVersion = 1,
-                    // Written explicitly rather than left to the database default. The default is
-                    // what a *pre-v52* row means, and a writer that relied on it would be saying
-                    // "this is an upgraded row" instead of naming who is waiting for this call.
-                    continuationMode = continuationMode.name,
+                    continuationMode = continuationMode,
                 )
                 val inserted = approvalDao.insertIgnore(projection)
                 val durableProjection = if (inserted == -1L) {
@@ -257,24 +240,11 @@ class SecondUserApprovalLifecycle(
                 }
 
                 val execution = executionRepository.open(
-                    draft = ExecutionRecordDraft(
-                        id = executionId,
-                        traceId = owner.runId,
-                        commandId = owner.commandId,
-                        conversationId = owner.conversationId,
-                        toolCallId = tool.toolCallId,
-                        toolName = tool.toolName,
+                    draft = pendingApprovalExecutionDraft(
+                        owner = owner,
+                        tool = tool,
+                        projection = projection,
                         toolSchemaFingerprint = schemaFingerprint,
-                        learningScope = LearningScope.AuthoritySubject(owner.subjectId),
-                        subjectId = owner.subjectId,
-                        subjectType = owner.subjectType.name,
-                        origin = owner.origin.name,
-                        capabilityKeys = projection.capabilityKey,
-                        resourceSummary = projection.resourceCategory,
-                        runtime = runtimeFor(tool.toolName),
-                        idempotencyKey = "approval:${projection.approvalId}".take(300),
-                        initialStatus = ExecutionStatus.waiting_approval,
-                        verificationState = VerificationState.DATABASE_CONFIRMED,
                     ),
                     mutationId = "approval-open:${projection.approvalId}",
                     source = ExecutionStateSource.DATABASE,
@@ -312,24 +282,11 @@ class SecondUserApprovalLifecycle(
                 "approval_tool_schema_fingerprint_required"
             }
             val executionId = ExecutionRecordIds.tool(owner.runId, tool.toolCallId)
-            val resolved = ToolCapabilityResolver.resolve(tool.toolName, tool.arguments)
-            val projection = PendingToolApprovalRecord(
-                approvalId = approvalId(executionId),
-                executionId = executionId,
-                traceId = owner.runId.take(MAX_ID_CHARS),
-                toolCallId = tool.toolCallId.take(MAX_ID_CHARS),
-                conversationId = owner.conversationId.take(MAX_ID_CHARS),
-                subjectId = owner.subjectId.take(MAX_SUBJECT_CHARS),
-                subjectType = owner.subjectType.name,
-                origin = owner.origin.name,
-                capabilityKey = resolved.capabilities.map { it.value }.sorted().joinToString(",")
-                    .take(MAX_CAPABILITY_CHARS),
-                resourceCategory = resolved.resource.kind.take(MAX_CATEGORY_CHARS),
+            val projection = pendingApprovalProjection(
+                owner = owner,
+                tool = tool,
                 requestedAtMs = requestedAt,
-                stateVersion = 1,
-                // Explicit for the same reason as the sibling writer above: the code should name
-                // who is waiting rather than inherit a schema default.
-                continuationMode = continuationMode.name,
+                continuationMode = continuationMode,
             )
             val inserted = approvalDao.insertIgnore(projection)
             val durableProjection = if (inserted == -1L) {
@@ -344,24 +301,11 @@ class SecondUserApprovalLifecycle(
                 projection
             }
             val execution = executionRepository.openInCurrentAuthorityTransaction(
-                draft = ExecutionRecordDraft(
-                    id = executionId,
-                    traceId = owner.runId,
-                    commandId = owner.commandId,
-                    conversationId = owner.conversationId,
-                    toolCallId = tool.toolCallId,
-                    toolName = tool.toolName,
+                draft = pendingApprovalExecutionDraft(
+                    owner = owner,
+                    tool = tool,
+                    projection = projection,
                     toolSchemaFingerprint = requireNotNull(tool.toolSchemaFingerprint),
-                    learningScope = LearningScope.AuthoritySubject(owner.subjectId),
-                    subjectId = owner.subjectId,
-                    subjectType = owner.subjectType.name,
-                    origin = owner.origin.name,
-                    capabilityKeys = projection.capabilityKey,
-                    resourceSummary = projection.resourceCategory,
-                    runtime = runtimeFor(tool.toolName),
-                    idempotencyKey = "approval:${projection.approvalId}".take(300),
-                    initialStatus = ExecutionStatus.waiting_approval,
-                    verificationState = VerificationState.DATABASE_CONFIRMED,
                 ),
                 mutationId = "approval-open:${projection.approvalId}",
                 source = ExecutionStateSource.DATABASE,
@@ -757,30 +701,26 @@ class SecondUserApprovalLifecycle(
         }
     }
 
-    private fun runtimeFor(toolName: String): ExecutionRuntime = when {
-        toolName.startsWith("termux_") || toolName.startsWith("linux_") -> ExecutionRuntime.TERMUX
-        toolName.startsWith("ssh_") -> ExecutionRuntime.SSH
-        toolName.startsWith("workspace_") -> ExecutionRuntime.WORKSPACE
-        toolName.startsWith("mcp__") -> ExecutionRuntime.MCP
-        toolName.startsWith("plugin__") -> ExecutionRuntime.PLUGIN
-        toolName.startsWith("privileged_") || toolName.startsWith("external_bridge_") ->
-            ExecutionRuntime.SHIZUKU
-        else -> ExecutionRuntime.LOCAL_TOOL
-    }
-
-    private fun approvalId(executionId: String): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(executionId.toByteArray())
-        return "approval:" + digest.joinToString("") { "%02x".format(it) }
-    }
+    /**
+     * The approval's identity for an execution, from the single derivation site.
+     *
+     * It is a top-level function rather than a private method because the tool-start admission check
+     * has to derive the same value to prove that a projection is the authority for a record. One
+     * derivation, two readers — never two derivations.
+     */
+    private fun approvalId(executionId: String): String = toolApprovalId(executionId)
 
     private companion object {
         const val TAG = "SecondUserApproval"
-        const val MAX_ID_CHARS = 480
-        const val MAX_SUBJECT_CHARS = 160
-        const val MAX_CAPABILITY_CHARS = 500
-        const val MAX_CATEGORY_CHARS = 80
     }
 }
+
+// The projection's field bounds, at file level because the projection is now built by a top-level
+// function that both writers share. Values unchanged.
+private const val MAX_ID_CHARS = 480
+private const val MAX_SUBJECT_CHARS = 160
+private const val MAX_CAPABILITY_CHARS = 500
+private const val MAX_CATEGORY_CHARS = 80
 
 /**
  * Who a pending-approval barrier may be written for.
@@ -821,4 +761,105 @@ internal fun requireAdmissibleApprovalOwner(
     ) {
         "second_user_approval_owner_required"
     }
+}
+
+/**
+ * The approval projection a barrier is committed under, from the single shape both writers use.
+ *
+ * Like [pendingApprovalExecutionDraft] this is a function because the *shape* is shared: the row
+ * here is what [decideToolStartAdmission] reads to prove that an execution record belongs to a
+ * granted approval, so a second, hand-rolled copy of it — in production or in a test — would be a
+ * second answer to "is this the same call".
+ *
+ * The capability and resource summaries are resolved **with** the call's arguments, and that is
+ * deliberate: they describe the risk of this specific call, and a call whose arguments change its
+ * capability class must be recorded under the class it actually had.
+ */
+internal fun pendingApprovalProjection(
+    owner: PendingApprovalOwner,
+    tool: PendingApprovalTool,
+    requestedAtMs: Long,
+    continuationMode: ApprovalContinuationMode,
+): PendingToolApprovalRecord {
+    val executionId = ExecutionRecordIds.tool(owner.runId, tool.toolCallId)
+    val resolved = ToolCapabilityResolver.resolve(tool.toolName, tool.arguments)
+    return PendingToolApprovalRecord(
+        approvalId = toolApprovalId(executionId),
+        executionId = executionId,
+        traceId = owner.runId.take(MAX_ID_CHARS),
+        toolCallId = tool.toolCallId.take(MAX_ID_CHARS),
+        conversationId = owner.conversationId.take(MAX_ID_CHARS),
+        subjectId = owner.subjectId.take(MAX_SUBJECT_CHARS),
+        subjectType = owner.subjectType.name,
+        origin = owner.origin.name,
+        capabilityKey = resolved.capabilities
+            .map { it.value }
+            .sorted()
+            .joinToString(",")
+            .take(MAX_CAPABILITY_CHARS),
+        resourceCategory = resolved.resource.kind.take(MAX_CATEGORY_CHARS),
+        requestedAtMs = requestedAtMs,
+        stateVersion = 1,
+        // Written explicitly rather than left to the database default. The default is what a
+        // *pre-v52* row means, and a writer that relied on it would be saying "this is an upgraded
+        // row" instead of naming who is waiting for this call.
+        continuationMode = continuationMode.name,
+    )
+}
+
+/**
+ * The execution record an approval barrier opens, built from the same facts as its projection.
+ *
+ * ## Why this is a function
+ *
+ * It is the record the tool runtime has to *adopt* when the call it approved finally runs, so its
+ * shape is not an implementation detail of this file — it is the shape
+ * [decideToolStartAdmission] checks against. Two writers used to spell it out separately, and a
+ * test that wanted a real one had to spell out a third copy and hope the three stayed equal. One
+ * builder means the record the approval writes and the record a check agrees with are the same
+ * record by construction.
+ *
+ * ## Why the identity is written the way it is
+ *
+ * `learningScope` is authority-scoped, because an approval is a second-user authority's decision
+ * even when the assistant that raised the call is an ordinary one — and that is precisely why the
+ * *ordinary* runtime draft cannot re-open this record. The idempotency key is approval-scoped for
+ * the same reason: the two admissions of this call are different, and the ledger must be able to
+ * tell them apart rather than the other way round.
+ */
+internal fun pendingApprovalExecutionDraft(
+    owner: PendingApprovalOwner,
+    tool: PendingApprovalTool,
+    projection: PendingToolApprovalRecord,
+    toolSchemaFingerprint: String,
+): ExecutionRecordDraft = ExecutionRecordDraft(
+    id = ExecutionRecordIds.tool(owner.runId, tool.toolCallId),
+    traceId = owner.runId,
+    commandId = owner.commandId,
+    conversationId = owner.conversationId,
+    toolCallId = tool.toolCallId,
+    toolName = tool.toolName,
+    toolSchemaFingerprint = toolSchemaFingerprint,
+    learningScope = LearningScope.AuthoritySubject(owner.subjectId),
+    subjectId = owner.subjectId,
+    subjectType = owner.subjectType.name,
+    origin = owner.origin.name,
+    capabilityKeys = projection.capabilityKey,
+    resourceSummary = projection.resourceCategory,
+    runtime = approvalExecutionRuntime(tool.toolName),
+    idempotencyKey = toolApprovalIdempotencyKey(projection.approvalId),
+    initialStatus = ExecutionStatus.waiting_approval,
+    verificationState = VerificationState.DATABASE_CONFIRMED,
+)
+
+/** The runtime an approved call is recorded under. The ledger's classification, not a policy. */
+internal fun approvalExecutionRuntime(toolName: String): ExecutionRuntime = when {
+    toolName.startsWith("termux_") || toolName.startsWith("linux_") -> ExecutionRuntime.TERMUX
+    toolName.startsWith("ssh_") -> ExecutionRuntime.SSH
+    toolName.startsWith("workspace_") -> ExecutionRuntime.WORKSPACE
+    toolName.startsWith("mcp__") -> ExecutionRuntime.MCP
+    toolName.startsWith("plugin__") -> ExecutionRuntime.PLUGIN
+    toolName.startsWith("privileged_") || toolName.startsWith("external_bridge_") ->
+        ExecutionRuntime.SHIZUKU
+    else -> ExecutionRuntime.LOCAL_TOOL
 }

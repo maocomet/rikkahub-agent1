@@ -17,9 +17,21 @@ import kotlin.uuid.Uuid
  *
  * It intentionally resolves resource metadata without argument values, so no command, file
  * content, credential, URL parameter, or tool output can leak into Room, audit, or logs.
+ *
+ * ## The start of a call is a decision, not an open
+ *
+ * A call that needs approval was already opened by the approval authority when the barrier was
+ * raised, under that approval's own admission identity. Opening it again here under the runtime's
+ * ordinary identity is not a retry of the same admission; it is a second, different one, and the
+ * ledger refuses it. So [RedactedToolLifecycleEvent.Phase.STARTING] asks
+ * [decideToolStartAdmission] what this record is, and either opens one (the ordinary path, byte for
+ * byte as before), adopts the approval authority's (only when it is provably the same granted call,
+ * already admitted to run) or refuses — and a refusal reaches the runtime as a failed durable
+ * write, which stops the tool before its side effect. The storage behind that decision is a
+ * [ToolExecutionLedger] so the checks can be run rather than only read.
  */
 class ExecutionRecordCriticalToolLifecycleSink(
-    private val repository: ExecutionRepository,
+    private val ledger: ToolExecutionLedger,
 ) : CriticalToolLifecycleSink {
     override suspend fun persist(event: RedactedToolLifecycleEvent) {
         val context = event.context
@@ -27,48 +39,92 @@ class ExecutionRecordCriticalToolLifecycleSink(
         when (event.phase) {
             RedactedToolLifecycleEvent.Phase.STARTING -> {
                 val resolved = ToolCapabilityResolver.resolve(context.toolName)
-                val record = repository.open(
-                    ExecutionRecordDraft(
-                        id = recordId,
-                        traceId = context.runId,
-                        commandId = context.commandId,
-                        conversationId = context.conversationId,
-                        toolCallId = context.toolCallId,
-                        toolName = context.toolName,
-                        toolSchemaFingerprint = context.toolSchemaFingerprint,
-                        learningScope = context.toLearningScope(),
-                        subjectId = context.subjectId.ifBlank { context.assistantId },
-                        subjectType = (context.subjectType ?: SubjectType.LOCAL_ASSISTANT).name,
-                        origin = context.origin.name,
-                        capabilityKeys = resolved.capabilities
-                            .map { it.value }
-                            .sorted()
-                            .joinToString(","),
-                        resourceSummary = resolved.resource.toAuditSummary(),
-                        runtime = runtimeFor(context.toolName, context.legacyExecution),
-                        idempotencyKey = ExecutionRecordIds.toolIdempotency(
-                            context.runId,
-                            context.toolCallId,
-                        ),
-                        initialStatus = ExecutionStatus.starting,
+                val draft = ExecutionRecordDraft(
+                    id = recordId,
+                    traceId = context.runId,
+                    commandId = context.commandId,
+                    conversationId = context.conversationId,
+                    toolCallId = context.toolCallId,
+                    toolName = context.toolName,
+                    toolSchemaFingerprint = context.toolSchemaFingerprint,
+                    learningScope = context.toLearningScope(),
+                    subjectId = context.subjectId.ifBlank { context.assistantId },
+                    subjectType = (context.subjectType ?: SubjectType.LOCAL_ASSISTANT).name,
+                    origin = context.origin.name,
+                    capabilityKeys = resolved.capabilities
+                        .map { it.value }
+                        .sorted()
+                        .joinToString(","),
+                    resourceSummary = resolved.resource.toAuditSummary(),
+                    runtime = runtimeFor(context.toolName, context.legacyExecution),
+                    idempotencyKey = ExecutionRecordIds.toolIdempotency(
+                        context.runId,
+                        context.toolCallId,
                     ),
+                    initialStatus = ExecutionStatus.starting,
                 )
-                val current = ExecutionStatus.fromWire(record.status)
-                if (current != ExecutionStatus.starting && current != ExecutionStatus.running) {
-                    requireDurable(
-                        repository.transition(
-                            id = recordId,
-                            target = ExecutionStatus.starting,
-                            mutationId = mutationId(event),
-                            reasonCode = "tool_starting",
-                        ),
-                        ExecutionStatus.starting,
+                // One read, in one snapshot: the record and the approval that owns it are decided
+                // together, so the decision cannot be about a state that never existed.
+                val view = ledger.toolStartView(recordId)
+                when (
+                    val admission = decideToolStartAdmission(
+                        existing = view.record,
+                        approvalAuthority = view.approval,
+                        draft = draft,
                     )
+                ) {
+                    ToolStartAdmission.OpensRecord -> {
+                        val record = ledger.open(
+                            draft = draft,
+                            mutationId = "open:$recordId",
+                            source = ExecutionStateSource.LIVE_EVENT,
+                            reasonCode = "execution_opened",
+                        )
+                        val current = ExecutionStatus.fromWire(record.status)
+                        if (current != ExecutionStatus.starting &&
+                            current != ExecutionStatus.running
+                        ) {
+                            requireDurable(
+                                ledger.transition(
+                                    id = recordId,
+                                    target = ExecutionStatus.starting,
+                                    mutationId = mutationId(event),
+                                    source = ExecutionStateSource.LIVE_EVENT,
+                                    reasonCode = "tool_starting",
+                                ),
+                                ExecutionStatus.starting,
+                            )
+                        }
+                    }
+
+                    // The approval authority's record is already durable at `starting`, written by
+                    // the transaction that committed the decision. What is left is to *claim* it —
+                    // a compare-and-set against the version the decision was made on — because the
+                    // snapshot above can go stale: an emergency stop, a cancellation or a recovery
+                    // may commit while this call is between the reading and the run.
+                    //
+                    // The claim is what makes that impossible to run through. It changes no state
+                    // the call depends on (the status stays where the approval put it, because
+                    // `running` is the runtime's own statement and it does not have a handle yet);
+                    // what it does is fail if anything moved.
+                    is ToolStartAdmission.AdoptsApprovedCall -> requireClaimed(
+                        ledger.claimApprovedToolStart(
+                            record = admission.record,
+                            mutationId = mutationId(event),
+                            reasonCode = "tool_start_adopted",
+                        ),
+                    )
+
+                    // Fail closed. The runtime requires durable tracking before a side effect, so
+                    // throwing here is what keeps the tool body from running against a record this
+                    // sink could not vouch for.
+                    is ToolStartAdmission.Refuses ->
+                        throw CriticalLifecyclePersistenceException(admission.reasonCode)
                 }
             }
 
             RedactedToolLifecycleEvent.Phase.RUNNING -> requireDurable(
-                repository.transition(
+                ledger.transition(
                     id = recordId,
                     target = ExecutionStatus.running,
                     runtimeHandleSummary = event.executionId,
@@ -80,7 +136,7 @@ class ExecutionRecordCriticalToolLifecycleSink(
             )
 
             RedactedToolLifecycleEvent.Phase.CANCEL_REQUESTED -> requireDurable(
-                repository.transition(
+                ledger.transition(
                     id = recordId,
                     target = ExecutionStatus.cancel_requested,
                     runtimeHandleSummary = event.executionId,
@@ -93,7 +149,7 @@ class ExecutionRecordCriticalToolLifecycleSink(
             )
 
             RedactedToolLifecycleEvent.Phase.TERMINATING -> requireDurable(
-                repository.transition(
+                ledger.transition(
                     id = recordId,
                     target = ExecutionStatus.terminating,
                     runtimeHandleSummary = event.executionId,
@@ -105,7 +161,7 @@ class ExecutionRecordCriticalToolLifecycleSink(
             )
 
             RedactedToolLifecycleEvent.Phase.COMPLETED -> requireDurable(
-                repository.transition(
+                ledger.transition(
                     id = recordId,
                     target = ExecutionStatus.succeeded,
                     runtimeHandleSummary = event.executionId,
@@ -117,7 +173,7 @@ class ExecutionRecordCriticalToolLifecycleSink(
             )
 
             RedactedToolLifecycleEvent.Phase.FAILED -> requireDurable(
-                repository.transition(
+                ledger.transition(
                     id = recordId,
                     target = ExecutionStatus.failed,
                     runtimeHandleSummary = event.executionId,
@@ -133,7 +189,7 @@ class ExecutionRecordCriticalToolLifecycleSink(
                 val target = if (confirmed) ExecutionStatus.cancelled else ExecutionStatus.terminating
                 val reason = if (confirmed) "termination_confirmed" else "termination_unconfirmed"
                 requireDurable(
-                    repository.transition(
+                    ledger.transition(
                         id = recordId,
                         target = target,
                         runtimeHandleSummary = event.executionId,
@@ -158,7 +214,7 @@ class ExecutionRecordCriticalToolLifecycleSink(
                     hasRuntimeHandle = event.executionId != null,
                 )
                 requireDurable(
-                    repository.transition(
+                    ledger.transition(
                         id = recordId,
                         target = decision.target,
                         runtimeHandleSummary = event.executionId,
@@ -176,6 +232,48 @@ class ExecutionRecordCriticalToolLifecycleSink(
                     decision.target,
                 )
             }
+        }
+    }
+
+    /**
+     * Whether the claim actually took the record, and what to do about each way it could not.
+     *
+     * The claim is a compare-and-set, so its failures are the point of it rather than an accident:
+     *
+     * - `Applied` — the record was still exactly what the decision read, at the version it read. The
+     *   reducer leaves the status where the approval put it, so this is the only outcome that must
+     *   equal `starting`.
+     * - `Duplicate` — this exact claim is already journaled, so some runtime attempt has already
+     *   crossed the start boundary. It is refused even if the record still says `starting`: this
+     *   sink is shared by paths that do not own the Claude P bridge's in-memory claim, and an
+     *   approval grants permission, not a second execution right.
+     * - Everything else is the state having moved — a stop, a cancellation, a recovery, a conflict —
+     *   and every one of them is a refusal. There is deliberately no path here that retries, and no
+     *   path that continues as UNTRACKED.
+     */
+    private fun requireClaimed(result: ExecutionMutationResult) {
+        when (result) {
+            is ExecutionMutationResult.Applied -> {
+                val status = ExecutionStatus.fromWire(result.record.status)
+                if (status != ExecutionStatus.starting) {
+                    throw CriticalLifecyclePersistenceException("execution_claim_status_drift")
+                }
+            }
+
+            is ExecutionMutationResult.Duplicate ->
+                throw CriticalLifecyclePersistenceException("execution_start_already_claimed")
+
+            is ExecutionMutationResult.Terminal ->
+                throw CriticalLifecyclePersistenceException("execution_already_terminal")
+
+            is ExecutionMutationResult.Missing ->
+                throw CriticalLifecyclePersistenceException("execution_record_missing")
+
+            is ExecutionMutationResult.Invalid ->
+                throw CriticalLifecyclePersistenceException("execution_transition_invalid")
+
+            is ExecutionMutationResult.Conflict ->
+                throw CriticalLifecyclePersistenceException("execution_cas_conflict")
         }
     }
 

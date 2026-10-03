@@ -1354,7 +1354,16 @@ val dataSourceModule = module {
         )
     }
     single<me.rerere.rikkahub.data.ai.execution.CriticalToolLifecycleSink> {
-        me.rerere.rikkahub.data.execution.ExecutionRecordCriticalToolLifecycleSink(get())
+        // The ledger reads the approval projection as well as the execution table, in one
+        // transaction: adopting an approval authority's record is only safe if the approval that
+        // owns it can be named and both rows describe the same instant.
+        me.rerere.rikkahub.data.execution.ExecutionRecordCriticalToolLifecycleSink(
+            me.rerere.rikkahub.data.execution.RoomToolExecutionLedger(
+                database = get(),
+                repository = get(),
+                approvalDao = get(),
+            ),
+        )
     }
     single { me.rerere.rikkahub.data.ai.execution.ExecutionTrackingHealth() }
 

@@ -556,6 +556,41 @@ sealed class UIMessagePart {
          * is not sent anywhere.
          */
         val toolSchemaFingerprint: String? = null,
+        /**
+         * Whether this part states the **whole** call rather than a fragment of it.
+         *
+         * ## Why the distinction has to be stated rather than inferred
+         *
+         * Most providers stream a tool call: the name arrives in pieces, then the arguments in
+         * pieces, and [merge] exists to glue those pieces together. Claude P does the opposite. A
+         * call arrives inside a live generation, and everything the app is told about it — the
+         * pending card, the decision, the result — is a complete statement of that call at that
+         * moment. Appending those to each other is what produced a card whose tool name appeared
+         * once per publication and whose approval state was stuck at `Pending` while its output
+         * already held the result.
+         *
+         * So a part that states a whole call is merged by **replacement**: the incoming statement
+         * becomes the call's state, and fields it does not state are kept. Two parts of a call
+         * never disagree about which call they are — [toolCallId] is what pairs them — so a
+         * replacement cannot mix two calls together.
+         *
+         * ## Why not the fingerprint
+         *
+         * [toolSchemaFingerprint] is non-null on exactly the Claude P approval publications today,
+         * so it would work as a marker. It is not used as one: that field is the identity of the
+         * *tool schema*, consumed by the approval authority, and a second, unrelated meaning
+         * inferred from its presence is the kind of implicit coupling whose failure looks like
+         * success. A flag says what it means.
+         *
+         * ## Who sets it
+         *
+         * Exactly one site: the Claude P approval card `ClaudePToolStatusUpdate.asInterimToolPart`
+         * maps. Once a call's card is in the conversation, that card is the part the later
+         * statements for the same call — the decision, the result — are merged into, so marking the
+         * card is enough to give the whole call replacement semantics. Every other provider leaves
+         * it `false` and keeps the appending merge it has always had.
+         */
+        val isCallSnapshot: Boolean = false,
         override var metadata: JsonObject? = null
     ) : UIMessagePart() {
         /** Whether the tool has been executed (has output) */
@@ -582,7 +617,55 @@ sealed class UIMessagePart {
             json.parseToJsonElement(input.ifBlank { "{}" })
         }.getOrElse { JsonObject(emptyMap()) }
 
+        /**
+         * Folds [other] into this part for the same call.
+         *
+         * Two shapes, and which one applies is stated by [isCallSnapshot] rather than guessed:
+         *
+         * - **Snapshots** (Claude P) *replace*: the incoming statement is the call's state, and a
+         *   field it does not state keeps the value already held. A call that is published three
+         *   times therefore has one name, one input and one output — and its decision, once made, is
+         *   a decision.
+         * - **Deltas** (everything else) *append*, exactly as before: a name that arrives in pieces
+         *   is still glued together, because for those providers a later part really is a
+         *   continuation of a string.
+         */
         fun merge(other: Tool): Tool {
+            if (isCallSnapshot || other.isCallSnapshot) {
+                return Tool(
+                    toolCallId = toolCallId,
+                    // Stated-wins, unstated-keeps: a snapshot that carried no name must not erase
+                    // the one the call was published under.
+                    toolName = other.toolName.ifBlank { toolName },
+                    // Blank means *unstated*, which is a real answer for a statement that does not
+                    // restate the arguments — the decision above all. It is the sender's job to say
+                    // so with an empty string: a sender that put the text `null` here would be
+                    // making a claim about the arguments, and this line would dutifully write it
+                    // over the ones the user actually approved. See
+                    // `ClaudePToolStatusUpdate.asInterimToolPart`, which is that sender.
+                    input = other.input.ifBlank { input },
+                    // Empty output means "no result yet", which is a statement about *progress*
+                    // rather than a result to write, so it never clears one that already exists.
+                    output = other.output.ifEmpty { output },
+                    // A decision is a fact about what the user did, and a repeated or re-delivered
+                    // pending statement may not un-make it. Anything else is the incoming state.
+                    approvalState = if (
+                        other.approvalState is ToolApprovalState.Pending && approvalState.isDecided
+                    ) {
+                        approvalState
+                    } else {
+                        other.approvalState
+                    },
+                    // Both of these are written once, by whoever first knows them, and never
+                    // restated: first non-null wins in the same direction as the appending path
+                    // below, so a snapshot cannot drop the frozen schema identity the approval
+                    // authority commits against.
+                    executionStartedAt = executionStartedAt ?: other.executionStartedAt,
+                    toolSchemaFingerprint = toolSchemaFingerprint ?: other.toolSchemaFingerprint,
+                    metadata = if (other.metadata != null) other.metadata else metadata,
+                    isCallSnapshot = true,
+                )
+            }
             return Tool(
                 toolCallId = toolCallId,
                 toolName = toolName + other.toolName,
@@ -601,6 +684,24 @@ sealed class UIMessagePart {
         }
     }
 }
+
+/**
+ * Whether a decision has been made about this call.
+ *
+ * `Auto` is not a decision — it means no approval was required — so only the three states a user
+ * or an answer produced count. Used by [UIMessagePart.Tool.merge] to keep a re-stated `Pending`
+ * from overwriting one.
+ */
+internal val ToolApprovalState.isDecided: Boolean
+    get() = when (this) {
+        is ToolApprovalState.Approved,
+        is ToolApprovalState.Denied,
+        is ToolApprovalState.Answered,
+            -> true
+        ToolApprovalState.Auto,
+        ToolApprovalState.Pending,
+            -> false
+    }
 
 /**
  * Sort message parts by type priority:

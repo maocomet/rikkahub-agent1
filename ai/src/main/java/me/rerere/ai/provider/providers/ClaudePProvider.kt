@@ -2,6 +2,7 @@ package me.rerere.ai.provider.providers
 
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.uuid.Uuid
+import kotlinx.serialization.json.JsonNull
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
@@ -1504,6 +1505,21 @@ private fun List<UIMessage>.systemPromptOrNull(): String? {
  * about whether the call may run, and a `Pending` part here is a request for a decision, never a
  * decision. The terminal statuses have no part because the call's outcome part comes back through
  * `BridgeToolExecution`, shaped by the app that ran it.
+ *
+ * ## What `JsonNull` arguments mean, and why they must not become the string `"null"`
+ *
+ * Only the pending publication restates the call's arguments. The statuses that follow it — the
+ * decision above all — are statements about a call whose arguments are already on the card, and the
+ * host publishes them with [JsonNull] rather than re-sending the payload: the decision is not a new
+ * source for the arguments, and re-sending them would put a second copy of a potentially sensitive
+ * payload on a path that has no need for one.
+ *
+ * So `JsonNull` is this mapping's word for **"this status does not restate the arguments"**, and it
+ * is translated to the empty string, which is the same word in [UIMessagePart.Tool.input]'s
+ * vocabulary. `arguments.toString()` would say `"null"` instead — a *statement of arguments*, and a
+ * false one — which `Tool.merge` would then write over the real ones, replacing what the user
+ * approved with the text `null`. That is why the translation is here, at the only place a status
+ * becomes a part, rather than being guessed at later from the shape of a string.
  */
 internal fun ClaudePToolStatusUpdate.asInterimToolPart(): UIMessagePart.Tool? {
     val approvalState = when (status) {
@@ -1519,7 +1535,8 @@ internal fun ClaudePToolStatusUpdate.asInterimToolPart(): UIMessagePart.Tool? {
     return UIMessagePart.Tool(
         toolCallId = toolCallId,
         toolName = toolName,
-        input = arguments.toString(),
+        // An unstated input is empty, never the four characters `null`.
+        input = if (arguments is JsonNull) "" else arguments.toString(),
         output = emptyList(),
         approvalState = approvalState,
         // Carried verbatim, and only ever set by the host that froze this generation's catalog.
@@ -1527,5 +1544,10 @@ internal fun ClaudePToolStatusUpdate.asInterimToolPart(): UIMessagePart.Tool? {
         // here would leave the committing side to re-derive it from a surface that need not still
         // contain the tool — which is the failure this field exists to remove.
         toolSchemaFingerprint = toolSchemaFingerprint,
+        // This status is the *whole* call at this moment, not a fragment of one, and so is every
+        // later statement about the same call: this is the flag that tells `Tool.merge` to replace
+        // rather than append. Without it the pending card, the decision and the result concatenate
+        // into a name repeated once per publication and a card stuck on `Pending`.
+        isCallSnapshot = true,
     )
 }

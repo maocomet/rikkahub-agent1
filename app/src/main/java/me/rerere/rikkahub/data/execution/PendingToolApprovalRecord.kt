@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import java.security.MessageDigest
 
 /**
  * Redacted lifecycle projection for a tool approval.
@@ -102,3 +103,27 @@ enum class ApprovalStatus {
  */
 fun PendingToolApprovalRecord.isInFlightContinuation(): Boolean =
     ApprovalContinuationMode.fromWireOrNull(continuationMode) == ApprovalContinuationMode.IN_FLIGHT
+
+/**
+ * An approval's identity, derived from the execution it is about.
+ *
+ * Stated once and used by both sides that need it: the writer, which keys the projection on it, and
+ * the tool-start admission check, which uses it to prove that a projection really is the authority
+ * for the record it is being matched against. A second copy of this derivation would be a second
+ * answer to the same question, and the two would only have to disagree once for an approved call to
+ * become unadoptable — or, worse, for a record to be adopted by the wrong approval.
+ */
+internal fun toolApprovalId(executionId: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(executionId.toByteArray())
+    return "approval:" + digest.joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * The idempotency key the approval authority opens its execution record under.
+ *
+ * Distinct from the runtime's own tool idempotency key by construction, which is what keeps an
+ * approval's record from ever matching an ordinary runtime draft's admission identity — the two are
+ * different admissions of the same call, and the ledger must not be able to confuse them.
+ */
+internal fun toolApprovalIdempotencyKey(approvalId: String): String =
+    "approval:$approvalId".take(300)
