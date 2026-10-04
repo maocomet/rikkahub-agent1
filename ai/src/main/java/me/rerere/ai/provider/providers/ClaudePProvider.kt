@@ -1,6 +1,7 @@
 package me.rerere.ai.provider.providers
 
 import java.util.concurrent.atomic.AtomicBoolean
+import java.security.MessageDigest
 import kotlin.uuid.Uuid
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -101,6 +102,7 @@ class ClaudePProvider(
             }?.takeIf { it.isNotBlank() }
             ?: throw ClaudePInputException("empty user turn")
         val systemPrompt = messages.firstOrNull { it.role == MessageRole.SYSTEM }?.toText()?.takeIf { it.isNotBlank() }
+        val branchId = conversationId.sha256Hex()
         val deviceId = requireDeviceId()
         gateway.hello(helloBody(deviceId))
 
@@ -111,7 +113,7 @@ class ClaudePProvider(
         val assistantId = providerSetting.id.toString()
         val body = ClaudePGenerationStartBody(
             remoteThreadId = conversationId,
-            remoteBranchId = conversationId,
+            remoteBranchId = branchId,
             mode = ClaudePSessionMode.AUTO,
             modelAlias = modelId,
             systemPrompt = systemPrompt,
@@ -126,7 +128,7 @@ class ClaudePProvider(
         val fingerprint = ClaudePRequestFingerprint.compute(
             deviceId = deviceId,
             remoteThreadId = conversationId,
-            remoteBranchId = conversationId,
+            remoteBranchId = branchId,
             mode = ClaudePSessionMode.AUTO,
             modelAlias = modelId,
             systemPrompt = systemPrompt,
@@ -328,3 +330,7 @@ private fun me.rerere.ai.provider.claudep.ClaudePModelEntry.toCachedModel() =
     )
 
 class ClaudePInputException(message: String) : IllegalArgumentException(message)
+
+private fun String.sha256Hex(): String = MessageDigest.getInstance("SHA-256")
+    .digest(toByteArray(Charsets.UTF_8))
+    .joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
