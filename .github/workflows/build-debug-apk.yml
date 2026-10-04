@@ -1,0 +1,98 @@
+name: Build Debug APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      user_path_first:
+        description: Build, verify, and upload the signed APK
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web-ui/pnpm-lock.yaml
+
+      - name: Install web-ui dependencies
+        working-directory: web-ui
+        run: pnpm install --frozen-lockfile
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Materialize fixed agent-test signing keystore
+        env:
+          AGENTTEST_KEYSTORE_B64: ${{ secrets.RIKKAHUB_AGENTTEST_KEYSTORE_BASE64 }}
+          AGENTTEST_STORE_PASSWORD: ${{ secrets.RIKKAHUB_AGENTTEST_STORE_PASSWORD }}
+          AGENTTEST_KEY_ALIAS: ${{ secrets.RIKKAHUB_AGENTTEST_KEY_ALIAS }}
+          AGENTTEST_KEY_PASSWORD: ${{ secrets.RIKKAHUB_AGENTTEST_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${AGENTTEST_KEYSTORE_B64:?Missing fixed signing keystore secret}"
+          : "${AGENTTEST_STORE_PASSWORD:?Missing fixed signing store password}"
+          : "${AGENTTEST_KEY_ALIAS:?Missing fixed signing key alias}"
+          : "${AGENTTEST_KEY_PASSWORD:?Missing fixed signing key password}"
+          KEYSTORE="$RUNNER_TEMP/rikkahub-agenttest.keystore"
+          echo "$AGENTTEST_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
+          keytool -list -keystore "$KEYSTORE" \
+            -storepass "$AGENTTEST_STORE_PASSWORD" -alias "$AGENTTEST_KEY_ALIAS" >/dev/null
+          echo "RIKKAHUB_AGENTTEST_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "RIKKAHUB_AGENTTEST_STORE_PASSWORD=$AGENTTEST_STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "RIKKAHUB_AGENTTEST_KEY_ALIAS=$AGENTTEST_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "RIKKAHUB_AGENTTEST_KEY_PASSWORD=$AGENTTEST_KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build debug APK
+        env:
+          RIKKAHUB_AGENTTEST_REQUIRED: "true"
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --no-configuration-cache
+
+      - name: Verify package and fixed signing certificate
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(ls -1 "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)"
+          expected="$(
+            keytool -list -v -keystore "$RIKKAHUB_AGENTTEST_KEYSTORE" \
+              -storepass "$RIKKAHUB_AGENTTEST_STORE_PASSWORD" \
+              -alias "$RIKKAHUB_AGENTTEST_KEY_ALIAS" \
+              | sed -nE 's/^[[:space:]]*SHA256:[[:space:]]*//p' \
+              | head -n1 | tr -d ':' | tr 'A-F' 'a-f'
+          )"
+          for apk in app/build/outputs/apk/debug/*.apk; do
+            actual="$(
+              "$APKSIGNER" verify --print-certs "$apk" \
+                | sed -nE 's/^.*SHA-256 digest: ([0-9A-Fa-f:]+)$/\1/p' \
+                | head -n1 | tr -d ':' | tr 'A-F' 'a-f'
+            )"
+            test "$actual" = "$expected"
+            echo "$(basename "$apk") -> fixed agent-test key sha256: $actual"
+          done
+
+      - name: Upload signed APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-claudep-upstream-mvp-${{ github.run_id }}
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14

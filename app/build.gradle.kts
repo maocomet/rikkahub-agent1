@@ -48,27 +48,53 @@ android {
         }
     }
 
+    val localProperties = Properties().apply {
+        val localPropertiesFile = rootProject.file("local.properties")
+        if (localPropertiesFile.exists()) {
+            load(FileInputStream(localPropertiesFile))
+        }
+    }
+
     signingConfigs {
+        val agentTestStorePath = localProperties.getProperty("agentTestStoreFile")
+            ?: System.getenv("RIKKAHUB_AGENTTEST_KEYSTORE")
+        val agentTestStorePassword = localProperties.getProperty("agentTestStorePassword")
+            ?: System.getenv("RIKKAHUB_AGENTTEST_STORE_PASSWORD")
+        val agentTestKeyAlias = localProperties.getProperty("agentTestKeyAlias")
+            ?: System.getenv("RIKKAHUB_AGENTTEST_KEY_ALIAS")
+        val agentTestKeyPassword = localProperties.getProperty("agentTestKeyPassword")
+            ?: System.getenv("RIKKAHUB_AGENTTEST_KEY_PASSWORD")
+        val agentTestParts = listOf(
+            agentTestStorePath,
+            agentTestStorePassword,
+            agentTestKeyAlias,
+            agentTestKeyPassword,
+        ).count { it != null }
+        if (agentTestParts > 0) {
+            require(agentTestParts == 4) {
+                "Incomplete fixed agent-test signing configuration"
+            }
+            create("agentTest") {
+                storeFile = file(requireNotNull(agentTestStorePath))
+                storePassword = requireNotNull(agentTestStorePassword)
+                keyAlias = requireNotNull(agentTestKeyAlias)
+                keyPassword = requireNotNull(agentTestKeyPassword)
+            }
+        }
+
         create("release") {
-            val localProperties = Properties()
-            val localPropertiesFile = rootProject.file("local.properties")
+            val storeFilePath = localProperties.getProperty("storeFile")
+            val storePasswordValue = localProperties.getProperty("storePassword")
+            val keyAliasValue = localProperties.getProperty("keyAlias")
+            val keyPasswordValue = localProperties.getProperty("keyPassword")
 
-            if (localPropertiesFile.exists()) {
-                localProperties.load(FileInputStream(localPropertiesFile))
-
-                val storeFilePath = localProperties.getProperty("storeFile")
-                val storePasswordValue = localProperties.getProperty("storePassword")
-                val keyAliasValue = localProperties.getProperty("keyAlias")
-                val keyPasswordValue = localProperties.getProperty("keyPassword")
-
-                if (storeFilePath != null && storePasswordValue != null &&
-                    keyAliasValue != null && keyPasswordValue != null
-                ) {
-                    storeFile = file(storeFilePath)
-                    storePassword = storePasswordValue
-                    keyAlias = keyAliasValue
-                    keyPassword = keyPasswordValue
-                }
+            if (storeFilePath != null && storePasswordValue != null &&
+                keyAliasValue != null && keyPasswordValue != null
+            ) {
+                storeFile = file(storeFilePath)
+                storePassword = storePasswordValue
+                keyAlias = keyAliasValue
+                keyPassword = keyPasswordValue
             }
         }
     }
@@ -83,7 +109,16 @@ android {
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
         }
         debug {
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = ".agenttest"
+            versionNameSuffix = "-claudep-mvp"
+            val agentTestSigning = signingConfigs.findByName("agentTest")
+            if (agentTestSigning != null) {
+                signingConfig = agentTestSigning
+            } else if (System.getenv("RIKKAHUB_AGENTTEST_REQUIRED") == "true") {
+                throw GradleException(
+                    "Fixed agent-test signing is required, but RIKKAHUB_AGENTTEST_* is unavailable",
+                )
+            }
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
         }
