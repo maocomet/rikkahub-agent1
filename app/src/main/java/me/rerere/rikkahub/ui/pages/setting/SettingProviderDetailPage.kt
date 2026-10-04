@@ -68,6 +68,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -85,7 +86,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastFilter
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.compose.rememberLauncherForActivityResult
 import com.dokar.sonner.ToastType
+import io.github.g00fy2.quickie.QRResult
+import io.github.g00fy2.quickie.ScanQRCode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import me.rerere.ai.provider.BuiltInTools
@@ -96,9 +100,16 @@ import me.rerere.ai.provider.ModelType
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.claudep.ClaudePConfigureUi
+import me.rerere.ai.provider.claudep.ClaudePClientHelloBody
+import me.rerere.ai.provider.claudep.ClaudePGatewayClient
+import me.rerere.ai.provider.claudep.ClaudePQuotaBody
+import me.rerere.ai.provider.claudep.ClaudePPairingState
 import me.rerere.ai.registry.ModelRegistry
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.BuildConfig
+import me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository
 import me.rerere.rikkahub.ui.components.ai.ModelAbilityTag
 import me.rerere.rikkahub.ui.components.ai.ModelModalityTag
 import me.rerere.rikkahub.ui.components.ai.ModelSelector
@@ -121,6 +132,7 @@ import me.rerere.rikkahub.ui.hooks.useEditState
 import me.rerere.rikkahub.ui.pages.assistant.detail.CustomBodies
 import me.rerere.rikkahub.ui.pages.assistant.detail.CustomHeaders
 import me.rerere.rikkahub.ui.pages.setting.components.ProviderConfigure
+import me.rerere.rikkahub.ui.pages.setting.components.ClaudePProviderConfigure
 import me.rerere.rikkahub.ui.pages.setting.components.ProviderConnectionTester
 import me.rerere.rikkahub.ui.pages.setting.components.SettingProviderBalanceOption
 import me.rerere.rikkahub.ui.pages.setting.components.isUsingDefaultBaseUrl
@@ -279,6 +291,87 @@ private fun SettingProviderConfigPage(
     onEdit: (ProviderSetting) -> Unit,
     onDelete: () -> Unit
 ) {
+    if (provider is ProviderSetting.ClaudeP) {
+        val pairingRepository = koinInject<ClaudePDevicePairingRepository>()
+        val gateway = koinInject<ClaudePGatewayClient>()
+        val pairingStatus by pairingRepository.status.collectAsStateWithLifecycle()
+        val scope = rememberCoroutineScope()
+        var cleanupInFlight by remember { mutableStateOf(false) }
+        var cleanupPending by remember { mutableStateOf(false) }
+        var quota by remember { mutableStateOf<ClaudePQuotaBody?>(null) }
+        var quotaLoading by remember { mutableStateOf(false) }
+
+        suspend fun refreshQuota() {
+            quotaLoading = true
+            quota = runCatching {
+                val deviceId = pairingRepository.currentDeviceIdOrNull()
+                    ?: return@runCatching ClaudePQuotaBody(available = false)
+                gateway.hello(
+                    ClaudePClientHelloBody(
+                        appVersion = BuildConfig.VERSION_NAME,
+                        deviceId = deviceId,
+                        nonce = "",
+                        signature = "",
+                        capabilities = listOf("usage_quota"),
+                    ),
+                )
+                gateway.quota()
+            }.getOrElse { ClaudePQuotaBody(available = false) }
+            quotaLoading = false
+        }
+
+        LaunchedEffect(provider.pairingState) {
+            cleanupPending = pairingRepository.hasPendingCleanup()
+            if (provider.pairingState == ClaudePPairingState.PAIRED) {
+                refreshQuota()
+            } else {
+                quota = null
+            }
+        }
+        val scanner = rememberLauncherForActivityResult(ScanQRCode()) { result ->
+            val payload = (result as? QRResult.QRSuccess)?.content?.rawValue
+                ?: return@rememberLauncherForActivityResult
+            scope.launch {
+                pairingRepository.pair(
+                    invitationPayload = payload,
+                    deviceName = android.os.Build.MODEL ?: "Android device",
+                )
+                cleanupPending = pairingRepository.hasPendingCleanup()
+            }
+        }
+        ClaudePProviderConfigure(
+            provider = provider,
+            ui = ClaudePConfigureUi.reduce(pairingStatus, cleanupPending, cleanupInFlight),
+            onEdit = onEdit,
+            onScanPairingQr = { scanner.launch(null) },
+            onUnpair = {
+                scope.launch {
+                    cleanupInFlight = true
+                    try {
+                        pairingRepository.unpair()
+                    } finally {
+                        cleanupPending = pairingRepository.hasPendingCleanup()
+                        cleanupInFlight = false
+                    }
+                }
+            },
+            onRetryCleanup = {
+                scope.launch {
+                    cleanupInFlight = true
+                    try {
+                        pairingRepository.retryCleanup()
+                    } finally {
+                        cleanupPending = pairingRepository.hasPendingCleanup()
+                        cleanupInFlight = false
+                    }
+                }
+            },
+            quota = quota,
+            quotaLoading = quotaLoading,
+            onRefreshQuota = { scope.launch { refreshQuota() } },
+        )
+        return
+    }
     var internalProvider by remember(provider) { mutableStateOf(provider) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 

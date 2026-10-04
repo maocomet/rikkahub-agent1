@@ -4,6 +4,9 @@ import androidx.compose.runtime.Composable
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import me.rerere.ai.provider.claudep.ClaudePCachedModel
+import me.rerere.ai.provider.claudep.ClaudePDeviceDescriptor
+import me.rerere.ai.provider.claudep.ClaudePPairingState
 import kotlin.uuid.Uuid
 
 @Serializable
@@ -250,6 +253,58 @@ sealed class ProviderSetting {
         }
     }
 
+    @Serializable
+    @SerialName("claude_p")
+    data class ClaudeP(
+        override var id: Uuid = CLAUDEP_PROVIDER_ID,
+        override var enabled: Boolean = false,
+        override var name: String = "Claude P",
+        override var models: List<Model> = emptyList(),
+        override val balanceOption: BalanceOption = BalanceOption(),
+        override val customHeaders: List<CustomHeader> = emptyList(),
+        @Transient override val builtIn: Boolean = true,
+        @Transient override val description: @Composable (() -> Unit) = {},
+        @Transient override val shortDescription: @Composable (() -> Unit) = {},
+        @SerialName("paired_origin") var pairedOrigin: String? = null,
+        @SerialName("gateway_fingerprint") var gatewayFingerprint: String? = null,
+        @SerialName("gateway_installation_id") var gatewayInstallationId: String? = null,
+        var device: ClaudePDeviceDescriptor = ClaudePDeviceDescriptor(),
+        @SerialName("pairing_state") var pairingState: ClaudePPairingState = ClaudePPairingState.NOT_PAIRED,
+        @SerialName("cached_models") var cachedModels: List<ClaudePCachedModel> = emptyList(),
+        @SerialName("catalog_cached_at") var catalogCachedAt: String? = null,
+        @SerialName("claude_code_version") var claudeCodeVersion: String? = null,
+    ) : ProviderSetting() {
+        override fun addModel(model: Model): ProviderSetting = copy(models = models + model)
+        override fun editModel(model: Model): ProviderSetting =
+            copy(models = models.map { if (it.id == model.id) model.copy() else it })
+        override fun delModel(model: Model): ProviderSetting =
+            copy(models = models.filter { it.id != model.id })
+        override fun moveMove(from: Int, to: Int): ProviderSetting = copy(
+            models = models.toMutableList().apply { add(to, removeAt(from)) }
+        )
+        override fun copyProvider(
+            id: Uuid,
+            enabled: Boolean,
+            name: String,
+            models: List<Model>,
+            balanceOption: BalanceOption,
+            customHeaders: List<CustomHeader>,
+            builtIn: Boolean,
+            description: @Composable (() -> Unit),
+            shortDescription: @Composable (() -> Unit),
+        ): ProviderSetting = copy(
+            id = id,
+            enabled = enabled,
+            name = name,
+            models = models,
+            balanceOption = balanceOption,
+            customHeaders = customHeaders,
+            builtIn = builtIn,
+            description = description,
+            shortDescription = shortDescription,
+        )
+    }
+
     companion object {
         val Types by lazy {
             listOf(
@@ -260,3 +315,6 @@ sealed class ProviderSetting {
         }
     }
 }
+
+val CLAUDEP_PROVIDER_ID: Uuid = Uuid.parse("cb1ade90-0001-4a1a-9f01-0000000000a1")
+const val CLAUDEP_REGISTRY_KEY: String = "claude_p"

@@ -1,0 +1,394 @@
+package me.rerere.ai.provider.claudep
+
+import java.security.MessageDigest
+import kotlinx.coroutines.flow.Flow
+
+/**
+ * Transport boundary between [me.rerere.ai.provider.providers.ClaudePProvider] and a Claude P
+ * Gateway.
+ *
+ * CP1-A ships exactly one implementation — [FakeClaudePGatewayClient] — plus
+ * [UnpairedClaudePGatewayClient], the fail-closed stand-in the app wires up until CP1-B adds real
+ * device pairing. **No implementation in this repository performs DNS, HTTP, WebSocket, TLS or
+ * process work.** The WSS transport is CP1-B.
+ *
+ * The interface is deliberately narrow. Everything the doc assigns to the gateway — device
+ * identity, replay ordering, receipt durability, request fingerprints — is expressed as a
+ * request/response or a frame stream, so the provider never has to reason about sockets.
+ */
+interface ClaudePGatewayClient {
+    /**
+     * Performs `client.hello`. Throws [ClaudePGatewayException] when the handshake is refused.
+     *
+     * Callers must treat a failure as "zero dispatch": a connection that cannot be established
+     * correctly must never reach a model.
+     */
+    suspend fun hello(request: ClaudePClientHelloBody): ClaudePServerHelloBody
+
+    /**
+     * `catalog.get`. Must not invoke a model — it reads a server-side allowlist.
+     */
+    suspend fun catalog(): ClaudePCatalogResultBody
+
+    /** Sanitized subscription quota fetched by the VPS; no credential crosses this boundary. */
+    suspend fun quota(): ClaudePQuotaBody
+
+    /**
+     * `generation.start`.
+     *
+     * Exactly one remote dispatch results from the first call for a given
+     * ([requestId], [fingerprint]) pair. Repeating the same pair returns the original handle
+     * without a second dispatch; a different [fingerprint] for a known [requestId] throws
+     * [ClaudePErrorCode.IDEMPOTENCY_CONFLICT].
+     */
+    suspend fun startGeneration(
+        requestId: String,
+        fingerprint: String,
+        body: ClaudePGenerationStartBody,
+    ): ClaudePGenerationHandle
+
+    /**
+     * `generation.cancel`. Idempotent: repeating it returns the same state and never appends an
+     * event. When the generation already reached a terminal this returns that terminal unchanged.
+     */
+    suspend fun cancel(generationId: String, reason: ClaudePCancelReason): ClaudePCancelOutcome
+
+    /** `receipt.query`. Returns a content-free terminal summary. */
+    suspend fun receipt(generationId: String): ClaudePReceiptBody
+
+    /**
+     * `session.bind` — the second phase of a `deferred` generation (§6.1).
+     *
+     * Turns the Server's uncommitted candidate into a resumable binding. It is sent at most once
+     * per active connection and only after the branch variant it names is committed, because a
+     * candidate that became resumable before its graph existed would be a binding to a branch
+     * the user cannot see.
+     *
+     * ### What it must never do
+     *
+     * Produce a CLI child, a model request, or a heartbeat. A bind is bookkeeping: it attaches an
+     * already-finished generation to the branch it produced. It also never rewrites the original
+     * request, and there is no bind-query API — the only recovery is re-sending the same bind,
+     * which the Server recognises by identity and answers `already_bound`.
+     *
+     * ### Failure is an answer, not an exception
+     *
+     * Every outcome §6.1 defines is returned as a value, including `conflict` and `refused`,
+     * because they are *settled* answers that must be recorded as such. Only a transport failure
+     * throws — and the caller must treat that as "the outcome is unknown", never as "the bind
+     * did not happen", since the Server may well have applied it before the socket died.
+     */
+    suspend fun bindSession(
+        generationId: String,
+        body: ClaudePSessionBindBody,
+    ): ClaudePSessionBindResultBody
+
+    /** Number of `session.bind` RPCs issued. Lets a test prove a replay sent exactly one. */
+    val bindSessionCallCount: Int
+
+    /**
+     * The local identity of the connection currently carried, or `null` when there is none.
+     *
+     * Moved on every completed handshake and stable for as long as that socket is the one in use,
+     * so a caller can tell *this connection* from *the next one* without ever seeing the Server's
+     * own connection id — see [ClaudePConnectionEpoch], which explains why that distinction is the
+     * whole of what this exposes.
+     *
+     * `suspend`, because the production transport is a
+     * [ResolvingClaudePGatewayClient] that only knows which client it is delegating to at call
+     * time. `null` is the fail-closed answer: a caller that cannot name a connection must not act
+     * as though it could.
+     */
+    suspend fun connectionEpoch(): ClaudePConnectionEpoch? = null
+
+    /**
+     * `tool.result` — Android's answer to one `tool.invoke`.
+     *
+     * Fire-and-forget, and deliberately so. The Server applies the outcome to the call it is
+     * holding and replies with nothing; a late one, one naming a generation it no longer holds,
+     * and a repeat of an answer it already has are all dropped rather than punished. There is
+     * therefore no return value to map onto a Kotlin type, and inventing one would suggest this
+     * side could learn something from the reply that it cannot.
+     *
+     * The state must be one Android may report — [me.rerere.ai.provider.claudep.bridge.ANDROID_REPORTABLE_TOOL_CALL_STATES]
+     * — and the caller is expected to have checked. A malformed outcome is a protocol violation
+     * that ends the connection, which would take every *other* call this device is holding with
+     * it, so it is not something to discover at the socket.
+     */
+    suspend fun sendToolResult(generationId: String, body: ClaudePToolResultBody)
+
+    /**
+     * `tool.query` — ask the Server what its ledger holds for one tool call id.
+     *
+     * Also fire-and-forget, because the answer is not a reply: it arrives as a
+     * [ClaudePServerEvent.ToolQueryResult] on the generation's own stream, so that a reconnect
+     * that replays frames cannot produce a query answer that bypassed the replay ordering.
+     */
+    suspend fun queryToolCall(generationId: String, body: ClaudePToolQueryBody)
+
+    /**
+     * `stream.resume`. Replays buffered events only. It must never call the model again — that is
+     * the whole point of the receipt/idempotency design.
+     */
+    suspend fun resume(generationId: String, lastEventSeq: Long): ClaudePResumeResult
+
+    /** Number of `generation.start` invocations, including idempotent reuse. */
+    val startGenerationCallCount: Int
+
+    /** Number of generations that actually reached the remote runtime. */
+    val remoteDispatchCount: Int
+
+    /** Number of `generation.cancel` RPCs issued. */
+    val cancelCallCount: Int
+
+    /** Number of `tool.result` frames written. Lets a test prove a replay sent nothing. */
+    val toolResultCallCount: Int
+}
+
+/** Handle for one accepted generation. */
+interface ClaudePGenerationHandle {
+    val generationId: String
+    val requestId: String
+
+    /** `event_seq` of `generation.accepted`. Resume starts strictly after this. */
+    val acceptedEventSeq: Long
+
+    /**
+     * Cold, single-shot stream of raw server frames in arrival order.
+     *
+     * Raw frames rather than parsed events on purpose: parsing happens in exactly one place
+     * ([ClaudePProtocol.parseInbound]) so a transport can never smuggle an unvalidated body into
+     * the provider. Collecting twice must not re-dispatch.
+     */
+    fun frames(): Flow<String>
+}
+
+/** Outcome of `generation.cancel`. */
+sealed interface ClaudePCancelOutcome {
+    /** A terminal was reached; [kind] is the original one, never a new one. */
+    data class Terminal(val kind: ClaudePTerminalKind) : ClaudePCancelOutcome
+
+    /**
+     * The gateway could not yet prove the child process is gone. Never reported as cancelled —
+     * `02-wire-protocol-v1.md` §8 forbids claiming a terminal we cannot prove.
+     */
+    data object Pending : ClaudePCancelOutcome
+}
+
+/** Outcome of `stream.resume`. */
+sealed interface ClaudePResumeResult {
+    val outcome: ClaudePResumeKind
+
+    /** Buffered events follow and are replayed in order. */
+    data class Replayed(
+        override val outcome: ClaudePResumeKind,
+        val frames: List<String>,
+    ) : ClaudePResumeResult
+
+    /** The buffer expired but a terminal exists; the generation is over. */
+    data class Terminal(val receipt: ClaudePReceiptBody) : ClaudePResumeResult {
+        override val outcome: ClaudePResumeKind = ClaudePResumeKind.TERMINAL
+    }
+
+    /** Nothing can be proven. The user decides; we never auto-retry. */
+    data object StateUnknown : ClaudePResumeResult {
+        override val outcome: ClaudePResumeKind = ClaudePResumeKind.STATE_UNKNOWN
+    }
+}
+
+/**
+ * Typed gateway failure.
+ *
+ * The message is assembled from enum names only, so an exception can be logged or shown without
+ * carrying a prompt, a token or raw stderr.
+ */
+class ClaudePGatewayException(
+    val code: ClaudePErrorCode,
+    val rejection: ClaudePParseRejection? = null,
+    val generationId: String? = null,
+) : Exception(
+    buildString {
+        append("claude-p gateway failure: ")
+        append(code.name)
+        rejection?.let { append(" (").append(it.name).append(')') }
+    },
+) {
+    override fun toString(): String =
+        "ClaudePGatewayException(code=${code.name}, rejection=${rejection?.name}, " +
+            "generationId=${generationId.redactedRef()})"
+}
+
+/**
+ * Durable, content-free identity of one generation request.
+ *
+ * `02-wire-protocol-v1.md` §7 requires the fingerprint to bind device, thread, branch, mode,
+ * model, system prompt, turn/history, tool snapshot and attachment manifest. Fields are
+ * length-prefixed before hashing so that concatenation ambiguities cannot collide two different
+ * requests — the same discipline the repo already uses for background dispatch attestations.
+ *
+ * ## The two tiers of field, and why the difference matters
+ *
+ * The **first fifteen** fields are *fixed*: every one is always written, and an absent value is
+ * written as a presence byte of `0x00` (§12.3, §12.5). They are the v1-r3 field sequence and
+ * their order is frozen by review.
+ *
+ * [assistantId] and [bindingIntent] are **conditional tail fields** (§12.4 items 16 and 17,
+ * §12.12). They are appended *after* `attachment_manifest`, and when the caller does not supply
+ * one, **nothing at all is written** — not the label, not a length prefix, not a `0x00`.
+ *
+ * That asymmetry is the whole point. Writing `0x00` for an absent tail field would append a byte
+ * to the stream of every request that does not use one, which would change the digest of every
+ * request frozen under v1-r3 — including the ones already written into a dispatch ledger. Writing
+ * *nothing* is what makes "this request carries no assistant" produce the byte stream v1-r3
+ * produced, so the frozen corpus digests do not move. `fingerprint-minimal` and its six siblings
+ * in `claudep/conformance/fingerprints/vectors.json` are the acceptance test for exactly this.
+ *
+ * The tail order is fixed: [assistantId] before [bindingIntent], and only ever at the end. A tail
+ * field inserted anywhere earlier would change every digest that carries it, which is the opposite
+ * of what appending is for.
+ */
+object ClaudePRequestFingerprint {
+    private const val DOMAIN = "rikkahub-claude-p-request-fingerprint-v1"
+
+    /**
+     * Computes the digest.
+     *
+     * @param remoteBranchId the branch identity, or `null` when the request carries none.
+     *   `null` is how a `deferred` request (`02-wire-protocol-v1.md` §5.2) encodes "this branch
+     *   does not exist yet": the field's own presence byte then says *absent*. It is deliberately
+     *   **not** expressible as `""` — an empty string is a *present but empty* branch identity,
+     *   which is not a legal value, and folding the two together would give two different request
+     *   shapes one shared idempotency key.
+     * @param assistantId the assistant the generation belongs to, or `null` when the request does
+     *   not name one. **Appended only when present** — see the class doc.
+     * @param bindingIntent `immediate` or `deferred` (`02-wire-protocol-v1.md` §5.2), or `null`
+     *   for a legacy request that carries none. **Appended only when present.**
+     */
+    fun compute(
+        deviceId: String,
+        remoteThreadId: String,
+        remoteBranchId: String?,
+        mode: String,
+        modelAlias: String,
+        systemPrompt: String?,
+        turn: ClaudePTurn,
+        rebuildHistory: List<ClaudePTurn>? = null,
+        toolSnapshot: String? = null,
+        attachmentManifest: String? = null,
+        assistantId: String? = null,
+        bindingIntent: String? = null,
+    ): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        fun field(label: String, value: String?) {
+            digest.updateLengthPrefixed(label.toByteArray(Charsets.UTF_8))
+            // Presence is encoded explicitly. Folding `null` into `""` would let an absent system
+            // prompt and an empty one share a fingerprint, which is exactly the collision the
+            // idempotency key must not have.
+            if (value == null) {
+                digest.update(0)
+            } else {
+                digest.update(1)
+                digest.updateLengthPrefixed(value.toByteArray(Charsets.UTF_8))
+            }
+        }
+
+        field("domain", DOMAIN)
+        field("device_id", deviceId)
+        field("remote_thread_id", remoteThreadId)
+        field("remote_branch_id", remoteBranchId)
+        field("mode", mode)
+        field("model_alias", modelAlias)
+        field("system_prompt", systemPrompt)
+        field("turn_role", turn.role)
+        field("turn_parts", turn.parts.size.toString())
+        turn.parts.forEachIndexed { index, part ->
+            field("turn_part_$index.type", part.type)
+            field("turn_part_$index.text", part.text)
+        }
+        val history = rebuildHistory.orEmpty()
+        field("rebuild_history_turns", history.size.toString())
+        history.forEachIndexed { index, entry ->
+            field("rebuild_$index.role", entry.role)
+            entry.parts.forEachIndexed { partIndex, part ->
+                field("rebuild_$index.$partIndex.type", part.type)
+                field("rebuild_$index.$partIndex.text", part.text)
+            }
+        }
+        field("tool_snapshot", toolSnapshot)
+        field("attachment_manifest", attachmentManifest)
+
+        // Conditional tail fields (§12.4 items 16-17, §12.12). Appended, and **only when
+        // present**: the label block is omitted entirely rather than written with a `0x00`
+        // presence byte, so a request that carries neither produces the byte stream v1-r3
+        // produced. The order is fixed — `assistant_id` first, then `binding_intent`.
+        //
+        // The Server already appends `assistant_id` here (see `computeRequestFingerprint` in
+        // `src/idempotency/fingerprint.ts`); this is the Android half of that same contract,
+        // not a second spelling of it. The conformance corpus is what proves the two agree.
+        if (assistantId != null) field("assistant_id", assistantId)
+        if (bindingIntent != null) field("binding_intent", bindingIntent)
+
+        return digest.digest().joinToString("") { byte ->
+            (byte.toInt() and 0xff).toString(16).padStart(2, '0')
+        }
+    }
+
+    private fun MessageDigest.updateLengthPrefixed(bytes: ByteArray) {
+        val size = bytes.size
+        update((size ushr 24).toByte())
+        update((size ushr 16).toByte())
+        update((size ushr 8).toByte())
+        update(size.toByte())
+        update(bytes)
+    }
+}
+
+/**
+ * Fail-closed client used until real device pairing exists.
+ *
+ * This is the CP1-A production binding. It has no endpoint, no credential and no socket: every
+ * call reports [ClaudePErrorCode.NOT_PAIRED]. The Provider therefore appears in settings as
+ * "not yet paired" and cannot silently start talking to anything.
+ */
+object UnpairedClaudePGatewayClient : ClaudePGatewayClient {
+    override suspend fun hello(request: ClaudePClientHelloBody): ClaudePServerHelloBody =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun catalog(): ClaudePCatalogResultBody =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun quota(): ClaudePQuotaBody =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun startGeneration(
+        requestId: String,
+        fingerprint: String,
+        body: ClaudePGenerationStartBody,
+    ): ClaudePGenerationHandle = throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun cancel(generationId: String, reason: ClaudePCancelReason): ClaudePCancelOutcome =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun receipt(generationId: String): ClaudePReceiptBody =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun bindSession(
+        generationId: String,
+        body: ClaudePSessionBindBody,
+    ): ClaudePSessionBindResultBody = throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun sendToolResult(generationId: String, body: ClaudePToolResultBody) =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun queryToolCall(generationId: String, body: ClaudePToolQueryBody) =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override suspend fun resume(generationId: String, lastEventSeq: Long): ClaudePResumeResult =
+        throw ClaudePGatewayException(ClaudePErrorCode.NOT_PAIRED)
+
+    override val startGenerationCallCount: Int = 0
+    override val remoteDispatchCount: Int = 0
+    override val cancelCallCount: Int = 0
+    override val toolResultCallCount: Int = 0
+    override val bindSessionCallCount: Int = 0
+}

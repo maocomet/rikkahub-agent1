@@ -191,8 +191,48 @@ val dataSourceModule = module {
         SponsorAPI.create(get())
     }
 
+    single<me.rerere.ai.provider.claudep.ClaudePCleanupTombstoneStore> {
+        me.rerere.rikkahub.data.claudep.FileClaudePCleanupTombstoneStore(context = get())
+    }
+
+    single<me.rerere.ai.provider.claudep.ClaudePPairingSettingsGateway> {
+        me.rerere.rikkahub.data.claudep.SettingsClaudePPairingGateway(settingsStore = get())
+    }
+
     single {
-        ProviderManager(client = get(), context = get())
+        me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository(
+            credentialStore = me.rerere.rikkahub.data.claudep.EncryptedClaudePDeviceCredentialStore(
+                context = get(),
+                json = get(),
+            ),
+            deviceKeyStore = me.rerere.rikkahub.data.claudep.AndroidKeystoreClaudePDeviceKeyStore(),
+            tombstoneStore = get(),
+            settingsGateway = get(),
+            scope = get<me.rerere.rikkahub.AppScope>(),
+            appVersion = BuildConfig.VERSION_NAME,
+        )
+    }
+
+    single<me.rerere.ai.provider.claudep.ClaudePGatewayClient> {
+        val pairing: me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository = get()
+        me.rerere.ai.provider.claudep.ResolvingClaudePGatewayClient(
+            resolve = { pairing.gatewayClientOrNull() },
+        )
+    }
+
+    single {
+        val pairing: me.rerere.rikkahub.data.claudep.ClaudePDevicePairingRepository = get()
+        ProviderManager(client = get(), context = get()).also { manager ->
+            manager.registerProvider(
+                me.rerere.ai.provider.CLAUDEP_REGISTRY_KEY,
+                me.rerere.ai.provider.providers.ClaudePProvider(
+                    gateway = get<me.rerere.ai.provider.claudep.ClaudePGatewayClient>(),
+                    deviceIdProvider = { pairing.currentDeviceIdOrNull() },
+                    appVersion = BuildConfig.VERSION_NAME,
+                    catalogRecorder = get<me.rerere.ai.provider.claudep.ClaudePPairingSettingsGateway>(),
+                ),
+            )
+        }
     }
 
     single { BackupManager(context = get(), database = get(), settingsStore = get(), json = get()) }
