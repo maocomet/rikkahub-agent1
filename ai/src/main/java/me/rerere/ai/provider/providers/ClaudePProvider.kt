@@ -142,6 +142,7 @@ class ClaudePProvider(
         var textStarted = false
         var reasoningStarted = false
         var actualModel: String? = null
+        var latestUsage: ClaudePUsageBody? = null
         var textId: String? = null
         var reasoningId: String? = null
         try {
@@ -150,6 +151,7 @@ class ClaudePProvider(
                 val event = (inbound as? ClaudePInbound.Event)?.event ?: return@collect
                 when (event) {
                     is ClaudePServerEvent.GenerationStarted -> actualModel = event.body.modelAlias
+                    is ClaudePServerEvent.UsageUpdated -> latestUsage = event.body
                     is ClaudePServerEvent.ReasoningDelta -> {
                         val id = event.body.messageId ?: "reasoning"
                         reasoningId = reasoningId ?: id
@@ -199,7 +201,7 @@ class ClaudePProvider(
                         terminal.set(true)
                         reasoningId?.let { emit(StreamChunk.ReasoningEnd(it)) }
                         textId?.let { emit(StreamChunk.TextEnd(it)) }
-                        event.body.usage?.let { emit(StreamChunk.Usage(it.toTokenUsage())) }
+                        (event.body.usage ?: latestUsage)?.let { emit(StreamChunk.Usage(it.toTokenUsage())) }
                         emit(StreamChunk.Finish(event.body.stopReason, handle.generationId, actualModel ?: modelId))
                     }
                     is ClaudePServerEvent.Failed -> {
