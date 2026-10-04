@@ -449,14 +449,17 @@ class GenerationLoop(
                             error = error,
                             retryCount = retryCount,
                             processingStatus = processingStatus,
-                            enabled = settings.networkSetting.enableAutoRetry,
+                            // Claude P generations are remotely stateful. Replaying this call after
+                            // an ambiguous socket failure could create a second model generation for
+                            // the same user message, so failures must be surfaced as-is.
+                            enabled = settings.networkSetting.enableAutoRetry && provider !is ProviderSetting.ClaudeP,
                         )
                     }
                 }
             } else {
                 val result = executeProviderRequestWithRetry(
                     processingStatus = processingStatus,
-                    enabled = settings.networkSetting.enableAutoRetry,
+                    enabled = settings.networkSetting.enableAutoRetry && provider !is ProviderSetting.ClaudeP,
                 ) {
                     providerImpl.generateText(
                         providerSetting = provider,
