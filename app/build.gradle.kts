@@ -56,29 +56,29 @@ android {
     }
 
     signingConfigs {
-        val agentTestStorePath = localProperties.getProperty("agentTestStoreFile")
-            ?: System.getenv("RIKKAHUB_AGENTTEST_KEYSTORE")
-        val agentTestStorePassword = localProperties.getProperty("agentTestStorePassword")
-            ?: System.getenv("RIKKAHUB_AGENTTEST_STORE_PASSWORD")
-        val agentTestKeyAlias = localProperties.getProperty("agentTestKeyAlias")
-            ?: System.getenv("RIKKAHUB_AGENTTEST_KEY_ALIAS")
-        val agentTestKeyPassword = localProperties.getProperty("agentTestKeyPassword")
-            ?: System.getenv("RIKKAHUB_AGENTTEST_KEY_PASSWORD")
-        val agentTestParts = listOf(
-            agentTestStorePath,
-            agentTestStorePassword,
-            agentTestKeyAlias,
-            agentTestKeyPassword,
+        val claudePStorePath = localProperties.getProperty("claudePStoreFile")
+            ?: System.getenv("RIKKAHUB_CLAUDEP_KEYSTORE")
+        val claudePStorePassword = localProperties.getProperty("claudePStorePassword")
+            ?: System.getenv("RIKKAHUB_CLAUDEP_STORE_PASSWORD")
+        val claudePKeyAlias = localProperties.getProperty("claudePKeyAlias")
+            ?: System.getenv("RIKKAHUB_CLAUDEP_KEY_ALIAS")
+        val claudePKeyPassword = localProperties.getProperty("claudePKeyPassword")
+            ?: System.getenv("RIKKAHUB_CLAUDEP_KEY_PASSWORD")
+        val claudePParts = listOf(
+            claudePStorePath,
+            claudePStorePassword,
+            claudePKeyAlias,
+            claudePKeyPassword,
         ).count { it != null }
-        if (agentTestParts > 0) {
-            require(agentTestParts == 4) {
-                "Incomplete fixed agent-test signing configuration"
+        if (claudePParts > 0) {
+            require(claudePParts == 4) {
+                "Incomplete fixed Claude P signing configuration"
             }
-            create("agentTest") {
-                storeFile = file(requireNotNull(agentTestStorePath))
-                storePassword = requireNotNull(agentTestStorePassword)
-                keyAlias = requireNotNull(agentTestKeyAlias)
-                keyPassword = requireNotNull(agentTestKeyPassword)
+            create("claudeP") {
+                storeFile = file(requireNotNull(claudePStorePath))
+                storePassword = requireNotNull(claudePStorePassword)
+                keyAlias = requireNotNull(claudePKeyAlias)
+                keyPassword = requireNotNull(claudePKeyPassword)
             }
         }
 
@@ -109,14 +109,14 @@ android {
             buildConfigField("String", "VERSION_CODE", "\"${android.defaultConfig.versionCode}\"")
         }
         debug {
-            applicationIdSuffix = ".agenttest"
+            applicationIdSuffix = ".claudep"
             versionNameSuffix = "-claudep-mvp"
-            val agentTestSigning = signingConfigs.findByName("agentTest")
-            if (agentTestSigning != null) {
-                signingConfig = agentTestSigning
-            } else if (System.getenv("RIKKAHUB_AGENTTEST_REQUIRED") == "true") {
+            val claudePSigning = signingConfigs.findByName("claudeP")
+            if (claudePSigning != null) {
+                signingConfig = claudePSigning
+            } else if (System.getenv("RIKKAHUB_CLAUDEP_SIGNING_REQUIRED") == "true") {
                 throw GradleException(
-                    "Fixed agent-test signing is required, but RIKKAHUB_AGENTTEST_* is unavailable",
+                    "Fixed Claude P signing is required, but RIKKAHUB_CLAUDEP_* is unavailable",
                 )
             }
             buildConfigField("String", "VERSION_NAME", "\"${android.defaultConfig.versionName}\"")

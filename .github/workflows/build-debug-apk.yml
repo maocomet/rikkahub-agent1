@@ -41,30 +41,30 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Materialize fixed agent-test signing keystore
+      - name: Materialize fixed Claude P signing keystore
         env:
-          AGENTTEST_KEYSTORE_B64: ${{ secrets.RIKKAHUB_AGENTTEST_KEYSTORE_BASE64 }}
-          AGENTTEST_STORE_PASSWORD: ${{ secrets.RIKKAHUB_AGENTTEST_STORE_PASSWORD }}
-          AGENTTEST_KEY_ALIAS: ${{ secrets.RIKKAHUB_AGENTTEST_KEY_ALIAS }}
-          AGENTTEST_KEY_PASSWORD: ${{ secrets.RIKKAHUB_AGENTTEST_KEY_PASSWORD }}
+          CLAUDEP_KEYSTORE_B64: ${{ secrets.RIKKAHUB_CLAUDEP_KEYSTORE_BASE64 }}
+          CLAUDEP_STORE_PASSWORD: ${{ secrets.RIKKAHUB_CLAUDEP_STORE_PASSWORD }}
+          CLAUDEP_KEY_ALIAS: ${{ secrets.RIKKAHUB_CLAUDEP_KEY_ALIAS }}
+          CLAUDEP_KEY_PASSWORD: ${{ secrets.RIKKAHUB_CLAUDEP_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          : "${AGENTTEST_KEYSTORE_B64:?Missing fixed signing keystore secret}"
-          : "${AGENTTEST_STORE_PASSWORD:?Missing fixed signing store password}"
-          : "${AGENTTEST_KEY_ALIAS:?Missing fixed signing key alias}"
-          : "${AGENTTEST_KEY_PASSWORD:?Missing fixed signing key password}"
-          KEYSTORE="$RUNNER_TEMP/rikkahub-agenttest.keystore"
-          echo "$AGENTTEST_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
+          : "${CLAUDEP_KEYSTORE_B64:?Missing fixed signing keystore secret}"
+          : "${CLAUDEP_STORE_PASSWORD:?Missing fixed signing store password}"
+          : "${CLAUDEP_KEY_ALIAS:?Missing fixed signing key alias}"
+          : "${CLAUDEP_KEY_PASSWORD:?Missing fixed signing key password}"
+          KEYSTORE="$RUNNER_TEMP/rikkahub-claudep.keystore"
+          echo "$CLAUDEP_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
           keytool -list -keystore "$KEYSTORE" \
-            -storepass "$AGENTTEST_STORE_PASSWORD" -alias "$AGENTTEST_KEY_ALIAS" >/dev/null
-          echo "RIKKAHUB_AGENTTEST_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
-          echo "RIKKAHUB_AGENTTEST_STORE_PASSWORD=$AGENTTEST_STORE_PASSWORD" >> "$GITHUB_ENV"
-          echo "RIKKAHUB_AGENTTEST_KEY_ALIAS=$AGENTTEST_KEY_ALIAS" >> "$GITHUB_ENV"
-          echo "RIKKAHUB_AGENTTEST_KEY_PASSWORD=$AGENTTEST_KEY_PASSWORD" >> "$GITHUB_ENV"
+            -storepass "$CLAUDEP_STORE_PASSWORD" -alias "$CLAUDEP_KEY_ALIAS" >/dev/null
+          echo "RIKKAHUB_CLAUDEP_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "RIKKAHUB_CLAUDEP_STORE_PASSWORD=$CLAUDEP_STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "RIKKAHUB_CLAUDEP_KEY_ALIAS=$CLAUDEP_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "RIKKAHUB_CLAUDEP_KEY_PASSWORD=$CLAUDEP_KEY_PASSWORD" >> "$GITHUB_ENV"
 
       - name: Build debug APK
         env:
-          RIKKAHUB_AGENTTEST_REQUIRED: "true"
+          RIKKAHUB_CLAUDEP_SIGNING_REQUIRED: "true"
         run: |
           chmod +x gradlew
           ./gradlew :app:assembleDebug --no-daemon --no-configuration-cache
@@ -74,9 +74,9 @@ jobs:
           set -euo pipefail
           APKSIGNER="$(ls -1 "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)"
           expected="$(
-            keytool -list -v -keystore "$RIKKAHUB_AGENTTEST_KEYSTORE" \
-              -storepass "$RIKKAHUB_AGENTTEST_STORE_PASSWORD" \
-              -alias "$RIKKAHUB_AGENTTEST_KEY_ALIAS" \
+            keytool -list -v -keystore "$RIKKAHUB_CLAUDEP_KEYSTORE" \
+              -storepass "$RIKKAHUB_CLAUDEP_STORE_PASSWORD" \
+              -alias "$RIKKAHUB_CLAUDEP_KEY_ALIAS" \
               | sed -nE 's/^[[:space:]]*SHA256:[[:space:]]*//p' \
               | head -n1 | tr -d ':' | tr 'A-F' 'a-f'
           )"
@@ -87,7 +87,7 @@ jobs:
                 | head -n1 | tr -d ':' | tr 'A-F' 'a-f'
             )"
             test "$actual" = "$expected"
-            echo "$(basename "$apk") -> fixed agent-test key sha256: $actual"
+            echo "$(basename "$apk") -> fixed Claude P key sha256: $actual"
           done
 
       - name: Upload signed APKs
