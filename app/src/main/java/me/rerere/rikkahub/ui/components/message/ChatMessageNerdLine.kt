@@ -60,11 +60,15 @@ fun ChatMessageNerdLine(
                         },
                         content = {
                             Text(text = "${usage.promptTokens.formatNumber()} tokens")
-                            // Cached tokens
+                            // Claude P reports the final result snapshot; these are not summed
+                            // with streaming deltas, so cache counters cannot double-count.
                             if (usage.cachedTokens > 0) {
                                 Text(
-                                    text = "(${message.usage?.cachedTokens?.formatNumber() ?: "0"} cached)"
+                                    text = "(${usage.cachedTokens.formatNumber()} cache read)"
                                 )
+                            }
+                            if (usage.cacheCreationTokens > 0) {
+                                Text(text = "(${usage.cacheCreationTokens.formatNumber()} cache creation)")
                             }
                         }
                     )
